@@ -52,6 +52,7 @@ impl ReaderView {
         bounds: Bounds<Pixels>,
         window: &mut Window,
     ) -> Option<ViewportFrame> {
+        self.report(BenchEvent::Prepaint);
         self.viewport_bounds = Some(bounds);
         // Releases textures retired since the last frame before anything
         // new is uploaded, and resets the upload budget.
@@ -124,6 +125,7 @@ impl ReaderView {
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.report(BenchEvent::Paint);
         let mode = self.session().map(|s| s.color_mode()).unwrap_or_default();
         // Unrendered paper matches the tiles (black in night mode).
         let paper = crate::theme::paper(self.options.session.paper, mode);

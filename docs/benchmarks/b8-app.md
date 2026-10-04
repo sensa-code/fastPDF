@@ -347,7 +347,29 @@ mask 依本機拓撲選擇：相鄰的兩個邏輯 CPU 是同一個實體核心�
 2. **縮放延遲**：用 app 內逐次輸入的時間戳記確認縮放沒有變慢，再送 upstream。
 3. **508 px tile**：已採用（`1a252c6`）。B-3 的配對重測在雜訊範圍內，見下一節的最終量測。
 4. **低階機器**：iGPU 筆電、高更新率螢幕上重量 idle CPU 與 RAM（R12）。NVIDIA driver 那條每秒 60 次的 thread，在其他 GPU 上不一定存在。
-5. **probe**：`-AppProbe` 的 FastPDF 端目前只在 scratch。若要讓之後的 B-8 自動檢查「idle 不畫 frame」，可以把 probe 併入 `fastpdf-app`／`fastpdf-ui`，只在 `FASTPDF_BENCH=1` 時啟用。
+5. **probe：完成**（2026-10-05，bench-app 1.2.0）。「idle 時 FastPDF 不畫 frame」已是自動檢查的回歸防線。
+   - **FastPDF 端**：
+     - 只在 `FASTPDF_BENCH=1` 時啟用：UI 把 render、prepaint、paint、wake 交給 bench hook，`crates/fastpdf-app/src/bench.rs` 把它們累加到一塊固定版面的計數器，並在啟動時於 stdout 印出計數器的位址；
+     - 沒有 thread、timer、event，不會為了回報而醒來或輸出；
+     - 沒有 `FASTPDF_BENCH` 時不建立 hook，每個呼叫點只是一次 `None` 檢查。
+   - **bench-app 端**：
+     - preset `fastpdf` 預設開啟 `-AppProbe`，在 idle 窗口、互動後 idle 窗口與每項互動的前後，用 `ReadProcessMemory` 讀計數器；
+     - idle 窗口內 render 或 paint 不為 0 時，summary 的 `idle.app_frames` 標成 `frames_while_idle` 並發出警告；
+     - 互動期間計數器沒動時另外警告，表示 probe 沒在計數。
+   - **實測**（`a199559` 加上這次的修改，dist build，3 頁文件，20 格滾輪、5 次 PageDown、3 次 Ctrl+滾輪；idle 窗口忙碌 7–12%，量測前沒有 cargo、rustc、link 在跑）：
+
+     | | 3 次 run | 驗證 run（多記每項互動） |
+     |---|---|---|
+     | idle 10 秒：render／prepaint／paint／wake | 0／0／0／0（3 次都是） | 0／0／0／0 |
+     | 互動後 idle 5 秒：同上 | 0／0／0／0（3 次都是） | 0／0／0／0 |
+     | 滾輪 20 格期間的 render | — | 29 |
+     | PageDown 5 次期間的 render | — | 6 |
+     | 縮放 3 次期間的 render | — | 7 |
+     | 啟動到 run 結束的累計 render | — | 45 |
+
+     - summary：`idle.app_frames` 與 `post_interaction_idle.app_frames` 都是 `ok`。
+     - 其他數字（4 次 run）與前面各輪一致：idle private working set 24.7 MB（24.6–24.9）、idle CPU 0.2%（0.16–0.62%）單核、`first_page_exact` 202 ms（195–219 ms）。這幾次是在安靜時段量的（啟動前瞬間負載 11–34%），不能和第七輪的 218 ms 直接比較。
+     - 滾輪 20 格只畫了 29 個 frame：bench-app 不把視窗移到前景，GPUI 對非焦點視窗限制在約 30 fps（`docs/audit/gpui.md`）。
 
 ## 最終版（第七輪，`21dd4da`）
 

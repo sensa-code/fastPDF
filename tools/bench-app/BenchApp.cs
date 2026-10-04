@@ -10,7 +10,7 @@
 //     AttachThreadInput + SetKeyboardState on the target thread's shared input state)
 //   * memory / CPU / thread sampling summed over the tree (incl. private working set and shared commit)
 //   * opt-in idle diagnostics: per-thread cycles / context switches (ThreadProbe), a VirtualQueryEx
-//     map of committed memory by kind (MemoryMap), and a cooperative probe event (AppProbe)
+//     map of committed memory by kind (MemoryMap), and FastPDF's frame counters (Session.ReadFrameCounters)
 //   * minimal PNG writer (no System.Drawing dependency)
 using System;
 using System.Collections.Generic;
@@ -884,6 +884,23 @@ namespace FastPdfBench
             return n;
         }
 
+        /// FastPDF's frame counters (layout "fastpdf-frame-counters/1", crates/fastpdf-app/src/bench.rs):
+        /// the 8-byte magic "FPDFFRC1", then render, prepaint, paint and wake as little-endian u64, at the
+        /// address the app prints on stdout with FASTPDF_BENCH=1. Read from the root process with
+        /// ReadProcessMemory, so reading runs nothing in the app. Null when it cannot be read or the magic
+        /// does not match.
+        public long[] ReadFrameCounters(long address)
+        {
+            IntPtr h;
+            if (address <= 0 || !handles.TryGetValue(RootPid, out h)) return null;
+            var buf = new byte[40]; UIntPtr n;
+            if (!NativeEx.ReadProcessMemory(h, new IntPtr(address), buf, new UIntPtr((uint)buf.Length), out n) || n.ToUInt64() != (ulong)buf.Length) return null;
+            if (Encoding.ASCII.GetString(buf, 0, 8) != "FPDFFRC1") return null;
+            var counters = new long[4];
+            for (int i = 0; i < counters.Length; i++) counters[i] = BitConverter.ToInt64(buf, 8 + 8 * i);
+            return counters;
+        }
+
         public string TrackedNames()
         {
             var sb = new StringBuilder();
@@ -933,8 +950,6 @@ namespace FastPdfBench
         [DllImport("kernel32.dll")] public static extern int GetThreadDescription(IntPtr h, out IntPtr desc);
         [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr p);
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr OpenEventW(uint access, bool inherit, string name);
-        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetEvent(IntPtr h);
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool Thread32First(IntPtr snap, ref THREADENTRY32 e);
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool Thread32Next(IntPtr snap, ref THREADENTRY32 e);
         [DllImport("ntdll.dll")] public static extern int NtQuerySystemInformation(int cls, IntPtr buf, int len, out int retLen);
@@ -943,7 +958,6 @@ namespace FastPdfBench
 
         public const uint PROCESS_QUERY_INFORMATION = 0x0400, PROCESS_VM_READ = 0x0010;
         public const uint THREAD_QUERY_INFORMATION = 0x0040, THREAD_QUERY_LIMITED_INFORMATION = 0x0800;
-        public const uint EVENT_MODIFY_STATE = 0x0002;
         public const uint MEM_COMMIT = 0x1000, MEM_PRIVATE = 0x20000, MEM_MAPPED = 0x40000, MEM_IMAGE = 0x1000000;
         public const uint PAGE_READWRITE = 0x04, PAGE_WRITECOPY = 0x08, PAGE_EXECUTE_READWRITE = 0x40, PAGE_EXECUTE_WRITECOPY = 0x80;
 
@@ -1003,18 +1017,6 @@ namespace FastPdfBench
             long total = (b.Kernel - a.Kernel) + (b.User - a.User);
             long idle = b.Idle - a.Idle;
             return total <= 0 ? 0 : 100.0 * (total - idle) / total;
-        }
-    }
-
-    /// Cooperative probe: an app that wants to report its own counters creates the auto-reset event
-    /// "Local\FastPdfBenchProbe-<pid>" and prints a JSON line on stdout whenever it is signalled.
-    public static class AppProbe
-    {
-        public static bool Signal(int pid)
-        {
-            IntPtr h = NativeEx.OpenEventW(NativeEx.EVENT_MODIFY_STATE, false, "Local\\FastPdfBenchProbe-" + pid);
-            if (h == IntPtr.Zero) return false;
-            try { return NativeEx.SetEvent(h); } finally { Native.CloseHandle(h); }
         }
     }
 

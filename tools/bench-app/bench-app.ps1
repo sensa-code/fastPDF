@@ -55,12 +55,12 @@ param(
     [string]$Affinity,                        # CPU mask (e.g. 0xF = 4 logical CPUs) set on the process right after launch
     [switch]$ThreadDetail,                    # per-thread cycles / context switches over the idle window
     [switch]$MemoryDetail,                    # VirtualQueryEx map of committed memory + working set at the end of idle
-    [switch]$AppProbe,                        # signal the app's probe event around the idle window (see README)
+    [switch]$AppProbe,                        # read the app's frame counters around idle windows (on by default for -Preset fastpdf)
     [int]$TopThreads = 20
 )
 
 $ErrorActionPreference = 'Stop'
-$ToolVersion = '1.1.0'
+$ToolVersion = '1.2.0'
 $Schema = 'fastpdf-bench-app/1'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
@@ -132,7 +132,7 @@ $ChromiumFlags = @('--user-data-dir={profile}', '--no-first-run', '--no-default-
     '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
     '--window-size=1536,864', '--window-position=40,40', '--new-window', '{pdf_uri}')
 
-$cfg = @{ template = @('{pdf}'); profile = 'none'; open = 'cli'; input = 'wheel'; close = 'close'; capture = $false; singleInstance = $null; shared = $false; zoom = $true; dialogTitle = $null }
+$cfg = @{ template = @('{pdf}'); profile = 'none'; open = 'cli'; input = 'wheel'; close = 'close'; capture = $false; probe = $false; singleInstance = $null; shared = $false; zoom = $true; dialogTitle = $null }
 switch ($Preset) {
     'upstream' {
         $cfg.exe = Join-Path $Repo 'upstream\pdf-reader-gpui\target\release\pdf-reader-gpui.exe'
@@ -141,7 +141,8 @@ switch ($Preset) {
     'fastpdf' {
         $cands = @((Join-Path $Repo 'target\release\fastpdf.exe'), (Join-Path $Repo 'target\dist\fastpdf.exe'))
         $cfg.exe = ($cands | Where-Object { Test-Path $_ } | Select-Object -First 1); if (-not $cfg.exe) { $cfg.exe = $cands[0] }
-        $cfg.capture = $true
+        # FASTPDF_BENCH=1 makes FastPDF print its milestones and publish frame counters: check idle frames by default.
+        $cfg.capture = $true; $cfg.probe = $true
     }
     { $_ -in 'edge', 'chrome' } {
         $cfg.exe = Resolve-KnownApp $Preset; $cfg.template = $ChromiumFlags; $cfg.profile = 'chromium'; $cfg.input = 'chromium'
@@ -162,6 +163,10 @@ if (-not $Resummarize) {
     if ($Exe) { $cfg.exe = $Exe }
     if ($PSBoundParameters.ContainsKey('AppArgs')) { $cfg.template = @($AppArgs) }
     if ($CaptureStdout) { $cfg.capture = $true }
+    if ($AppProbe) {
+        # The counters' address arrives on stdout, so probing needs the FASTPDF_BENCH protocol.
+        $cfg.probe = $true; $cfg.capture = $true
+    }
     if ($InputMode -ne 'auto') { $cfg.input = $InputMode }
     if (-not $cfg.exe) { throw "No executable for preset '$Preset' (not installed?). Run with -Detect, or pass -Exe." }
     if (-not (Test-Path $cfg.exe)) { throw "Executable not found: $($cfg.exe)" }
@@ -365,31 +370,68 @@ function Get-ThreadDetail($rowsA, $rowsB, [double]$seconds, [int]$rootPid) {
     }
 }
 
-function Get-ProbeLines($collector) {
-    @(foreach ($line in $collector.SnapshotLines()) {
-            $o = $null; try { $o = $line | ConvertFrom-Json -ErrorAction Stop } catch { }
-            if ($o -and $o.event -eq 'probe') { $o }
-        })
+# -AppProbe (1.2.0): FastPDF with FASTPDF_BENCH=1 prints where its frame counters are
+#   {"event":"frame_counters","address":"0x...","layout":"fastpdf-frame-counters/1"}
+# and bench-app reads them with ReadProcessMemory before and after a window: nothing runs in the app.
+$FrameCountersLayout = 'fastpdf-frame-counters/1'
+
+function Get-FrameCounterAddress($collector) {
+    foreach ($line in $collector.SnapshotLines()) {
+        if ($line.IndexOf('"frame_counters"', [StringComparison]::Ordinal) -lt 0) { continue }
+        $o = $null; try { $o = $line | ConvertFrom-Json -ErrorAction Stop } catch { }
+        if ($o -and $o.event -eq 'frame_counters' -and $o.layout -eq $FrameCountersLayout -and "$($o.address)" -match '^0x[0-9a-fA-F]{1,16}$') {
+            $address = [int64]0
+            if ([int64]::TryParse($o.address.Substring(2), [Globalization.NumberStyles]::HexNumber, $null, [ref]$address) -and $address -gt 0) { return $address }
+        }
+    }
+    return $null
 }
 
-function Get-AppProbeResult($collector, [bool]$start, [bool]$end) {
-    # Probe lines are JSON with "event":"probe" (see README, "-AppProbe"); the last two bracket the idle window.
-    $res = [ordered]@{ signalled_start = $start; signalled_end = $end }
-    if (-not ($start -or $end)) { $res.note = 'no probe event (Local\FastPdfBenchProbe-<pid>) in the app'; return $res }
-    $probes = @(Get-ProbeLines $collector)
-    if ($probes.Count -eq 0) { $res.note = 'no probe lines on stdout (needs -CaptureStdout)'; return $res }
-    $res.last = $probes[-1]
-    if ($probes.Count -ge 2) {
-        $first = $probes[-2]; $res.first = $first
-        $delta = [ordered]@{}
-        foreach ($pp in $probes[-1].PSObject.Properties) {
-            $old = $first.PSObject.Properties[$pp.Name]
-            $isNum = { param($v) $v -is [long] -or $v -is [int] -or $v -is [double] -or $v -is [decimal] }
-            if ($old -and (& $isNum $pp.Value) -and (& $isNum $old.Value)) { $delta[$pp.Name] = [math]::Round([double]$pp.Value - [double]$old.Value, 3) }
-        }
-        $res.delta = $delta
+# Frames the app drew between two counter readings ($null when either reading failed).
+function Get-FrameDelta($before, $after) {
+    if ($null -eq $before -or $null -eq $after) { return $null }
+    [ordered]@{ render = $after[0] - $before[0]; prepaint = $after[1] - $before[1]; paint = $after[2] - $before[2]; wake = $after[3] - $before[3] }
+}
+
+# Summary markers: an idle window must not contain FastPDF frames (render or paint > 0).
+function Get-AppFramesMarker($runs, [string]$phase) {
+    $frames = @(foreach ($r in $runs) { $block = $r.$phase; if ($block -and $block.app_frames) { $block.app_frames } })
+    if ($frames.Count -eq 0) { return $null }
+    $drawn = @($frames | Where-Object { [double]$_.render -gt 0 -or [double]$_.paint -gt 0 })
+    [ordered]@{
+        status           = if ($drawn.Count) { 'frames_while_idle' } else { 'ok' }
+        runs             = $frames.Count
+        runs_with_frames = $drawn.Count
+        render_max       = ($frames | ForEach-Object { [double]$_.render } | Measure-Object -Maximum).Maximum
+        paint_max        = ($frames | ForEach-Object { [double]$_.paint } | Measure-Object -Maximum).Maximum
+        wake_max         = ($frames | ForEach-Object { [double]$_.wake } | Measure-Object -Maximum).Maximum
     }
-    return $res
+}
+
+# Positive control: input must make the counters move. $null when no run read them during input.
+function Get-InputFramesSeen($runs) {
+    $seen = $null
+    foreach ($r in $runs) {
+        foreach ($kind in 'scroll', 'pagedown', 'zoom') {
+            $x = $r.$kind
+            if (-not $x -or -not $x.app_frames) { continue }
+            if ($null -eq $seen) { $seen = $false }
+            if ([double]$x.app_frames.render -gt 0) { $seen = $true }
+        }
+    }
+    return $seen
+}
+
+function Write-AppFramesWarnings($summary, [string]$scenario) {
+    if ($summary.Contains('input.app_frames_seen') -and -not $summary['input.app_frames_seen']) {
+        Write-Warning "${scenario}: the frame counters did not move during input, so they are not counting and zero idle frames prove nothing."
+    }
+    foreach ($phase in 'idle', 'post_interaction_idle') {
+        $m = $summary["$phase.app_frames"]
+        if ($m -and $m.status -ne 'ok') {
+            Write-Warning ("{0}: FastPDF drew frames during {1} in {2} of {3} run(s) (render max {4}, paint max {5}); an idle reader should draw none. See $phase.app_frames in the runs." -f $scenario, $phase, $m.runs_with_frames, $m.runs, $m.render_max, $m.paint_max)
+        }
+    }
 }
 
 function Get-ThreadCensus($rows, [int]$rootPid) {
@@ -442,6 +484,7 @@ function Invoke-Interaction($s, [string]$kind, [System.Diagnostics.Stopwatch]$cl
     $w = 0; $h = 0
     $px = $s.GrabFrame([ref]$w, [ref]$h)
     $base = [FastPdfBench.Img]::Signature($px, $w, $h, 4)
+    $framesBefore = if ($script:FrameCounterAddress) { $s.ReadFrameCounters($script:FrameCounterAddress) } else { $null }
     $before = $s.Sample()
     $start = $clock.Elapsed.TotalMilliseconds + 60
     $cx = [int]($w / 2); $cy = [int]($h / 2)
@@ -464,6 +507,7 @@ function Invoke-Interaction($s, [string]$kind, [System.Diagnostics.Stopwatch]$cl
     $rec = $s.Record($base, $o)
     $pb.Join()
     $after = $s.Sample()
+    $framesAfter = if ($script:FrameCounterAddress) { $s.ReadFrameCounters($script:FrameCounterAddress) } else { $null }
     $sent = @($pb.SentAt)
     $firstIdx = 0
     for ($i = 0; $i -lt $steps.Count; $i++) { if ($steps[$i].Msg -ne [FastPdfBench.Native]::WM_MOUSEMOVE) { $firstIdx = $i; break } }
@@ -492,6 +536,8 @@ function Invoke-Interaction($s, [string]$kind, [System.Diagnostics.Stopwatch]$cl
         private_mb_after          = [math]::Round($after.Private / 1MB, 1)
         stable                    = $rec.Stable; timed_out = $rec.TimedOut
     }
+    # Frames the app drew for this input: the -AppProbe counters must move here, or they are not counting.
+    if ($script:FrameCounterAddress) { $r.app_frames = Get-FrameDelta $framesBefore $framesAfter }
     $r.screenshot = Save-Shot $rec.Final $rec.FinW $rec.FinH "r$($script:RunIndex)-after-$kind"
     return $r
 }
@@ -500,6 +546,7 @@ function Invoke-Interaction($s, [string]$kind, [System.Diagnostics.Stopwatch]$cl
 function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
     $script:RunIndex = $index
     $script:OverheadPerS = $null
+    $script:FrameCounterAddress = $null
     Use-LaunchBudget "$Label/$Scenario run $index$(if ($warmup) {' (warmup)'})"
     $run = [ordered]@{ index = $index; warmup = $warmup; started = (Get-Date).ToString('o'); cache_state = $CacheState }
     try { $run.cpu_load_pct_before = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average } catch { }
@@ -576,9 +623,15 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
         }
 
         Start-Sleep -Milliseconds 1000
-        # -AppProbe: the app reports its counters now and again after the window (its work stays outside it).
-        $probeStart = $false; $probeEnd = $false
-        if ($AppProbe) { $probeStart = [FastPdfBench.AppProbe]::Signal($p.Id); Start-Sleep -Milliseconds 200 }
+        # -AppProbe: frame counters read right around the window (reading runs nothing in the app).
+        $counters = $null
+        if ($cfg.probe) {
+            $counters = Get-FrameCounterAddress $collector
+            $script:FrameCounterAddress = $counters
+            $run.app_probe = [ordered]@{ layout = if ($counters) { $FrameCountersLayout } else { $null }
+                note = if ($counters) { 'frame counters read with ReadProcessMemory around each idle window and each input' } else { 'no frame_counters line on stdout (needs a FastPDF build with frame counters and FASTPDF_BENCH=1)' } }
+        }
+        $framesA = if ($counters) { $s.ReadFrameCounters($counters) } else { $null }
         $a = $s.Sample()
         $sysA = [FastPdfBench.SysCpu]::Now()
         # Diagnostics never fail the run: their errors are recorded next to their results.
@@ -586,6 +639,7 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
         if ($ThreadDetail) { try { $thrA = [FastPdfBench.ThreadProbe]::Snapshot([Collections.Generic.HashSet[int]]@($s.RefreshTree())) } catch { $thrError = "$_" } }
         Start-Sleep -Seconds $IdleSeconds
         $b = $s.Sample()
+        $framesB = if ($counters) { $s.ReadFrameCounters($counters) } else { $null }
         $sysB = [FastPdfBench.SysCpu]::Now()
         if ($ThreadDetail -and $thrA) { try { $thrB = [FastPdfBench.ThreadProbe]::Snapshot([Collections.Generic.HashSet[int]]@($s.RefreshTree())) } catch { $thrError = "$_" } }
         $run.idle = Convert-Sample $b
@@ -597,6 +651,10 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
         Add-MemoryFields $run.idle $b
         # Background load: share of all logical CPUs busy during the window (the app's own share included).
         $run.idle.system_cpu_busy_pct = [math]::Round([FastPdfBench.SysCpu]::BusyPct($sysA, $sysB), 1)
+        if ($counters) {
+            $run.idle.app_frames = Get-FrameDelta $framesA $framesB
+            if ($null -eq $run.idle.app_frames) { $run.idle.app_frames_error = 'frame counters could not be read' }
+        }
         if ($ThreadDetail) {
             if ($thrA -and $thrB) {
                 try {
@@ -608,18 +666,12 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
                 $run.idle.threads_detail = [ordered]@{ error = $why }
             }
         }
-        # Read the memory map before the app's probe runs (its heap walk allocates a little).
         if ($MemoryDetail) {
             try {
                 $reports = @(foreach ($tp in @($s.RefreshTree())) { [FastPdfBench.MemoryMap]::Classify($tp) })
                 if ($reports.Count -eq 1) { $run.idle.memory_detail = Convert-MemoryReport $reports[0] }
                 else { $run.idle.memory_detail = [ordered]@{ processes = @($reports | ForEach-Object { Convert-MemoryReport $_ }) } }
             } catch { $run.idle.memory_detail = [ordered]@{ error = "$_" } }
-        }
-        if ($AppProbe) {
-            $probeEnd = [FastPdfBench.AppProbe]::Signal($p.Id)
-            Start-Sleep -Milliseconds 300
-            $run.idle.app_probe = Get-AppProbeResult $collector $probeStart $probeEnd
         }
 
         # Observer-effect calibration: capture only (same cadence as the interaction recordings), no input.
@@ -643,19 +695,22 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
         if ($doInput -and $ZoomSteps -gt 0) { $run.zoom = Invoke-Interaction $s 'zoom' $clock }
         if ($doInput -and ($ScrollNotches + $PageDowns + $ZoomSteps) -gt 0 -and $PostIdleSeconds -gt 0) {
             Start-Sleep -Milliseconds 500
+            $framesC0 = if ($counters) { $s.ReadFrameCounters($counters) } else { $null }
             $c0 = $s.Sample(); Start-Sleep -Seconds $PostIdleSeconds; $c1 = $s.Sample()
+            $framesC1 = if ($counters) { $s.ReadFrameCounters($counters) } else { $null }
             $run.post_interaction_idle = [ordered]@{ seconds = $PostIdleSeconds; cpu_ms = [math]::Round(($c1.Cpu100ns - $c0.Cpu100ns) / 1e4, 1); private_mb = [math]::Round($c1.Private / 1MB, 1); ws_mb = [math]::Round($c1.WorkingSet / 1MB, 1) }
             Add-MemoryFields $run.post_interaction_idle $c1
-        }
-        if ($AppProbe -and $doInput -and ($ScrollNotches + $PageDowns + $ZoomSteps) -gt 0) {
-            # One more report after the interactions (e.g. the app's frame pacing during them).
-            if ([FastPdfBench.AppProbe]::Signal($p.Id)) {
-                Start-Sleep -Milliseconds 300
-                $after = @(Get-ProbeLines $collector)
-                if ($after.Count -gt 0) { $run.post_interaction_probe = $after[-1] }
+            if ($counters) {
+                $run.post_interaction_idle.app_frames = Get-FrameDelta $framesC0 $framesC1
+                if ($null -eq $run.post_interaction_idle.app_frames) { $run.post_interaction_idle.app_frames_error = 'frame counters could not be read' }
             }
         }
         $last = $s.Sample()
+        if ($counters) {
+            # Totals since the process started, a sanity check that the counters move at all.
+            $total = $s.ReadFrameCounters($counters)
+            if ($total) { $run.app_probe.counters_total = [ordered]@{ render = $total[0]; prepaint = $total[1]; paint = $total[2]; wake = $total[3] } }
+        }
         $run.peak = [ordered]@{ private_mb_sum = [math]::Round($s.PeakPrivateSum / 1MB, 1); ws_mb_sum = [math]::Round($s.PeakWsSum / 1MB, 1)
             peak_ws_single_process_mb = [math]::Round($last.PeakWorkingSetMax / 1MB, 1); max_processes = $s.PeakProcessCount; note = 'sampled every ~250 ms while recording + at idle/interaction boundaries' }
         # 1.1.0: peaks of the tree sums of the PROCESS_MEMORY_COUNTERS_EX2 values (same sampling as above).
@@ -710,6 +765,13 @@ function Get-Summary($runList) {
         $med = if ($v.Count % 2) { $v[[int][math]::Floor($v.Count / 2)] } else { ($v[$v.Count / 2 - 1] + $v[$v.Count / 2]) / 2 }
         $out[$g.Name] = [ordered]@{ median = [math]::Round($med, 1); min = [math]::Round($v[0], 1); max = [math]::Round($v[-1], 1); n = $v.Count }
     }
+    # 1.2.0: idle windows must not contain FastPDF frames (see README, "-AppProbe").
+    foreach ($phase in 'idle', 'post_interaction_idle') {
+        $marker = Get-AppFramesMarker $ok $phase
+        if ($marker) { $out["$phase.app_frames"] = $marker }
+    }
+    $inputSeen = Get-InputFramesSeen $ok
+    if ($null -ne $inputSeen) { $out['input.app_frames_seen'] = $inputSeen }
     return $out
 }
 
@@ -731,7 +793,7 @@ function Get-MachineInfo {
 # ---------------------------------------------------------------- main
 if ($script:ResummarizeOnly) {
     $docR = Get-Content $OutFile -Raw | ConvertFrom-Json
-    foreach ($sc in $docR.scenarios) { $sc.summary = Get-Summary @($sc.runs) }
+    foreach ($sc in $docR.scenarios) { $sc.summary = Get-Summary @($sc.runs); Write-AppFramesWarnings $sc.summary $sc.name }
     $docR | ConvertTo-Json -Depth 14 | Set-Content $OutFile -Encoding utf8
     Write-Host "re-summarized $OutFile ($(@($docR.scenarios).Count) scenario(s))"
     return
@@ -774,7 +836,9 @@ try {
             try { Remove-Item -Recurse -Force $profileDir -ErrorAction Stop } catch { Write-Warning "could not remove temp profile $profileDir : $_" }
         }
         $msg = if ($r.error) { "  error: $($r.error)" } else {
-            "  window {0} ms, first non-blank {1} ms, visually complete {2} ms, idle private {3} MB (private WS {5} MB), idle CPU {4} ms" -f $r.t_window_ms, $r.launch.t_first_nonblank_ms, $r.launch.t_visual_complete_ms, $r.idle.private_mb, $r.idle.cpu_ms, $r.idle.private_ws_mb
+            $line = "  window {0} ms, first non-blank {1} ms, visually complete {2} ms, idle private {3} MB (private WS {5} MB), idle CPU {4} ms" -f $r.t_window_ms, $r.launch.t_first_nonblank_ms, $r.launch.t_visual_complete_ms, $r.idle.private_mb, $r.idle.cpu_ms, $r.idle.private_ws_mb
+            if ($r.idle.app_frames) { $line += ", idle frames render {0} paint {1}" -f $r.idle.app_frames.render, $r.idle.app_frames.paint }
+            $line
         }
         Write-Host $msg
         Start-Sleep -Seconds 2
@@ -798,7 +862,7 @@ $scenarioObj = [ordered]@{
     pdf = if ($PdfPath) { [ordered]@{ path = (Get-RelPath $PdfPath); bytes = (Get-Item $PdfPath).Length } } else { $null }
     config = [ordered]@{ runs = $Runs; warmup_runs = $WarmupRuns; idle_seconds = $IdleSeconds; stable_frames = $StableFrames; quiet_ms = $QuietMs
         scroll_notches = $ScrollNotches; pagedowns = $PageDowns; zoom_steps = $ZoomSteps; cache_state = $CacheState; capture = 'PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT), 4px grid'
-        affinity_mask = if ($null -ne $AffinityMask) { '0x{0:X}' -f $AffinityMask } else { $null }; thread_detail = [bool]$ThreadDetail; memory_detail = [bool]$MemoryDetail; app_probe = [bool]$AppProbe }
+        affinity_mask = if ($null -ne $AffinityMask) { '0x{0:X}' -f $AffinityMask } else { $null }; thread_detail = [bool]$ThreadDetail; memory_detail = [bool]$MemoryDetail; app_probe = [bool]$cfg.probe }
     summary = Get-Summary $results.ToArray()
     runs = $results.ToArray()
 }
@@ -813,9 +877,13 @@ $doc.scenarios = @($doc.scenarios) + @($scenarioObj)
 $doc | ConvertTo-Json -Depth 14 | Set-Content $OutFile -Encoding utf8
 Write-Host "wrote $OutFile"
 $sum = $scenarioObj.summary
-foreach ($k in 't_window_ms', 'launch.t_first_nonblank_ms', 'launch.t_visual_complete_ms', 'open.t_visual_complete_ms', 'idle.private_mb', 'idle.ws_mb', 'idle.private_ws_mb', 'idle.commit_charge_mb', 'idle.cpu_ms', 'idle.system_cpu_busy_pct', 'idle.threads_detail.main_switches_per_s', 'idle.threads_detail.vsync_switches_per_s', 'peak.private_mb_sum', 'scroll.latency_first_change_ms', 'scroll.settle_after_last_input_ms', 'zoom.latency_first_change_ms') {
+foreach ($k in 't_window_ms', 'launch.t_first_nonblank_ms', 'launch.t_visual_complete_ms', 'open.t_visual_complete_ms', 'idle.private_mb', 'idle.ws_mb', 'idle.private_ws_mb', 'idle.commit_charge_mb', 'idle.cpu_ms', 'idle.system_cpu_busy_pct', 'idle.threads_detail.main_switches_per_s', 'idle.threads_detail.vsync_switches_per_s', 'idle.app_frames.render', 'idle.app_frames.paint', 'post_interaction_idle.app_frames.render', 'post_interaction_idle.app_frames.paint', 'peak.private_mb_sum', 'scroll.latency_first_change_ms', 'scroll.settle_after_last_input_ms', 'zoom.latency_first_change_ms') {
     if ($sum.Contains($k)) { Write-Host ("  {0,-36} median {1,8}  [{2} .. {3}] n={4}" -f $k, $sum[$k].median, $sum[$k].min, $sum[$k].max, $sum[$k].n) }
 }
+foreach ($k in 'idle.app_frames', 'post_interaction_idle.app_frames') {
+    if ($sum.Contains($k)) { Write-Host ("  {0,-36} {1} ({2} of {3} run(s) drew frames)" -f $k, $sum[$k].status, $sum[$k].runs_with_frames, $sum[$k].runs) }
+}
+Write-AppFramesWarnings $sum $Scenario
 Remove-Item ($OutFile + '.lastruns.tmp.json') -ErrorAction SilentlyContinue
 } catch {
     Write-Host "post-processing failed: $($_.Exception.GetType().FullName): $($_.Exception.Message)"

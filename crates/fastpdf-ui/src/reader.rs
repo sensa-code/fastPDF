@@ -442,6 +442,7 @@ impl ReaderView {
 
     /// Something finished in the background (tiles, evictions, search).
     fn on_wake(&mut self, cx: &mut Context<'_, Self>) {
+        self.report(BenchEvent::Wake);
         // Work happened, so let the memory monitor sample (rate limited).
         if let Some(relief) = self.memory.poll()
             && relief.freed > 0
@@ -1169,6 +1170,7 @@ pub(crate) fn display_name(path: &Path) -> String {
 
 impl Render for ReaderView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        self.report(BenchEvent::Render);
         self.render_started = Some(Instant::now());
         self.frame_seq = self.frame_seq.wrapping_add(1);
         // Every frame: a system theme switch arrives as a window appearance

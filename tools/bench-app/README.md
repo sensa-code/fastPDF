@@ -87,7 +87,7 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
 | `-Affinity <mask>` | 無 | 1.1.0。process 啟動後立刻設定 `ProcessorAffinity`（`0x55` 這類十六進位或十進位），用來近似核心數較少的機器。之後建立的 thread 與子 process 會繼承。只能指定第一個 processor group（前 64 個邏輯 CPU） |
 | `-ThreadDetail` | 關 | 1.1.0。idle 期間逐條 thread 的 CPU cycles 與 context switch（見〈Idle 診斷〉） |
 | `-MemoryDetail` | 關 | 1.1.0。idle 結束時以 `VirtualQueryEx` 分類 committed memory，並把 working set 依同樣的類別拆開（見〈Idle 診斷〉） |
-| `-AppProbe` | 關 | 1.1.0。idle 前後（有互動時再加一次互動後）通知 app 自報計數（見〈-AppProbe 協定〉），需要 `-CaptureStdout` |
+| `-AppProbe` | preset `fastpdf` 開啟，其他關閉 | 1.2.0 起改為讀 FastPDF 的 frame 計數，在 idle 窗口、互動後 idle 窗口與每項互動的前後讀取（見〈-AppProbe：FastPDF 的 frame 計數〉）。會一併開啟 `-CaptureStdout` |
 | `-TopThreads` | 20 | `-ThreadDetail` 列出的 thread 數 |
 
 ---
@@ -115,6 +115,7 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
 | `peak.private_ws_mb_sum` / `peak.commit_charge_mb_sum` | 1.1.0。與 `peak.*` 同樣取樣方式下，上面兩個值的 tree 總和最大值 |
 | `post_interaction_idle.private_ws_mb` 等 | 1.1.0。互動後 idle 的同一組三個欄位 |
 | `affinity`、`config.affinity_mask` | 1.1.0。`-Affinity` 的 mask、邏輯 CPU 數、設定完成的時間點（ms） |
+| `idle.app_frames`、`post_interaction_idle.app_frames`、`app_probe` | 1.2.0。窗口內 FastPDF 的 render、prepaint、paint、wake 次數（見〈-AppProbe：FastPDF 的 frame 計數〉）。summary 中同名的 `idle.app_frames` 是判定標記 |
 | `peak.*` | 錄影期間約每 250 ms 取樣一次，加上各階段邊界的取樣，取 tree 總和的最大值 |
 | `capture_overhead` | 校正用：只截圖、不送輸入約 2.5 秒，期間目標 app 消耗的 CPU（ms/s）。互動的 `cpu_ms_net_of_capture` 已扣除這個量 |
 | `scroll/pagedown/zoom.*` | `latency_first_change_ms` 是第一個輸入送出到畫面第一次變化；`settle_after_last_input_ms` 是最後一個輸入到最後一次變化；`changed_frames_per_s_during_input` 是輸入期間每秒有變化的截圖數（上限約等於截圖頻率）；`effect=false` 表示輸入沒有造成任何畫面變化，**這類 run 不列入 summary**，但保留在原始資料中 |
@@ -130,11 +131,14 @@ app 以 `FASTPDF_BENCH=1` 啟動時，每個里程碑在 stdout 印一行 JSON�
 ```text
 {"event":"process_start","t_ms":0.000}
 {"event":"main","t_ms":14.210}
+{"event":"frame_counters","address":"0x7ff6d2c41a08","layout":"fastpdf-frame-counters/1"}
 {"event":"window_visible","t_ms":171.902}
 {"event":"first_paint","t_ms":189.334}
 {"event":"document_opened","t_ms":192.017}
 {"event":"first_page_exact","t_ms":236.551}
 ```
+
+`frame_counters` 沒有 `t_ms`，它告訴 `-AppProbe` 計數器在哪裡（見〈-AppProbe：FastPDF 的 frame 計數〉）。
 
 工具的處理方式：
 - 每一行都會記錄收到時的 host 時間（`events[].host_ms`）；
@@ -180,18 +184,37 @@ idle 結束時以 `VirtualQueryEx` 走過整個位址空間，把 committed 的 
 
 - `private_commit_mb` 是所有 `MEM_PRIVATE` 的合計；加上 `image` 的 commit 後，應接近 `idle.private_mb`。差額是 page table 等 kernel 端的 commit。
 - `private_ws_mb` 是 `QueryWorkingSet` 中 private 頁的合計，應接近 `idle.private_ws_mb`。
-- **限制：segment heap**。GPUI 的 manifest（gpui 的 `windows-manifest` feature）讓 process 使用 segment heap，FastPDF 也是。segment heap 的 segment 與大型區塊從外部無法和其他 `VirtualAlloc` 記憶體區分，所以會被歸到 `other_private`，`heap` 只剩 heap 本身的管理結構。要拆出 heap，需要 app 用 `-AppProbe` 自報 `HeapSummary`（見下一節）。
+- **限制：segment heap**。GPUI 的 manifest（gpui 的 `windows-manifest` feature）讓 process 使用 segment heap，FastPDF 也是。segment heap 的 segment 與大型區塊從外部無法和其他 `VirtualAlloc` 記憶體區分，所以會被歸到 `other_private`，`heap` 只剩 heap 本身的管理結構。要拆出 heap，需要在 app 內呼叫 `HeapSummary`；第六輪是用 scratch 的 instrumentation 做的（`docs/benchmarks/b8-app.md`〈Idle RAM 拆解〉），正式的 FastPDF 沒有這個功能。
 - `largest_other_private`：`other_private` 中最大的 allocation（位址、大小、保護屬性），用來找來源。
 
-### -AppProbe 協定（1.1.0）
+### -AppProbe：FastPDF 的 frame 計數（1.2.0）
 
-- 想自報計數的 app 建立 auto-reset event `Local\FastPdfBenchProbe-<pid>`，每次被 signal 就在 stdout 印一行 JSON：`{"event":"probe","t_ms":...,"<名稱>":<數字>,...}`。
-- bench-app 在 idle 窗口開始前與結束後各 signal 一次，有互動時在互動與互動後 idle 結束時再 signal 一次。app 的回報工作因此落在 idle 窗口之外。
-- 輸出：
-  - `idle.app_probe.first`、`last`：idle 前後的兩行；
-  - `idle.app_probe.delta`：兩行之間每個數字欄位的差，例如 idle 期間 render 被呼叫的次數；
-  - `post_interaction_probe`：互動後的最後一行。
-- 沒有這個 event 的 app（例如目前的 FastPDF、競品）不受影響：`signalled_start = false`。
+用途：自動檢查「idle 時 FastPDF 不畫 frame」（`benchmarks/README.md` 的 Idle CPU 定義中「FastPDF 端」的條件）。
+
+- **FastPDF 端**（`crates/fastpdf-app/src/bench.rs`）：
+  - 只在 `FASTPDF_BENCH=1` 時啟用。這時 UI 把每次 render（root view）、prepaint 與 paint（文件 canvas）、wake（背景工作喚醒 UI）交給 bench hook，hook 把它們累加到一塊固定版面的計數器；
+  - 啟動時在 stdout 印出計數器的位址：`{"event":"frame_counters","address":"0x...","layout":"fastpdf-frame-counters/1"}`；
+  - 計數器版面：8 bytes 的 `FPDFFRC1`，接著 render、prepaint、paint、wake 各一個 little-endian `u64`，共 40 bytes；
+  - 沒有 thread、timer、event，也不會為了回報而輸出或醒來。沒有 `FASTPDF_BENCH` 時不建立 hook，什麼都不計、不印。
+- **bench-app 端**：
+  - 從 stdout 找到 `frame_counters` 那一行，在 idle 窗口、互動後 idle 窗口與每項互動（滾輪、PageDown、縮放）的開始與結束時，各用 `ReadProcessMemory` 讀一次計數器；
+  - 讀取完全在 FastPDF 外部進行，不會在 FastPDF 裡執行任何程式，也就不影響量測。
+- **輸出**：
+  - `app_probe`：`layout` 與說明；找不到 `frame_counters` 時 `layout` 為 null（例如舊版 FastPDF 或其他 app）。`counters_total` 是 run 結束時從啟動起累計的次數；
+  - `idle.app_frames`、`post_interaction_idle.app_frames`：窗口內的 render、prepaint、paint、wake 次數；
+  - `scroll.app_frames`、`pagedown.app_frames`、`zoom.app_frames`：每項互動期間的次數；
+  - 讀不到計數器時改記 `idle.app_frames_error`；
+  - summary 另有標記：
+    - `idle.app_frames`、`post_interaction_idle.app_frames`：`status` 為 `ok` 或 `frames_while_idle`，加上 run 數、畫了 frame 的 run 數，以及各計數的最大值；
+    - `input.app_frames_seen`：互動期間計數器有沒有動。
+- **判定與警告**（執行結束時印出，`-Resummarize` 也會）：
+  - 任何一次 run 在窗口內的 render 或 paint 不為 0，`status` 就是 `frames_while_idle`，並印出警告；
+  - wake 不為 0、但 render 與 paint 為 0 時，表示背景工作在窗口內完成但沒有改變畫面，不算畫 frame；
+  - **自我檢查**：有互動的 run 中，互動期間的 render 一次都沒有增加時（`input.app_frames_seen = false`），表示計數器根本沒在計數，idle 的 0 沒有意義，也會印出警告。
+- **解讀**：
+  - 回歸的典型樣子是每次 run 都有、而且次數很多：持續的動畫每秒數十次（60 Hz 下 10 秒約 600 次；bench-app 不把視窗移到前景，GPUI 對非焦點視窗限制在約 30 fps，所以大約減半）；
+  - 偶爾 1 次 render＋paint、wake 為 0，可能來自外部事件：其他視窗搶走焦點（activation 改變）、系統設定變更的廣播、使用者的滑鼠經過視窗。這類情況要看同一次 run 的時間點再判斷；
+  - 窗口內不能有輸入。bench-app 自己只在互動階段送輸入，idle 窗口內不送。
 
 ---
 
@@ -290,9 +313,10 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Scenario launch-empty 
   - `fastpdf_bench.events_t_ms.first_page_exact`（app 自報）；
   - `launch.t_visual_complete_ms`（外部截圖）；
   - `idle.private_ws_mb`（Idle RAM KPI，目標 < 50 MB），以及 `idle.private_mb`（commit）、`idle.ws_mb`；
-  - `idle.cpu_pct_of_one_core`（Idle CPU KPI，目標約 0），加上 `-ThreadDetail` 時的 `idle.threads_detail.*_switches_per_s`。
+  - `idle.cpu_pct_of_one_core`（Idle CPU KPI，目標約 0），加上 `-ThreadDetail` 時的 `idle.threads_detail.*_switches_per_s`；
+  - `idle.app_frames`、`post_interaction_idle.app_frames`（1.2.0，preset `fastpdf` 預設讀取）：idle 時 FastPDF 不能畫 frame，summary 的同名標記必須是 `ok`。
   - KPI 的定義、量測時點與報告方式見 `benchmarks/README.md`〈App 層 KPI 定義〉。
-- 尚未驗證的部分：posted 的 `WM_KEYDOWN`（PageDown）與 Ctrl+滾輪在 FastPDF 視窗不在前景時是否有效。GPUI 會處理 posted 的滑鼠與鍵盤訊息，Ctrl 狀態由工具注入。如果 `effect=false`，請先確認 FastPDF 的 keybinding 是否已綁定。
+- 視窗不在前景時，posted 的 `WM_KEYDOWN`（PageDown）與 Ctrl+滾輪都有效：1.2.0 實測 `pagedown.app_frames`、`zoom.app_frames` 的 render 不為 0（`docs/benchmarks/b8-app.md`〈後續〉第 5 點）。GPUI 會處理 posted 的滑鼠與鍵盤訊息，Ctrl 狀態由工具注入。如果 `effect=false`，請先確認 FastPDF 的 keybinding 是否已綁定。
 
 ---
 

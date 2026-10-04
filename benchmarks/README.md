@@ -72,9 +72,14 @@ cargo run --release -p fastpdf-bench -- corpus fixtures/generated/manifest.json 
   - 每秒被喚醒的次數（context switch／秒）和 `QueryThreadCycleTime` 的 cycles 才看得出週期性喚醒；
   - 週期性喚醒會隨螢幕更新率等比放大（144 Hz、240 Hz），在筆電上也會妨礙 CPU 進入省電狀態。
 - **GPU driver 自己的 thread 不列入判定**，但要報告。本機 NVIDIA D3D11 driver 有一條 thread 固定每秒醒來 60 次，不論 GPUI 或 FastPDF 做什麼。
+- **FastPDF 端的判定（回歸防線）**：idle 窗口內 FastPDF 不畫任何 frame。
+  - 條件：每次 run 的 `idle.app_frames.render` 與 `idle.app_frames.paint` 都是 0；互動後回到 idle 的窗口（`post_interaction_idle.app_frames`）也一樣。
+  - 量法：bench-app 1.2.0 的 `-AppProbe`（preset `fastpdf` 預設開啟）在窗口前後讀 FastPDF 的 frame 計數（需要 `FASTPDF_BENCH=1`，preset 會設定）。不為 0 時，summary 的 `idle.app_frames` 標成 `frames_while_idle`，並印出警告。
+  - 這一條和上面兩個條件分開判定：GPUI 的 vsync 迴圈每秒喚醒主執行緒，但不會讓 FastPDF render，所以 GPUI 沒有 patch 時上面兩條不會成立，這一條卻必須成立。讓它失敗的修改就是 regression。
+  - 偶爾 1 次 render＋paint、wake 為 0，可能來自視窗 activation 改變或系統廣播，要看當次 run 再判斷；持續的 frame（例如每秒數十次）一定是 regression。細節見 `tools/bench-app/README.md`〈-AppProbe：FastPDF 的 frame 計數〉。
 - **歸因**：
   - `-ThreadDetail` 列出每條 thread 的 cycles 與喚醒次數；
-  - 有 probe 的 build 加上 `-AppProbe`，確認 idle 期間 view 的 render、prepaint、paint 次數為 0（見 `docs/benchmarks/b8-app.md`）。
+  - `-AppProbe` 的 `idle.app_frames` 分出 FastPDF 自己的 frame（render、prepaint、paint）與背景工作的喚醒（wake）。
 
 ### 何時量
 
