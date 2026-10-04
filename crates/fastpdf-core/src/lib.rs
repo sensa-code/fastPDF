@@ -8,6 +8,7 @@
 pub mod keymap;
 pub mod loader;
 pub mod memory;
+pub mod paths;
 pub mod recent;
 pub mod selection;
 pub mod session;

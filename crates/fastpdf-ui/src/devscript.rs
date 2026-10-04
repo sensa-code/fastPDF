@@ -141,7 +141,7 @@ fn parse_step(step: &str) -> Option<Step> {
 /// The command called `name` (the `ReaderCommand` variant name).
 fn command_named(name: &str) -> Option<ReaderCommand> {
     use ReaderCommand as C;
-    const ALL: [ReaderCommand; 28] = [
+    const ALL: [ReaderCommand; 29] = [
         C::OpenFile,
         C::CloseDocument,
         C::Quit,
@@ -167,6 +167,7 @@ fn command_named(name: &str) -> Option<ReaderCommand> {
         C::ToggleFullscreen,
         C::ToggleSidebar,
         C::ToggleDevOverlay,
+        C::ToggleNightMode,
         C::Copy,
         C::SelectAll,
         C::Cancel,

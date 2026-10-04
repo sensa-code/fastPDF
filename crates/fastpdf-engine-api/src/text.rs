@@ -18,6 +18,26 @@ pub struct TextSpan {
     pub char_bounds: Vec<PageRect>,
 }
 
+impl TextSpan {
+    pub fn char_count(&self) -> usize {
+        self.text.chars().count()
+    }
+
+    /// Box of the `index`-th `char`: its entry in `char_bounds`, or — when
+    /// the engine only provides span geometry (or omitted evenly spaced
+    /// boxes to save memory) — an even split of the span box. Selection,
+    /// search highlights and copy all use this, so they always agree.
+    pub fn char_rect(&self, index: usize) -> PageRect {
+        if let Some(r) = self.char_bounds.get(index) {
+            return *r;
+        }
+        let n = self.char_count().max(1) as f32;
+        let w = self.bounds.width() / n;
+        let x0 = self.bounds.x0 + w * index as f32;
+        PageRect::new(x0, self.bounds.y0, x0 + w, self.bounds.y1)
+    }
+}
+
 impl TextLayer {
     pub fn new(page: PageIndex) -> Self {
         Self {

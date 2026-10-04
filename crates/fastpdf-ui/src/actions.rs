@@ -1,7 +1,6 @@
 //! GPUI actions for [`ReaderCommand`]s, bound from the central keymap table
 //! (`fastpdf_core::keymap::DEFAULT_BINDINGS`, spec §21). No keystroke is
-//! written anywhere else in the UI, except the provisional bindings below
-//! for commands the keymap does not have yet.
+//! written anywhere else in the UI.
 
 use std::rc::Rc;
 
@@ -41,23 +40,12 @@ actions!(
         ToggleFullscreen,
         ToggleSidebar,
         ToggleDevOverlay,
+        ToggleNightMode,
         Copy,
         SelectAll,
         Cancel,
     ]
 );
-
-// Commands the central keymap does not define yet. Each is bound in the
-// reader's context by `provisional_bindings` until `fastpdf_core::keymap`
-// gains it as a `ReaderCommand` (then it moves into the list above and the
-// provisional binding is deleted).
-actions!(fastpdf, [ToggleNightMode]);
-
-/// Keystrokes for the commands above, proposed for `fastpdf_core::keymap`.
-/// `ctrl-i`: night mode inverts the page colors (mnemonic "invert").
-pub(crate) fn provisional_bindings() -> Vec<(&'static str, Box<dyn Action>)> {
-    vec![("ctrl-i", Box::new(ToggleNightMode))]
-}
 
 /// The action dispatched for `command`. Exhaustive on purpose: a new
 /// command does not compile until it has an action.
@@ -89,6 +77,7 @@ fn action_for(command: ReaderCommand) -> Box<dyn Action> {
         C::ToggleFullscreen => Box::new(ToggleFullscreen),
         C::ToggleSidebar => Box::new(ToggleSidebar),
         C::ToggleDevOverlay => Box::new(ToggleDevOverlay),
+        C::ToggleNightMode => Box::new(ToggleNightMode),
         C::Copy => Box::new(Copy),
         C::SelectAll => Box::new(SelectAll),
         C::Cancel => Box::new(Cancel),
@@ -125,11 +114,6 @@ pub fn bind_keys(cx: &mut App) {
             )
         })
         .collect();
-    bindings.extend(
-        provisional_bindings()
-            .into_iter()
-            .filter_map(|(keys, action)| binding(keys, action, KEY_CONTEXT)),
-    );
     bindings.extend(
         crate::text_input::bindings()
             .into_iter()
@@ -184,6 +168,7 @@ macro_rules! all_actions {
                 ToggleFullscreen,
                 ToggleSidebar,
                 ToggleDevOverlay,
+                ToggleNightMode,
                 Copy,
                 SelectAll,
                 Cancel,
@@ -215,25 +200,6 @@ mod tests {
             assert!(
                 binding(keys, action, crate::text_input::EDIT_CONTEXT).is_some(),
                 "{keys} does not parse"
-            );
-        }
-        for (keys, action) in provisional_bindings() {
-            assert!(
-                binding(keys, action, KEY_CONTEXT).is_some(),
-                "{keys} does not parse"
-            );
-        }
-    }
-
-    /// A provisional binding must never take a keystroke from the central
-    /// keymap; once the keymap binds it, the provisional one goes.
-    #[test]
-    fn provisional_bindings_do_not_shadow_the_keymap() {
-        for (keys, _) in provisional_bindings() {
-            assert_eq!(
-                fastpdf_core::keymap::command_for(keys),
-                None,
-                "{keys} is in the keymap now: drop the provisional binding"
             );
         }
     }

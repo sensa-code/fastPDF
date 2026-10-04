@@ -33,6 +33,8 @@ pub enum ReaderCommand {
     ToggleFullscreen,
     ToggleSidebar,
     ToggleDevOverlay,
+    /// Night mode: invert page colors.
+    ToggleNightMode,
     /// Copy the selected text.
     Copy,
     SelectAll,
@@ -105,6 +107,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind("f11", ToggleFullscreen),
         bind("f4", ToggleSidebar),
         bind("ctrl-shift-d", ToggleDevOverlay),
+        bind("ctrl-i", ToggleNightMode),
         bind("ctrl-c", Copy),
         bind("ctrl-a", SelectAll),
         bind("escape", Cancel),

@@ -284,8 +284,7 @@ fn search_layer(layer: &TextLayer, matcher: &Matcher) -> Vec<SearchHit> {
 fn highlight_rects(layer: &TextLayer, chars: &[Option<(usize, usize)>]) -> Vec<PageRect> {
     let mut rects: Vec<(usize, PageRect)> = Vec::new();
     for &(si, ci) in chars.iter().flatten() {
-        let span = &layer.spans[si];
-        let rect = span.char_bounds.get(ci).copied().unwrap_or(span.bounds);
+        let rect = layer.spans[si].char_rect(ci);
         match rects.last_mut() {
             Some((last, r)) if *last == si => *r = r.union(rect),
             _ => rects.push((si, rect)),
@@ -435,6 +434,22 @@ mod tests {
             first_hit.unwrap().rects,
             vec![PageRect::new(70.0, 0.0, 130.0, 12.0)]
         );
+    }
+
+    #[test]
+    fn highlights_split_spans_without_char_geometry() {
+        // Engines may omit evenly spaced char boxes; highlights must still
+        // cover only the match, not the whole line.
+        let layer = TextLayer {
+            page: PageIndex::new(2),
+            spans: vec![fastpdf_engine_api::TextSpan {
+                text: "page 6 needle".into(),
+                bounds: PageRect::new(0.0, 0.0, 130.0, 12.0),
+                char_bounds: Vec::new(),
+            }],
+        };
+        let hits = search_layer(&layer, &Matcher::new("needle", false).unwrap());
+        assert_eq!(hits[0].rects, vec![PageRect::new(70.0, 0.0, 130.0, 12.0)]);
     }
 
     #[test]

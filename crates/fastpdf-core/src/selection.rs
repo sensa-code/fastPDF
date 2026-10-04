@@ -151,15 +151,7 @@ pub fn selected_text_pages<'a>(
 }
 
 fn char_rect(layer: &TextLayer, span: usize, ch: usize) -> PageRect {
-    let s = &layer.spans[span];
-    if let Some(r) = s.char_bounds.get(ch) {
-        return *r;
-    }
-    // Span-level geometry only: split the span box evenly.
-    let n = s.text.chars().count().max(1) as f32;
-    let w = s.bounds.width() / n;
-    let x0 = s.bounds.x0 + w * ch as f32;
-    PageRect::new(x0, s.bounds.y0, x0 + w, s.bounds.y1)
+    layer.spans[span].char_rect(ch)
 }
 
 fn distance(r: PageRect, x: f32, y: f32) -> f32 {

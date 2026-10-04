@@ -326,7 +326,7 @@ impl Settings {
 
 /// `%APPDATA%\FastPDF\settings.toml` (next to the recent-files list).
 pub(crate) fn default_location() -> Option<PathBuf> {
-    fastpdf_core::recent::RecentFiles::default_location().map(|p| p.with_file_name(FILE_NAME))
+    fastpdf_core::paths::config_dir().map(|d| d.join(FILE_NAME))
 }
 
 /// The file's text; `None` when it does not exist.

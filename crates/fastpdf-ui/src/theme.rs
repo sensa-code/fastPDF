@@ -136,7 +136,7 @@ impl PageHighlights {
 /// `255 - c`, which is the guard layer's premultiplied `a - c`).
 pub(crate) fn paper(paper: Rgba8, mode: ColorMode) -> Rgba {
     let c = match mode {
-        ColorMode::Inverted => Rgba8::new(255 - paper.r, 255 - paper.g, 255 - paper.b, paper.a),
+        ColorMode::Inverted => paper.inverted(),
         _ => paper,
     };
     Rgba {

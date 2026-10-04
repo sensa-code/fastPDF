@@ -20,14 +20,7 @@ impl RecentFiles {
     /// `%APPDATA%\FastPDF\recent.txt` on Windows,
     /// `$XDG_CONFIG_HOME/fastpdf/recent.txt` (or `~/.config/...`) elsewhere.
     pub fn default_location() -> Option<PathBuf> {
-        if cfg!(windows) {
-            std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("FastPDF").join("recent.txt"))
-        } else {
-            std::env::var_os("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-                .map(|d| d.join("fastpdf").join("recent.txt"))
-        }
+        crate::paths::config_dir().map(|d| d.join("recent.txt"))
     }
 
     /// Loads the list; a missing or unreadable file yields an empty list.

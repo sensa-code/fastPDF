@@ -24,7 +24,7 @@ use gpui::{
     prelude::FluentBuilder, px, size,
 };
 
-use crate::actions::{KEY_CONTEXT, ToggleNightMode, all_actions};
+use crate::actions::{KEY_CONTEXT, all_actions};
 use crate::bench::{BenchEvent, BenchHook};
 use crate::document::{OpenFailure, OpenedDocument, PendingOpen, open_document_blocking};
 use crate::find::{FindBar, SearchTarget};
@@ -675,6 +675,7 @@ impl ReaderView {
             C::ToggleFullscreen => window.toggle_fullscreen(),
             C::ToggleSidebar => self.toggle_sidebar(window, cx),
             C::ToggleDevOverlay => self.overlay.visible = !self.overlay.visible,
+            C::ToggleNightMode => self.toggle_night_mode(cx),
             C::Find => self.open_find(window, cx),
             C::FindNext => self.find_step(true, window, cx),
             C::FindPrevious => self.find_step(false, window, cx),
@@ -1107,10 +1108,7 @@ impl Render for ReaderView {
                         row.child(self.render_sidebar(view.clone(), cx))
                     })
                     .child(self.render_document_area(view, cx)),
-            )
-            .on_action(cx.listener(|this, _: &ToggleNightMode, _, cx| {
-                this.toggle_night_mode(cx);
-            }));
+            );
         all_actions!(root, cx)
     }
 }

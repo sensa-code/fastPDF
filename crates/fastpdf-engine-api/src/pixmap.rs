@@ -31,6 +31,12 @@ impl Rgba8 {
         Self { r, g, b, a }
     }
 
+    /// The color as [`crate::ColorMode::Inverted`] shows it; the straight-alpha
+    /// counterpart of the guard layer's premultiplied inversion.
+    pub const fn inverted(self) -> Self {
+        Self::new(255 - self.r, 255 - self.g, 255 - self.b, self.a)
+    }
+
     /// Premultiplied bytes in `format` channel order.
     pub fn premultiplied_bytes(self, format: PixelFormat) -> [u8; 4] {
         let pm = |c: u8| ((u16::from(c) * u16::from(self.a) + 127) / 255) as u8;
