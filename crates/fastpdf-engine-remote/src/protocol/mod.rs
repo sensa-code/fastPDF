@@ -201,11 +201,26 @@ pub(crate) struct SectionRef {
     pub(crate) len: u64,
 }
 
+/// Where the host finds the document's bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DocumentRef {
+    /// A read-only section holding a copy (sources without a file).
+    Section(SectionRef),
+    /// A read-only handle to the file itself, duplicated into the host
+    /// (ADR 0008 §1.5): the host reads it, or maps it when it is large and
+    /// not on a network drive.
+    File {
+        handle: u64,
+        len: u64,
+        network: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Open {
     pub(crate) id: u64,
     /// Document bytes; `None` for an empty source.
-    pub(crate) document: Option<SectionRef>,
+    pub(crate) document: Option<DocumentRef>,
     /// Diagnostics only (`DocumentSource::path`).
     pub(crate) path: Option<PathBuf>,
     pub(crate) password: Option<String>,
@@ -361,9 +376,18 @@ pub(crate) fn encode_command(cmd: &Command) -> Result<Vec<u8>> {
             let mut e = Encoder::new(CMD_OPEN);
             e.u64(open.id);
             match open.document {
-                Some(s) => {
+                Some(DocumentRef::Section(s)) => {
                     e.u8(1);
                     put_section(&mut e, s);
+                }
+                Some(DocumentRef::File {
+                    handle,
+                    len,
+                    network,
+                }) => {
+                    e.u8(2);
+                    put_section(&mut e, SectionRef { handle, len });
+                    e.bool(network);
                 }
                 None => e.u8(0),
             }
@@ -481,10 +505,18 @@ pub(crate) fn decode_command(payload: &[u8]) -> Result<Command> {
         }
         CMD_OPEN => {
             let id = d.u64()?;
-            let document = if d.present("document")? {
-                Some(get_section(&mut d)?)
-            } else {
-                None
+            let document = match d.u8()? {
+                0 => None,
+                1 => Some(DocumentRef::Section(get_section(&mut d)?)),
+                2 => {
+                    let SectionRef { handle, len } = get_section(&mut d)?;
+                    Some(DocumentRef::File {
+                        handle,
+                        len,
+                        network: d.bool("network")?,
+                    })
+                }
+                t => return Err(ProtocolError::BadTag("document", t)),
             };
             let path = if d.present("path")? {
                 let n = d.count("path", MAX_PATH_UNITS, 2)?;

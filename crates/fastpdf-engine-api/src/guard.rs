@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{
     CancelToken, ColorMode, DocumentMetadata, DocumentSource, EngineDocument, EngineError,
-    EngineInfo, Link, MemoryPressure, OpenOptions, OutlineItem, PageIndex, PageInfo, PdfEngine,
-    PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
+    EngineInfo, HostStatus, Link, MemoryPressure, OpenOptions, OutlineItem, PageIndex, PageInfo,
+    PdfEngine, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
 };
 
 /// Panics after which a document is considered degraded; the reader core
@@ -113,6 +113,8 @@ impl EngineDocument for GuardedDocument {
         if let Some(info) = read_lock(&self.page_info).get(&page.get()) {
             return Ok(*info);
         }
+        // Only answers are cached: errors, transient ones in particular
+        // (`EngineError::is_transient`), are asked again next time.
         let info = self.call(|| self.inner.page_info(page))?;
         self.limits.check_page_size(info.size)?;
         write_lock(&self.page_info).insert(page.get(), info);
@@ -190,6 +192,10 @@ impl EngineDocument for GuardedDocument {
             self.inner.trim_memory(pressure);
             Ok(())
         });
+    }
+
+    fn host_status(&self) -> Option<HostStatus> {
+        self.call(|| Ok(self.inner.host_status())).ok().flatten()
     }
 }
 
@@ -385,6 +391,71 @@ mod tests {
         doc.render(&req, &mut pm.as_mut(), &CancelToken::new())
             .unwrap();
         assert_eq!(&pm.data()[..4], &[0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn transient_page_info_errors_are_not_cached() {
+        use std::sync::atomic::AtomicU32;
+
+        /// Unavailable the first time, then a Letter page.
+        struct Flaky {
+            calls: AtomicU32,
+        }
+        impl EngineDocument for Flaky {
+            fn page_count(&self) -> u32 {
+                1
+            }
+            fn page_info(&self, _page: PageIndex) -> Result<PageInfo, EngineError> {
+                if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                    Err(EngineError::Unavailable("host restarting".into()))
+                } else {
+                    Ok(PageInfo {
+                        size: PageSize::LETTER,
+                        rotation: Rotation::R0,
+                    })
+                }
+            }
+            fn render(
+                &self,
+                _request: &RenderRequest,
+                _target: &mut PixmapMut<'_>,
+                _cancel: &CancelToken,
+            ) -> Result<RenderOutcome, EngineError> {
+                Ok(RenderOutcome::default())
+            }
+        }
+        struct FlakyEngine;
+        impl PdfEngine for FlakyEngine {
+            fn info(&self) -> EngineInfo {
+                EngineInfo {
+                    name: "flaky",
+                    version: "0",
+                    capabilities: EngineCapabilities::default(),
+                }
+            }
+            fn open(
+                &self,
+                _source: DocumentSource,
+                _options: &OpenOptions,
+            ) -> Result<Box<dyn EngineDocument>, EngineError> {
+                Ok(Box::new(Flaky {
+                    calls: AtomicU32::new(0),
+                }))
+            }
+        }
+        let doc = open_guarded(
+            &FlakyEngine,
+            DocumentSource::from_bytes(SharedBytes::from_vec(b"x".to_vec())),
+            &OpenOptions::default(),
+        )
+        .unwrap();
+        let first = doc.page_info(PageIndex::FIRST);
+        assert!(first.as_ref().is_err_and(EngineError::is_transient));
+        assert_eq!(
+            doc.page_info(PageIndex::FIRST).map(|i| i.size),
+            Ok(PageSize::LETTER)
+        );
+        assert_eq!(doc.host_status(), None);
     }
 
     #[test]

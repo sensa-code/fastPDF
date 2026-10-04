@@ -26,8 +26,10 @@
 //! Development switches, honored only in debug builds or together with
 //! `FASTPDF_DEV_OVERLAY=1`: `FASTPDF_PRINT_TO_FILE=<path>` (every print job
 //! writes into that file instead of reaching the printer; use it with the
-//! "Microsoft Print to PDF" queue) and `FASTPDF_DEV_SCRIPT` (steps that
-//! drive the reader without synthesized input; see `fastpdf_ui` devscript).
+//! "Microsoft Print to PDF" queue), `FASTPDF_DEV_SCRIPT` (steps that
+//! drive the reader without synthesized input; see `fastpdf_ui` devscript)
+//! and `FASTPDF_HOST_MEMORY_MB` (memory limit of the render host, to make
+//! hostile files crash it on purpose).
 //!
 //! Start-up order (spec §10, §29): the command-line document starts opening
 //! on a background thread first thing in `main`, and when the window's size
@@ -143,6 +145,7 @@ struct Env {
     settings_file: Option<Option<PathBuf>>,
     print_to_file: Option<PathBuf>,
     dev_script: Option<String>,
+    host_memory_mb: Option<u64>,
 }
 
 impl Env {
@@ -163,6 +166,7 @@ impl Env {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
             dev_script: var("FASTPDF_DEV_SCRIPT"),
+            host_memory_mb: var("FASTPDF_HOST_MEMORY_MB").and_then(|v| v.trim().parse().ok()),
         }
     }
 
@@ -205,7 +209,7 @@ fn reader_main() {
     }
     if args.help {
         println!(
-            "{USAGE}\n\nengines: {}\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE, FASTPDF_SETTINGS_FILE\ndevelopment: FASTPDF_PRINT_TO_FILE, FASTPDF_DEV_SCRIPT",
+            "{USAGE}\n\nengines: {}\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE, FASTPDF_SETTINGS_FILE\ndevelopment: FASTPDF_PRINT_TO_FILE, FASTPDF_DEV_SCRIPT, FASTPDF_HOST_MEMORY_MB",
             engines::names().join(", ")
         );
         return;
@@ -221,6 +225,9 @@ fn reader_main() {
         clock.emit_startup();
     }
 
+    if let Some(mb) = env.host_memory_mb.filter(|_| development) {
+        render_host::set_memory_limit(mb.clamp(16, 1 << 20) << 20);
+    }
     let engine_name = args.engine.or(env.engine);
     let engine: Arc<dyn PdfEngine> = match engines::select(engine_name.as_deref()) {
         Ok(engine) => Arc::from(engine),
@@ -252,9 +259,12 @@ fn reader_main() {
             options.print_to_file = Some(path);
         }
         options.dev_script = env.dev_script;
-    } else if env.print_to_file.is_some() || env.dev_script.is_some() {
+    } else if env.print_to_file.is_some()
+        || env.dev_script.is_some()
+        || env.host_memory_mb.is_some()
+    {
         log::warn!(
-            "FASTPDF_PRINT_TO_FILE / FASTPDF_DEV_SCRIPT ignored: release build without FASTPDF_DEV_OVERLAY=1"
+            "FASTPDF_PRINT_TO_FILE / FASTPDF_DEV_SCRIPT / FASTPDF_HOST_MEMORY_MB ignored: release build without FASTPDF_DEV_OVERLAY=1"
         );
     }
 

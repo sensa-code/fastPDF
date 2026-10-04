@@ -234,7 +234,18 @@ impl Rng {
             }),
             1 => Command::Open(Open {
                 id,
-                document: (!self.chance(4)).then(|| self.section()),
+                document: match self.below(4) {
+                    0 => None,
+                    1 => Some(DocumentRef::Section(self.section())),
+                    _ => {
+                        let SectionRef { handle, len } = self.section();
+                        Some(DocumentRef::File {
+                            handle,
+                            len,
+                            network: self.chance(2),
+                        })
+                    }
+                },
                 path: self.opt_string(30).map(PathBuf::from),
                 password: self.opt_string(20),
                 limits: self.limits(),
@@ -447,12 +458,23 @@ fn hand_picked_messages_round_trip() {
         }),
         Command::Open(Open {
             id: 1,
-            document: Some(SectionRef {
+            document: Some(DocumentRef::Section(SectionRef {
                 handle: 0x200,
                 len: 12_345,
-            }),
+            })),
             path: Some(PathBuf::from(r"C:\文件\a b.pdf")),
             password: Some("pässwörd".into()),
+            limits: ResourceLimits::default(),
+        }),
+        Command::Open(Open {
+            id: 3,
+            document: Some(DocumentRef::File {
+                handle: 0x3c4,
+                len: 900 << 20,
+                network: true,
+            }),
+            path: Some(PathBuf::from(r"\\nas\scans\big.pdf")),
+            password: None,
             limits: ResourceLimits::default(),
         }),
         Command::Open(Open {

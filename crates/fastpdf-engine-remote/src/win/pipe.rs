@@ -13,7 +13,9 @@
 //! after the host died, delaying crash detection.
 //!
 //! The parent ends use overlapped I/O, so every wait also watches the host
-//! process and can run a periodic tick (deadline checks). The host ends are
+//! process and can run a tick (deadline checks) while requests are in
+//! flight; with nothing in flight a read waits without a timeout, and a
+//! [`Wake`] event interrupts it when work starts. The host ends are
 //! ordinary synchronous handles used through `std::fs::File`.
 
 use std::fs::File;
@@ -39,7 +41,7 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, WaitForMultipleObjects, WaitForSingleObject,
+    CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
 
 use super::{check, owned};
@@ -276,6 +278,40 @@ fn host_gone() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "render host exited")
 }
 
+/// An auto-reset event that interrupts a waiting [`ServerPipe::read`], so
+/// its tick runs again (new work to watch).
+#[derive(Debug)]
+pub(crate) struct Wake(OwnedHandle);
+
+impl Wake {
+    pub(crate) fn new() -> io::Result<Self> {
+        // SAFETY: null attributes and name: an unnamed auto-reset event,
+        // initially not signalled.
+        let raw = unsafe { CreateEventW(std::ptr::null(), FALSE, FALSE, std::ptr::null()) };
+        // SAFETY: a fresh handle (or a failure value).
+        Ok(Self(unsafe { owned(raw) }?))
+    }
+
+    pub(crate) fn signal(&self) {
+        // SAFETY: sets an event we own.
+        unsafe { SetEvent(self.0.as_raw_handle()) };
+    }
+}
+
+/// Waits on `event`, `process` and, if given, `wake` for up to `ms`;
+/// returns the wait code (the lowest signalled index wins).
+fn wait_any(event: &OwnedHandle, process: BorrowedHandle<'_>, wake: Option<&Wake>, ms: u32) -> u32 {
+    let handles = [
+        event.as_raw_handle(),
+        process.as_raw_handle(),
+        wake.map_or(std::ptr::null_mut(), |w| w.0.as_raw_handle()),
+    ];
+    let count = if wake.is_some() { 3 } else { 2 };
+    // SAFETY: the first `count` entries are valid handles that outlive the
+    // call.
+    unsafe { WaitForMultipleObjects(count, handles.as_ptr(), FALSE, ms) }
+}
+
 /// Waits on `event` and `process` for up to `ms`; returns the wait code.
 fn wait_two(event: &OwnedHandle, process: BorrowedHandle<'_>, ms: u32) -> u32 {
     let handles = [event.as_raw_handle(), process.as_raw_handle()];
@@ -349,13 +385,15 @@ impl ServerPipe {
     ///
     /// While waiting, `process` (the host) is watched: once it has exited,
     /// whatever it wrote before dying is still drained, then the read fails.
-    /// `tick` runs every `tick_every` while no data arrives.
+    /// Before every wait for data, `tick` runs and returns how long to wait
+    /// before it runs again: `None` waits until data arrives, the host
+    /// exits or `wake` is signalled (no timer at all).
     pub(crate) fn read(
         &self,
         buf: &mut [u8],
         process: BorrowedHandle<'_>,
-        tick_every: Duration,
-        tick: &mut dyn FnMut(),
+        wake: Option<&Wake>,
+        tick: &mut dyn FnMut() -> Option<Duration>,
     ) -> io::Result<usize> {
         let mut ov = self.overlapped();
         let ov_ptr: *mut OVERLAPPED = &mut ov;
@@ -384,14 +422,16 @@ impl ServerPipe {
             ov: ov_ptr,
             done: false,
         };
-        let tick_ms = u32::try_from(tick_every.as_millis())
-            .unwrap_or(u32::MAX)
-            .max(1);
         let result = if ok != 0 {
             op.finish()
         } else {
             loop {
-                match wait_two(&self.event, process, tick_ms) {
+                let ms = tick().map_or(INFINITE, |d| {
+                    u32::try_from(d.as_millis())
+                        .unwrap_or(INFINITE - 1)
+                        .clamp(1, INFINITE - 1)
+                });
+                match wait_any(&self.event, process, wake, ms) {
                     WAIT_OBJECT_0 => break op.finish(),
                     w if w == WAIT_OBJECT_0 + 1 => {
                         // The host is gone and its end of the pipe closed
@@ -408,7 +448,8 @@ impl ServerPipe {
                             op.cancel()
                         };
                     }
-                    WAIT_TIMEOUT => tick(),
+                    // Timed out or woken: tick again.
+                    w if w == WAIT_TIMEOUT || w == WAIT_OBJECT_0 + 2 => {}
                     _ => break op.cancel(),
                 }
             }
@@ -527,12 +568,7 @@ mod tests {
             let mut chunk = [0u8; 16];
             let n = ch
                 .replies
-                .read(
-                    &mut chunk,
-                    me.as_handle(),
-                    Duration::from_millis(5),
-                    &mut || {},
-                )
+                .read(&mut chunk, me.as_handle(), None, &mut || None)
                 .unwrap();
             got.extend_from_slice(&chunk[..n]);
         }
@@ -543,12 +579,7 @@ mod tests {
         let mut chunk = [0u8; 4];
         let n = ch
             .replies
-            .read(
-                &mut chunk,
-                me.as_handle(),
-                Duration::from_millis(5),
-                &mut || {},
-            )
+            .read(&mut chunk, me.as_handle(), None, &mut || None)
             .unwrap();
         assert_eq!(n, 0);
     }
@@ -600,16 +631,50 @@ mod tests {
         let mut b = [0u8; 1];
         let n = ch
             .replies
-            .read(
-                &mut b,
-                me.as_handle(),
-                Duration::from_millis(5),
-                &mut || ticks += 1,
-            )
+            .read(&mut b, me.as_handle(), None, &mut || {
+                ticks += 1;
+                Some(Duration::from_millis(5))
+            })
             .unwrap();
         assert_eq!((n, b[0]), (1, b'x'));
         assert!(ticks >= 3, "only {ticks} ticks");
         drop(writer.join());
+    }
+
+    #[test]
+    fn idle_reads_do_not_tick_until_woken() {
+        let ch = listen().unwrap();
+        let (_host_in, host_out) = connect(ch.name()).unwrap();
+        let me = current_process();
+        ch.accept(me.as_handle(), std::process::id(), soon())
+            .unwrap();
+        let wake = std::sync::Arc::new(Wake::new().unwrap());
+        let waker = {
+            let wake = std::sync::Arc::clone(&wake);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                wake.signal();
+                std::thread::sleep(Duration::from_millis(100));
+                let mut host_out = host_out;
+                host_out.write_all(b"y").unwrap();
+                host_out
+            })
+        };
+        let started = Instant::now();
+        let mut ticks = Vec::new();
+        let mut b = [0u8; 1];
+        let n = ch
+            .replies
+            .read(&mut b, me.as_handle(), Some(&wake), &mut || {
+                ticks.push(started.elapsed());
+                None
+            })
+            .unwrap();
+        assert_eq!((n, b[0]), (1, b'y'));
+        // Once before waiting, once when woken; nothing in between.
+        assert_eq!(ticks.len(), 2, "{ticks:?}");
+        assert!(ticks[1] >= Duration::from_millis(140), "{ticks:?}");
+        drop(waker.join());
     }
 
     #[test]

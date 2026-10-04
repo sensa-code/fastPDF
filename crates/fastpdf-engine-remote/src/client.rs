@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{self, Read};
+use std::io::{self, BufReader, Read};
 use std::os::windows::io::{AsHandle, BorrowedHandle};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +21,8 @@ use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-use fastpdf_engine_api::{CancelToken, EngineError, PageIndex};
+use fastpdf_engine_api::{CancelToken, EngineError, FileOrigin, HostExitReason, PageIndex};
+use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 
 use crate::config::RemoteConfig;
 use crate::gate::OwnedPass;
@@ -29,10 +30,11 @@ use crate::geometry::Geometry;
 use crate::host::ipc_args;
 use crate::policy::{DeathCause, InFlight, Subject};
 use crate::protocol::{
-    BUILD_ID, Command, FrameError, Init, MAX_REPLY_FRAME, MAX_WORKERS, Payload, RenderTarget,
-    Reply, SectionRef, SlotSpec, WireEngineInfo, decode_reply, encode_command, read_frame,
+    BUILD_ID, Command, DocumentRef, FrameError, Init, MAX_REPLY_FRAME, MAX_WORKERS, Payload,
+    RenderTarget, Reply, SectionRef, SlotSpec, WireEngineInfo, decode_reply, encode_command,
+    read_frame,
 };
-use crate::win::pipe::{self, ServerPipe};
+use crate::win::pipe::{self, ServerPipe, Wake};
 use crate::win::process::{self, Child, JobLimits, KILLED_BY_PARENT, describe_exit};
 use crate::win::section::{Access, Section, View};
 
@@ -40,6 +42,8 @@ use crate::win::section::{Access, Section, View};
 const POLL: Duration = Duration::from_millis(3);
 /// How often the reader thread checks request deadlines.
 const DEADLINE_TICK: Duration = Duration::from_millis(50);
+/// Read buffer of the reply pipe.
+const REPLY_BUFFER: usize = 64 << 10;
 /// A command that cannot be written within this time means the host stopped
 /// reading.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -168,7 +172,9 @@ enum KillReason {
 #[derive(Debug, Clone)]
 pub(crate) struct Death {
     pub(crate) cause: DeathCause,
-    /// Human-readable cause, for errors and the overlay.
+    /// Why the host ended, for the errors callers get.
+    pub(crate) reason: HostExitReason,
+    /// Human-readable cause, for logs and the overlay.
     pub(crate) description: String,
     pub(crate) in_flight: Vec<InFlight>,
 }
@@ -186,6 +192,9 @@ pub(crate) struct Connection {
     child: Child,
     commands: Mutex<ServerPipe>,
     table: Mutex<Table>,
+    /// Interrupts the reader's wait when the first request goes in flight,
+    /// so it starts watching deadlines (it has no timer while idle).
+    wake: Arc<Wake>,
     death: OnceLock<Death>,
     kill_reason: Mutex<Option<KillReason>>,
     slots: Option<Arc<SlotPool>>,
@@ -206,17 +215,17 @@ impl std::fmt::Debug for Connection {
 }
 
 /// `Read` over the reply pipe that keeps watching the host process and
-/// runs `tick` while it waits.
+/// runs `tick` while it waits (see [`ServerPipe::read`]).
 struct PipeReader<'a> {
     pipe: &'a ServerPipe,
     process: BorrowedHandle<'a>,
-    every: Duration,
-    tick: &'a mut dyn FnMut(),
+    wake: Option<&'a Wake>,
+    tick: &'a mut dyn FnMut() -> Option<Duration>,
 }
 
 impl Read for PipeReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.pipe.read(buf, self.process, self.every, self.tick)
+        self.pipe.read(buf, self.process, self.wake, self.tick)
     }
 }
 
@@ -287,11 +296,12 @@ impl Connection {
                     timed_out = true;
                     child.kill();
                 }
+                Some(Duration::from_millis(20))
             };
             let mut reader = PipeReader {
                 pipe: &replies,
                 process: child.process(),
-                every: Duration::from_millis(20),
+                wake: None,
                 tick: &mut tick,
             };
             read_frame(&mut reader, MAX_REPLY_FRAME)
@@ -319,11 +329,13 @@ impl Connection {
             Ok(None) => return Err(startup_failure(&child, "closed the channel")),
             Err(e) => return Err(startup_failure(&child, &e.to_string())),
         };
+        let wake = Arc::new(Wake::new().map_err(|e| startup_error("reader thread", e))?);
         let conn = Arc::new(Self {
             generation,
             child,
             commands: Mutex::new(commands),
             table: Mutex::new(Table::default()),
+            wake: Arc::clone(&wake),
             death: OnceLock::new(),
             kill_reason: Mutex::new(None),
             slots,
@@ -343,7 +355,7 @@ impl Connection {
         let weak = Arc::downgrade(&conn);
         std::thread::Builder::new()
             .name(format!("fastpdf-remote-{}", conn.child.pid()))
-            .spawn(move || reader_main(&weak, &replies, process.as_handle()))
+            .spawn(move || reader_main(&weak, &replies, process.as_handle(), &wake))
             .map_err(|e| startup_error("reader thread", e))?;
         Ok(conn)
     }
@@ -376,6 +388,20 @@ impl Connection {
 
     pub(crate) fn next_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Duplicates a read-only handle to the document file into the host
+    /// (for `Open`); the host reads or maps the file itself (ADR 0008 §1.5).
+    pub(crate) fn share_file(&self, origin: &FileOrigin) -> Result<DocumentRef, CallError> {
+        let handle = self
+            .child
+            .duplicate_into(origin.file().as_handle(), FILE_GENERIC_READ)
+            .map_err(|_| CallError::Lost)?;
+        Ok(DocumentRef::File {
+            handle,
+            len: origin.len(),
+            network: origin.is_network(),
+        })
     }
 
     /// Duplicates a section handle into the host (for `Open`).
@@ -463,6 +489,7 @@ impl Connection {
         if table.closed {
             return false;
         }
+        let was_idle = table.entries.is_empty();
         table.entries.insert(
             id,
             Pending {
@@ -475,6 +502,10 @@ impl Connection {
                 sink,
             },
         );
+        drop(table);
+        if was_idle {
+            self.wake.signal();
+        }
         true
     }
 
@@ -523,8 +554,8 @@ impl Connection {
                     }
                     if Instant::now() > give_up {
                         if killed {
-                            return Err(CallError::Fatal(EngineError::Internal(
-                                "render host does not respond".into(),
+                            return Err(CallError::Fatal(EngineError::Unavailable(
+                                "the render host does not respond".into(),
                             )));
                         }
                         // The reader thread should have enforced the deadline.
@@ -602,17 +633,28 @@ impl Connection {
 
     // --- reader thread (see `reader_main`) ---------------------------------
 
-    fn check_deadlines(&self) {
+    /// The reader's tick: terminates the host when a request overran its
+    /// deadline. Returns when to look again; never while nothing is in
+    /// flight (`register` wakes the reader), so an idle connection has no
+    /// timer.
+    fn watch_deadlines(&self) -> Option<Duration> {
         let now = Instant::now();
-        let overdue = lock(&self.table)
-            .entries
-            .iter()
-            .filter(|(_, p)| p.deadline <= now)
-            .min_by_key(|(_, p)| p.deadline)
-            .map(|(id, _)| *id);
+        let overdue = {
+            let table = lock(&self.table);
+            if table.entries.is_empty() {
+                return None;
+            }
+            table
+                .entries
+                .iter()
+                .filter(|(_, p)| p.deadline <= now)
+                .min_by_key(|(_, p)| p.deadline)
+                .map(|(id, _)| *id)
+        };
         if let Some(id) = overdue {
             self.kill(KillReason::Deadline { id });
         }
+        Some(DEADLINE_TICK)
     }
 
     fn deliver(&self, id: u64, result: Result<Payload, EngineError>) -> Result<(), String> {
@@ -675,24 +717,31 @@ impl Connection {
         }
         let exit = self.child.wait(Duration::from_secs(5));
         let memory_limit = self.child.hit_memory_limit();
-        let reason = lock(&self.kill_reason).clone();
+        let killed = lock(&self.kill_reason).clone();
         let killed_by_us = exit == Some(KILLED_BY_PARENT);
-        let (cause, description) = match reason {
-            Some(KillReason::Shutdown) => (DeathCause::Shutdown, "document closed".to_owned()),
+        let no_code = HostExitReason::Crashed { exit_code: None };
+        let (cause, reason, description) = match killed {
+            Some(KillReason::Shutdown) => {
+                (DeathCause::Shutdown, no_code, "document closed".to_owned())
+            }
             Some(KillReason::Deadline { id }) if killed_by_us => (
                 DeathCause::Deadline { culprit: id },
+                HostExitReason::Deadline,
                 "a request overran its deadline; the render host was terminated".to_owned(),
             ),
             Some(KillReason::Protocol(why)) if killed_by_us => (
                 DeathCause::Crash,
+                no_code,
                 format!("the render host sent an invalid reply ({why}) and was terminated"),
             ),
             Some(KillReason::Unresponsive(why)) if killed_by_us => (
                 DeathCause::Crash,
+                no_code,
                 format!("the render host stopped responding ({why}) and was terminated"),
             ),
             _ if memory_limit => (
                 DeathCause::Crash,
+                HostExitReason::MemoryLimit,
                 match self.memory_limit {
                     Some(limit) => format!(
                         "the render host exceeded its memory limit ({} MiB)",
@@ -703,6 +752,7 @@ impl Connection {
             ),
             _ => (
                 DeathCause::Crash,
+                HostExitReason::Crashed { exit_code: exit },
                 match exit {
                     Some(code) => format!("the render host {}", describe_exit(code)),
                     None => "the render host vanished".to_owned(),
@@ -730,6 +780,7 @@ impl Connection {
             // table closed always finds the death record.
             let _ = self.death.set(Death {
                 cause,
+                reason,
                 description,
                 in_flight,
             });
@@ -748,8 +799,13 @@ impl Connection {
 }
 
 /// Reply reader thread of one connection.
-fn reader_main(conn: &Weak<Connection>, replies: &ServerPipe, process: BorrowedHandle<'_>) {
-    let end = catch_unwind(AssertUnwindSafe(|| read_loop(conn, replies, process)))
+fn reader_main(
+    conn: &Weak<Connection>,
+    replies: &ServerPipe,
+    process: BorrowedHandle<'_>,
+    wake: &Wake,
+) {
+    let end = catch_unwind(AssertUnwindSafe(|| read_loop(conn, replies, process, wake)))
         .unwrap_or_else(|_| ReadEnd::Violation("reply reader panicked".into()));
     // Nobody to tell if the connection is already gone.
     if let Some(conn) = conn.upgrade() {
@@ -761,18 +817,19 @@ fn read_loop(
     conn: &Weak<Connection>,
     replies: &ServerPipe,
     process: BorrowedHandle<'_>,
+    wake: &Wake,
 ) -> ReadEnd {
-    let mut tick = || {
-        if let Some(conn) = conn.upgrade() {
-            conn.check_deadlines();
-        }
-    };
-    let mut reader = PipeReader {
-        pipe: replies,
-        process,
-        every: DEADLINE_TICK,
-        tick: &mut tick,
-    };
+    let mut tick = || conn.upgrade().and_then(|c| c.watch_deadlines());
+    // A reply usually arrives whole: one read brings its header and payload.
+    let mut reader = BufReader::with_capacity(
+        REPLY_BUFFER,
+        PipeReader {
+            pipe: replies,
+            process,
+            wake: Some(wake),
+            tick: &mut tick,
+        },
+    );
     loop {
         let payload = match read_frame(&mut reader, MAX_REPLY_FRAME) {
             Ok(Some(payload)) => payload,
@@ -871,7 +928,7 @@ impl SlotPool {
                 return Err(CallError::Cancelled);
             }
             if Instant::now() > deadline {
-                return Err(CallError::Fatal(EngineError::Internal(
+                return Err(CallError::Fatal(EngineError::Unavailable(
                     "no free render slot".into(),
                 )));
             }

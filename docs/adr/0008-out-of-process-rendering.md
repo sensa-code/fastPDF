@@ -1,6 +1,6 @@
 # ADR 0008 — Out-of-Process Rendering（render host process）
 
-- 狀態：Proposed。PR 1–3 與 opt-in 版的 PR 4 已實作（`crates/fastpdf-engine-remote`，`fastpdf --engine hayro-isolated`），預設仍是 in-process。實作與本文的差異見〈實作現況〉。
+- 狀態：Proposed。PR 1–4 已實作（`crates/fastpdf-engine-remote`，`fastpdf --engine hayro-isolated`），但**預設仍是 in-process**：PR 4 驗收中 B-8 的啟動時間比較在 300 頁情境無法確認（見〈PR 4 驗收〉）。實作與本文的差異見〈實作現況〉。
 - 日期：2026-10-04
 - 相關 spec：§12、§18、§24、§25、§29、§33；風險：`docs/PROJECT_AUDIT.md` R1、R10；`docs/audit/hayro.md` R1–R3
 - 原型：scratchpad 的 `oop/proto`（不在 repo 內），以 path dependency 指向 HEAD `956c573` 的 `git archive` 快照，避免受其他 agent 未 commit 的修改影響
@@ -250,9 +250,12 @@ engine 的快取與文件 bytes 整批移到 host，總量不變；額外成本�
      - 原因：舊做法有空窗。測試 process 在 `CreateProcessW` 與 `AssignProcessToJobObject` 之間結束時，host 永遠停在 suspended 狀態，不屬於任何 job。測試中發生過 2 次。
      - 結果：改成 `JOB_LIST`，並讓 reader thread 只持有 `Weak`（原本的 `Arc` 會讓 `RemoteEngine` drop 後待命 host 仍然存活）之後，4 次完整測試都沒有殘留的 host。
   3. **超過 slot 大小的 render 使用獨立的 section**，不分條（§1.4），結果與 in-process 逐位元組相同。
-  4. **文件 bytes 仍複製進 section**（§1.5 的「沒有檔案的來源」做法），loader 還沒有「只開 handle」的策略，所以會多佔一份檔案大小的記憶體。
-  5. **沒有新增 `EngineError::HostCrashed`**，crash 以 `Internal` 錯誤回報。overlay 也還沒有顯示 host 的統計數字。
-  6. **host 不和 GPUI 平行啟動**：選 engine 時同步啟動待命 host（約 +15 ms）。
+  4. **錯誤種類**：沒有 `EngineError::HostCrashed`，改為兩種（engine-api）：
+     - `HostExited(HostExit { reason, permanent })`：host 在處理請求時結束。`reason` 是 `Crashed { exit_code }`、`MemoryLimit` 或 `Deadline`；`permanent` 表示這個請求不會再送給 host（同頁第 2 次 strike，或文件已停止重啟）。
+     - `Unavailable`：暫時無法服務（重啟失敗、host 沒有回應、UI thread 的幾何查詢超過 1 s、重送 3 次仍失敗）。
+     - `is_transient()` 為真的錯誤（`Unavailable` 與非永久的 `HostExited`）不會被快取，也不會被 core 當成頁面的最終錯誤（見〈PR 4〉）。
+  5. **超過 slot 的 render、文件 bytes 的共享**依 §1.4、§1.5 實作，但 deadline 改成由 reply reader thread 檢查：有請求在途時每 50 ms 一次；沒有請求時不設 timer，第一個請求進入時以 event 喚醒（閒置時 0 次喚醒）。
+  6. **待命 host 的補充延後 1 s**：開檔或重啟取走待命 host 之後，1 s 後才啟動下一個，讓它的啟動不和第一頁的 render 搶 CPU。這 1 s 內需要 host 時就地啟動。
 - **UI thread 不等 host**：core 在 UI thread 上同步呼叫 `page_info`（`DocumentSession::resolve_pages`）。
   - **快取**：`RemoteDocument` 自己快取頁面幾何，快取不受 host 重啟影響。open 時先取前 64 頁，其餘頁面由背景 thread 每批 1024 頁補齊。
   - **cache miss**（只會發生在背景補齊之前）：
@@ -264,7 +267,7 @@ engine 的快取與文件 bytes 整批移到 host，總量不變；額外成本�
     - cache miss 且唯一的 render worker 正忙：130 µs；
     - gate 被獨佔：165 µs；
     - host 卡住：1.014 s 後回報錯誤，其他頁的請求不受影響。
-  - **仍有的限制**：超過 1 s 的錯誤在 core 會變成永久的頁面錯誤。要完全避免，需要在 engine-api 加上可重試的錯誤種類，並在 core 重試。
+  - 超過 1 s 時回報 `Unavailable`；core 保留估計尺寸並稍後重試（見〈PR 4〉），不會變成永久的頁面錯誤。
 - **取消與 admission**：被取消的請求，admission 要等到 host 送出該請求的最終回覆，或 host 結束，才會釋放；呼叫端仍然立即返回。
   - 實測：呼叫端在 203 ms 返回，下一個請求在 1.502 s、host 真正做完時才進入。
   - 這保證可疑頁仍然單獨執行，crash 的歸責也不會出錯。另外，只有恰好一個可歸責的請求在執行時才會歸責，否則視為不明。
@@ -283,20 +286,81 @@ engine 的快取與文件 bytes 整批移到 host，總量不變；額外成本�
     - 啟動約 +15 ms。
   - **測試**：48 個單元測試、22 個整合測試、2 個 app 測試。protocol fuzz 預設 40k 次，各 fuzz 測試另外以 1M 次跑過一次（約 25 s）。
   - **修正 P1／P2 之後重新驗收**（背景負載 8–16%）：84 個 fixture 的比對仍然 0 差異。捲動吞吐量為 −0.1% 至 −3.7%，只有 2 頁的 gov-letter（每次 12 個 tile）是 −3.4% 至 −7.8%（修正前 −5.0% 至 +1.8%）。這一輪的修改沒有碰到每個 tile 的路徑，但無法從這幾次量測完全排除影響。
-- **PR 4 尚未完成的驗收**：
-  - B-8 與 in-process 的比較；
-  - parent＋host 的總 private；
-  - 經由 UI 跑完 hostile 語料；
-  - 錯誤 UI 與 overlay；
-  - 平行啟動、只開 handle 的 loader。
-  - 這些完成之前維持 opt-in。
+### PR 4（2026-10-04）
+
+- **只交 handle**（§1.5）：
+  - app 啟用 isolated engine 時把 loader 切到只開 handle 的模式（`loader::set_handle_only`）。有檔案的來源：parent 以不含 `FILE_SHARE_WRITE` 的 share mode 開檔，不讀也不映射；`SharedBytes` 帶著 `FileOrigin`（handle、長度、是否在網路磁碟），內容只在有人呼叫 `as_slice()` 時才讀取或映射。
+  - `RemoteDocument` 以 `DuplicateHandle` 把唯讀 handle（`FILE_GENERIC_READ`）交給每個 host。host 對 ≤ 64 MiB 或網路磁碟上的檔案以 positional read 讀進記憶體，其餘以 `PAGE_READONLY` 映射，並在映射期間持有自己的 handle，所以檔案在 host 使用期間一直無法以寫入模式開啟。
+  - 沒有檔案的來源維持複製進唯讀 section。開檔時檔案已被其他程式以寫入模式開著（sharing violation），一樣走一般讀取＋section。
+  - 修改前：≤ 64 MiB 的檔案 parent 讀一次再複製進 section；更大的檔案 parent 先 mmap，再整份複製進 pagefile section（800 MB 的檔案要 800 MB commit）。
+  - 代價：isolated 模式下，**小檔在文件開著時也無法被其他程式覆寫**（in-process 時只有 > 64 MiB 的檔案會被鎖，ADR 0006）。host 重啟時要重新取得同一份不可變的 bytes，所以 parent 必須一直持有 handle。
+- **網路磁碟（R10）**：`loader::is_network_path` 以 path prefix（UNC、`\\?\UNC\`）與 volume root 的 `GetDriveTypeW`（`DRIVE_REMOTE`）判斷；網路上的檔案在 parent 與 host 都只讀取、不映射（ADR 0006）。
+- **暫時性錯誤與重試**（core）：
+  - `resolve_pages`、tile、縮圖遇到 `is_transient()` 的錯誤時，保留估計尺寸、不顯示錯誤，退避重試：250 ms 起每次加倍，上限 8 s，最多 10 次（約 48 s），之後才以最後的錯誤作為頁面錯誤。
+  - 重試時間到時由 session 的 wake hook 喚醒 UI。計時 thread 在第一次重試時才建立，沒有待重試的項目時以 condvar 無期限等待，不輪詢、沒有 idle CPU。
+- **錯誤 UI**（en／zh-TW）：
+  - 頁面訊息依原因顯示：繪製程式當掉（含結束代碼）、需要的記憶體超過上限、繪製時間過長、沒有回應；永久失敗另加「不會再重試」。
+  - crash storm（停止自動重啟）時，文件區左下角顯示文件層級提示，說明當掉次數並請使用者重新開啟文件。
+  - 開檔失敗時，host 當掉與無法使用也有各自的訊息。
+- **診斷**：
+  - `EngineDocument::host_status()`（engine-api 的 `HostStatus`）回報 host PID、private bytes、重啟與 crash 次數、永久失敗的頁、是否已停止重啟。
+  - dev overlay 多一行 `host pid … restarts … crashes … failed …`，engine 自己的估計不再從 parent 的 private 扣除。
+  - memory budget manager 的 external bytes 加上各文件 host 的 private bytes。
+- **平行啟動**：`RemoteEngine::start` 不等 host，第一個 host 在背景 thread 啟動。app 用預期的 `EngineInfo`（同一個 engine 的 in-process 版本）建立 engine，第一次開檔才等 host（`RemoteEngine::ready`）；host 無法啟動時改用 in-process engine 並寫一行警告。命令列文件照舊在 `Startup::begin` 的 open thread 開啟。
+  - 實測（測試用 host）：`start` 在 0.15 ms 內返回，host 9.9 ms 後就緒。
+  - B-8 的 22 次執行（兩種模式）中，`document_opened` 都比 `window_visible` 早 5.7–58.6 ms，`first_page_exact` 與 `first_paint` 相差 ≤ 0.1 ms：經由 host 開檔與第一頁 render 都不在關鍵路徑上。
+- **閒置 CPU**：reply reader 原本每 50 ms 醒來檢查 deadline，現在只在有請求在途時才計時。
+  - 量測方式：不開 UI 的量測程式，開檔、render 第一頁、等 3 s 後量 10 s 的 CPU cycles（`QueryProcessCycleTime`），交替 2 次。
+  - 結果：parent 從 20.6–21.0 降到 0.53–0.63 Mcycles；document host 2.1–2.3（in-process 時同一份 hayro 的背景活動是 2.9–4.2）；待命 host 0。
+- **吞吐量**：目標（cold 與 cache 命中都在 in-process 的 5% 內）**只有部分達成**。
+  - 量測方式：scratch 量測程式。兩邊都從乾淨的 process 開始（in-process 在新的子 process，remote 在新的 host），先 render 第 1 頁（不計時），再以 2 條 thread render 第 2–9 頁，scale 2、512 px tile；cache 命中是同一批 tile 再 render 9 次取中位數。7 對交替，背景 CPU 17–29%，沒有編譯。
+  - cold（新內容，修改前／後的中位數）：dense-300p −3.9%／+4.0%，photos −2.4%／−0.9%，都在 5% 內；頁面很簡單的 three-pages −9.0%／−9.6%、gov-letter −13.5%／−13.6%。
+  - cache 命中（修改前／後）：three-pages −43%／−36%，photos −39%／−36%，gov-letter −45%／−31%，dense-300p −4%／+1%（雜訊內）。
+  - 原因：每個 tile 多一次 IPC 往返與一次 1 MiB 複製。
+    - IPC 往返：單 thread 量測（2000 次中位數），`metadata` 往返 50–66 µs，in-process 0.8–1.5 µs。一次往返要喚醒 4 條 thread：host 的命令 reader、host worker、parent 的 reply reader、等待中的 render thread。
+    - 複製：slot 複製進 `fastpdf-render` 自有的 tile buffer。
+    - 合計：cache 命中的 516 px tile 是 380–463 µs，in-process 是 281–316 µs。
+  - 本輪做到的：兩端改成緩衝讀取，每個 tile 少 2 次 `ReadFile`，效果在雜訊內。
+  - 要再降低，需要下列其中一項，本輪沒有做：
+    - render 直接寫進最後的 tile buffer：要改 `fastpdf-render` 與 engine-api 的 buffer 所有權；
+    - 改傳輸方式：每個 slot 一個完成 event，直接喚醒等待的 thread，或讓 worker 自己讀命令（leader/follower）。
+  - 使用者實際看到的新內容 render，額外成本約 0.1 ms／tile。
+
+### PR 4 驗收
+
+- **環境**：
+  - 硬體與 build：AMD Ryzen 9 9950X、Windows 11 26200、release build（thin LTO）、hayro。
+  - 背景負載：其他 agent 的編譯與 benchmark，以及使用者的另一個 Node 測試套件（vitest，20 個 node process）。量測前確認沒有 cargo、rustc、link 在跑。bench-app 記錄的開始時 CPU 是 40–100%。
+  - GUI 啟動共 24 次：
+    - B-8 第一批 12 次（使用者的測試套件在跑，負載 45–100%）；
+    - B-8 第二批 10 次（負載 40–100%）；
+    - hostile 語料 2 次。
+- **B-8**：A＝`--engine hayro`，B＝`--engine hayro-isolated`，ABAB 交替，以 `tools/bench-app` 量測，每次執行只啟動一次（`-Runs 1`）。
+
+| 項目 | 條件 | 結果 | 判定 |
+|---|---|---|---|
+| 3 頁（`three-pages-platypus-times`） | `window_visible`／`first_page_exact` 中位數差 ≤ 5 ms | 第二批 3 對：`window_visible` A 236.1、B 233.9 ms（每對 B−A 的中位數 −2.1 ms）；`first_page_exact` A 236.1、B 239.0 ms（+2.9 ms）。每對的差距範圍 −909 至 +510 ms，由負載決定。第一批 3 對的 `window_visible` 差距為 −1364.2、+160.1、+123.0 ms | 第二批的中位數符合，但變異遠大於門檻 |
+| 300 頁（`dense-300p-times`） | 同上，至少 3 對 | 第二批只有 2 對，每對 `window_visible` 的 B−A 為 −82.5 與 +301.2 ms；第一批 3 對為 −677.5、+273.6、+147.3 ms | **無法確認，未通過** |
+| idle CPU | 不變 | bench-app 的 10 s idle CPU 兩種模式都在 15.6–312.5 ms 之間跳動（負載造成），無法比較；改以不開 UI 的 cycles 量測（見上），isolated 的總和 2.7–2.9 Mcycles／10 s，in-process 2.9–4.2 | 通過（以直接量測判定） |
+| parent＋host 總 private | ≤ in-process＋20 MiB | idle 時 A 107.1–109.7 MiB，B 112.2–116.2 MiB，11 對的差距全部在 +4.8 至 +7.0 MiB（B 有 3 個 process：app、文件 host、待命 host）；peak 差 −1.3 至 +7.1 MiB | 通過 |
+| hostile 語料經由 UI | UI process 結束 0 次 | 46 個檔（`fixtures/generated/malformed/` 29 個、hostile 產生器 17 個），每檔開啟、翻頁、最後一頁、放大、縮圖，共 783 步，跑 2 次。預設記憶體上限：host 0 次 crash。`FASTPDF_HOST_MEMORY_MB=48`：host 因記憶體上限結束 6 次，`deep-nesting-content-100000` 與 `form_dag_depth20` 各 3 次後停止重啟（各有 1 頁永久失敗）。兩次腳本都跑完，process 由腳本最後的 Quit 結束（第 2 次記錄到結束碼 0，第 1 次沒有記錄結束碼）；0 次 panic，0 個步驟逾時 | 通過 |
+
+- **決定**：300 頁情境的 B-8 時間比較未能確認，**預設維持 in-process**，isolated 仍以 `--engine hayro-isolated` opt-in，本 ADR 維持 Proposed。
+- **切換預設前**：在安靜的機器上重跑 B-8，3 頁與 300 頁各至少 3 對，用 A＝`--engine hayro`、B＝`--engine hayro-isolated` 交替：
+
+  ```powershell
+  ./tools/bench-app/bench-app.ps1 -Preset fastpdf -Args '--engine','hayro-isolated','{pdf}' -Pdf fixtures/generated/large-text/dense-300p-times.pdf -Runs 1
+  ```
+
+  - 中位數差 ≤ 5 ms 時，只需要改 `engines::select` 的預設，並更新 `--help` 與 README。
+  - 從目前的資料看，兩種模式的開檔都在視窗出現之前完成，第一頁都在第一次 paint 時就是清晰的；差距主要來自 GPUI 啟動時間受負載影響的變異。
 
 ## Consequences
 
 - UI process 不再因為 engine 的 stack overflow、配置失敗、mmap I/O 錯誤或失控運算而消失，§24、§25 的要求從「盡量 contain」變成由 OS 保證。R1 的「中期緩解」與 R10 都由這個 ADR 承接。
 - 多一個 process 要管理：spawn、握手、重啟、版本一致性、診斷（host 的 log 要轉送到 parent 的 logger）。
-- 每個 tile 多一次 1 MiB 複製（13–40 µs）與一次往返（約 10 µs）。實測對吞吐量沒有影響，但低階機器要在 B-8 補測（R12）。
-- 記憶體總量基本不變，但 private bytes 分成兩個 process。memory budget manager 要把 host 的 private 納入 external bytes，overlay 也要分開顯示。
+- 每個 tile 多一次 1 MiB 複製與一次 IPC 往返（實際 50–65 µs，要喚醒 4 條 thread）。新內容的 render 每個 tile 多約 0.1 ms：一般頁面在雜訊內，很簡單的頁面約 −9% 至 −14%；hayro cache 命中的 re-render 約 −31% 至 −36%（見〈PR 4〉）。低階機器要在 B-8 補測（R12）。
+- 記憶體總量基本不變，但 private bytes 分成兩個 process，再加上待命 host（B-8：合計比 in-process 多 4.8–7.0 MiB）。memory budget manager 已把 host 的 private 納入 external bytes，overlay 也分開顯示。
 - 列印、搜尋、選取透過 `GuardedDocument` 的介面自動走 host，不需要個別修改。
 
 ## Alternatives considered

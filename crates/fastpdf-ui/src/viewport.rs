@@ -162,8 +162,9 @@ impl ReaderView {
                 for page in &frame.pages {
                     if let Some(error) = &page.error {
                         let rect = view_bounds(origin, page.rect);
+                        let number = page.page.display_number();
                         paint_page_error(
-                            &strings.page_error(page.page.display_number(), error),
+                            &strings.page_failure(number, page.cause.as_ref(), error),
                             rect,
                             theme.error_text,
                             window,

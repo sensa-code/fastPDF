@@ -11,13 +11,17 @@
 //! document (`EngineDocument::memory_usage`), the GPU atlas share of tiles,
 //! the budget pressure and the process's private bytes; what is left of the
 //! private bytes ("other") is memory nobody accounts for: GPU driver and
-//! GPUI allocations, fonts, allocator slack, code.
+//! GPUI allocations, fonts, allocator slack, code. With a render host
+//! (ADR 0008) the engine's memory is the host's: a host line shows its
+//! process, private bytes, restarts, crashes and failed pages, and the
+//! engine estimate is not counted against FastPDF's own private bytes.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use fastpdf_cache::{CacheSnapshot, MemoryPressure};
 use fastpdf_core::SessionStats;
+use fastpdf_engine_api::HostStatus;
 use gpui::{App, Bounds, Pixels, TextAlign, TextRun, Window, fill, font, point, px, size};
 
 use crate::reader::ReaderView;
@@ -41,6 +45,39 @@ pub(crate) struct MemoryBreakdown {
     pub soft_limit: usize,
     pub hard_limit: usize,
     pub private: Option<u64>,
+    /// The open document's render host, if it has one.
+    pub host: Option<HostStatus>,
+}
+
+/// Failed pages listed by number in the host line.
+const LISTED_FAILED_PAGES: usize = 6;
+
+fn host_line(host: &HostStatus) -> String {
+    let process = match (host.pid, host.private_bytes) {
+        (Some(pid), Some(bytes)) => format!("pid {pid} {}", mib(bytes)),
+        (Some(pid), None) => format!("pid {pid} ?"),
+        (None, _) if host.restarts_disabled => "STOPPED".to_string(),
+        (None, _) => "not running".to_string(),
+    };
+    let mut failed = host
+        .failed_pages
+        .iter()
+        .take(LISTED_FAILED_PAGES)
+        .map(|p| p.display_number().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    if failed.is_empty() {
+        failed.push('-');
+    } else if host.failed_pages.len() > LISTED_FAILED_PAGES {
+        failed.push_str(&format!(
+            " +{}",
+            host.failed_pages.len() - LISTED_FAILED_PAGES
+        ));
+    }
+    format!(
+        "host {process}  restarts {}  crashes {}  failed {failed}",
+        host.restarts, host.crashes
+    )
 }
 
 impl MemoryBreakdown {
@@ -73,7 +110,16 @@ impl MemoryBreakdown {
             mib(self.soft_limit as u64),
             mib(self.hard_limit as u64)
         ));
-        let accounted = cache_bytes as u64 + self.engine.flatten().unwrap_or(0);
+        // A render host's engine memory is in the host, not in `private`.
+        let engine_here = if self.host.is_some() {
+            0
+        } else {
+            self.engine.flatten().unwrap_or(0)
+        };
+        let accounted = cache_bytes as u64 + engine_here;
+        if let Some(host) = &self.host {
+            lines.push(host_line(host));
+        }
         lines.push(match self.private {
             Some(private) => format!(
                 "private {}  other {}",
@@ -266,6 +312,10 @@ impl ReaderView {
             soft_limit: config.soft_limit,
             hard_limit: config.hard_limit,
             private: fastpdf_core::memory::process_private_bytes(),
+            host: self.session().and_then(|s| {
+                use fastpdf_engine_api::EngineDocument;
+                s.document().host_status()
+            }),
         }
     }
 }
@@ -305,6 +355,7 @@ mod tests {
             soft_limit: 320 * MB,
             hard_limit: 512 * MB,
             private: Some(250 * MB as u64),
+            host: None,
         };
         let lines = memory.lines();
         assert!(lines[0].contains("tiles") && lines[0].contains("96.0 MiB / 128.0 MiB"));
@@ -316,5 +367,47 @@ mod tests {
             ..MemoryBreakdown::default()
         };
         assert!(unknown.lines()[0].starts_with("engine n/a"));
+    }
+
+    #[test]
+    fn render_hosts_get_a_line_and_keep_their_memory() {
+        use fastpdf_engine_api::PageIndex;
+        let host = HostStatus {
+            pid: Some(4242),
+            private_bytes: Some(40 * MB as u64),
+            restarts: 2,
+            crashes: 3,
+            failed_pages: (0..8).map(PageIndex::new).collect(),
+            ..HostStatus::default()
+        };
+        let memory = MemoryBreakdown {
+            engine: Some(Some(30 * MB as u64)),
+            private: Some(100 * MB as u64),
+            host: Some(host.clone()),
+            ..MemoryBreakdown::default()
+        };
+        let lines = memory.lines();
+        let host_line = lines
+            .iter()
+            .find(|l| l.starts_with("host "))
+            .unwrap_or_else(|| panic!("no host line: {lines:?}"));
+        assert_eq!(
+            host_line,
+            "host pid 4242 40.0 MiB  restarts 2  crashes 3  failed 1,2,3,4,5,6 +2"
+        );
+        // The engine's 30 MiB are in the host, not in FastPDF's 100 MiB.
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("private 100.0 MiB  other 100.0 MiB")
+        );
+        let stopped = HostStatus {
+            pid: None,
+            private_bytes: None,
+            restarts_disabled: true,
+            failed_pages: Vec::new(),
+            ..host
+        };
+        assert!(super::host_line(&stopped).starts_with("host STOPPED"));
+        assert!(super::host_line(&stopped).ends_with("failed -"));
     }
 }

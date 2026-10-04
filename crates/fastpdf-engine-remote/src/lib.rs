@@ -132,6 +132,15 @@ mod unsupported {
             ))
         }
 
+        pub fn start(config: RemoteConfig, expected: EngineInfo) -> Result<Self, EngineError> {
+            let _ = expected;
+            Self::new(config)
+        }
+
+        pub fn ready(&self) -> Result<(), EngineError> {
+            match self.never {}
+        }
+
         pub fn spare_pid(&self) -> Option<u32> {
             match self.never {}
         }

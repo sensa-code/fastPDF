@@ -19,7 +19,7 @@ use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::ExitCode;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
@@ -30,11 +30,13 @@ use fastpdf_engine_api::{
 };
 
 use crate::protocol::{
-    BUILD_ID, Command, FrameError, Init, MAX_COMMAND_FRAME, Open, PROTOCOL_VERSION, Payload,
-    Render, RenderTarget, Reply, WireEngineInfo, decode_command, encode_reply, read_frame,
+    BUILD_ID, Command, DocumentRef, FrameError, Init, MAX_COMMAND_FRAME, Open, PROTOCOL_VERSION,
+    Payload, Render, RenderTarget, Reply, WireEngineInfo, decode_command, encode_reply, read_frame,
 };
 use crate::win;
-use crate::win::section::{MappedBytes, ParentSection, SlotTable, TargetView};
+use crate::win::section::{
+    FileView, MappedBytes, ParentFile, ParentSection, SlotTable, TargetView,
+};
 
 /// Command-line flag in front of the connection spec.
 pub(crate) const IPC_FLAG: &str = "--fastpdf-ipc";
@@ -50,6 +52,39 @@ const WORKER_STACK: usize = 16 << 20;
 /// Threads answering single-page geometry requests: one slow (hostile)
 /// page cannot hold up the next request.
 const GEOMETRY_THREADS: u32 = 4;
+/// Read buffer of the command pipe.
+const COMMAND_BUFFER: usize = 64 << 10;
+/// Document files up to this size are read rather than mapped, as the
+/// loader does in-process (ADR 0006); files on network drives are always
+/// read (R10).
+const READ_LIMIT: u64 = 64 << 20;
+
+/// Document bytes handed over by the parent, adopted by this process.
+enum Adopted {
+    Section(ParentSection),
+    File {
+        file: ParentFile,
+        len: u64,
+        network: bool,
+    },
+}
+
+impl Adopted {
+    fn take(document: DocumentRef) -> io::Result<Self> {
+        Ok(match document {
+            DocumentRef::Section(s) => Self::Section(ParentSection::adopt(s.handle, s.len)?),
+            DocumentRef::File {
+                handle,
+                len,
+                network,
+            } => Self::File {
+                file: ParentFile::adopt(handle)?,
+                len,
+                network,
+            },
+        })
+    }
+}
 
 /// The two arguments that tell a host which channel to connect to.
 pub(crate) fn ipc_args(channel: &str) -> [OsString; 2] {
@@ -125,6 +160,9 @@ where
             }
         }
     }
+    // Most commands are small: one read of the pipe usually brings a whole
+    // frame (or several), not a header and then a payload.
+    let mut commands = BufReader::with_capacity(COMMAND_BUFFER, commands);
     loop {
         match next_command(&mut commands) {
             Ok(Some(Command::Cancel { id })) => state.cancel(id),
@@ -143,7 +181,7 @@ enum NextError {
     Pipe,
 }
 
-fn next_command(pipe: &mut File) -> Result<Option<Command>, NextError> {
+fn next_command(pipe: &mut impl Read) -> Result<Option<Command>, NextError> {
     match read_frame(pipe, MAX_COMMAND_FRAME) {
         Ok(Some(payload)) => decode_command(&payload)
             .map(Some)
@@ -372,31 +410,39 @@ impl State {
     }
 
     fn open(&self, open: Open) -> Result<Payload, EngineError> {
-        // Take the section handle first so it is closed on every path.
-        let section = open
-            .document
-            .map(|s| ParentSection::adopt(s.handle, s.len))
-            .transpose()
-            .map_err(|e| EngineError::Internal(format!("cannot take the document bytes: {e}")))?;
+        // Take the handle first so it is closed on every path.
+        let document =
+            open.document.map(Adopted::take).transpose().map_err(|e| {
+                EngineError::Internal(format!("cannot take the document bytes: {e}"))
+            })?;
         if self.document().is_ok() {
             return Err(EngineError::InvalidRequest(
                 "a document is already open in this host".into(),
             ));
         }
-        let data = match &section {
-            Some(s) => {
-                let s = s
+        let data = match document {
+            Some(Adopted::Section(section)) => {
+                let s = section
                     .section()
                     .ok_or_else(|| EngineError::Internal("document section missing".into()))?;
                 let bytes = MappedBytes::map(s).map_err(|e| {
                     EngineError::Internal(format!("cannot map the document bytes: {e}"))
                 })?;
+                // The mapping keeps the section alive; the handle goes now.
                 SharedBytes::from_owner(bytes)
+            }
+            Some(Adopted::File { file, len, network }) => {
+                let fail = |e: io::Error| {
+                    EngineError::Internal(format!("cannot read the document file: {e}"))
+                };
+                if network || len <= READ_LIMIT {
+                    SharedBytes::from_vec(file.read(len).map_err(fail)?)
+                } else {
+                    SharedBytes::from_owner(FileView::map(file, len).map_err(fail)?)
+                }
             }
             None => SharedBytes::from_vec(Vec::new()),
         };
-        // The mapping keeps the section alive; the handle can go.
-        drop(section);
         let source = DocumentSource {
             data,
             path: open.path,
@@ -567,9 +613,9 @@ mod tests {
 
     impl std::io::Read for ReplyReader<'_> {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            self.channel
-                .replies
-                .read(buf, self.process, Duration::from_millis(20), &mut || {})
+            self.channel.replies.read(buf, self.process, None, &mut || {
+                Some(Duration::from_millis(20))
+            })
         }
     }
 

@@ -8,21 +8,38 @@
 mod synthetic;
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
 use fastpdf_engine_api::{
-    CancelToken, ColorMode, DocumentSource, EngineDocument, EngineError, GuardedDocument,
-    LimitKind, MemoryPressure, OpenOptions, OutlineItem, PageIndex, PdfEngine, PixelFormat,
-    PixelRect, Pixmap, RenderOutcome, RenderRequest, RenderScale, Rgba8, Rotation, SharedBytes,
-    open_guarded,
+    CancelToken, ColorMode, DocumentSource, EngineDocument, EngineError, FileOrigin,
+    GuardedDocument, HostExit, HostExitReason, MemoryPressure, OpenOptions, OutlineItem, PageIndex,
+    PdfEngine, PixelFormat, PixelRect, Pixmap, RenderOutcome, RenderRequest, RenderScale, Rgba8,
+    Rotation, SharedBytes, open_guarded,
 };
 use fastpdf_engine_remote::{CrashPolicy, HostStats, RemoteConfig, RemoteEngine};
 use synthetic::{Behavior, Spec, SyntheticEngine};
 
 const HOST: &str = env!("CARGO_BIN_EXE_fastpdf-remote-test-host");
+
+/// Exit code of `std::process::abort` on Windows (`__fastfail`).
+const FAIL_FAST: u32 = 0xC000_0409;
+
+fn exited(reason: HostExitReason, permanent: bool) -> EngineError {
+    EngineError::HostExited(HostExit { reason, permanent })
+}
+
+fn crashed(code: u32, permanent: bool) -> EngineError {
+    exited(
+        HostExitReason::Crashed {
+            exit_code: Some(code),
+        },
+        permanent,
+    )
+}
 
 fn config() -> RemoteConfig {
     let mut c = RemoteConfig::new(HOST, synthetic::NAME);
@@ -224,8 +241,9 @@ fn panics_stay_inside_the_host() {
     assert_eq!((s.crashes, s.restarts), (0, 0));
 }
 
-/// The crashing page fails, the host is replaced, other pages still render.
-fn crash_and_recover(behavior: Behavior, expect: &str) {
+/// The crashing page fails (transiently: it may be retried once), the host
+/// is replaced, other pages still render.
+fn crash_and_recover(behavior: Behavior, expect: &str, reason: HostExitReason) {
     let engine = engine(patient(config()));
     let doc = open(&engine, &Spec::new(4).page(1, behavior));
     let reference = open(&SyntheticEngine, &Spec::new(4));
@@ -237,10 +255,8 @@ fn crash_and_recover(behavior: Behavior, expect: &str) {
         panic!("the crashing page rendered");
     };
     let detected = started.elapsed();
-    assert!(
-        matches!(&err, EngineError::Internal(m) if m.contains(expect)),
-        "{behavior:?}: {err}"
-    );
+    assert_eq!(err, exited(reason, false), "{behavior:?}: {err}");
+    assert!(err.is_transient());
     let started = Instant::now();
     assert_eq!(render(&doc, 0), render(&reference, 0));
     let recovered = started.elapsed();
@@ -251,24 +267,34 @@ fn crash_and_recover(behavior: Behavior, expect: &str) {
     eprintln!("{behavior:?}: failure reported after {detected:?}, next page after {recovered:?}");
 }
 
+fn code(exit_code: u32) -> HostExitReason {
+    HostExitReason::Crashed {
+        exit_code: Some(exit_code),
+    }
+}
+
 #[test]
 fn abort_kills_only_the_host() {
-    crash_and_recover(Behavior::Abort, "fail-fast");
+    crash_and_recover(Behavior::Abort, "fail-fast", code(FAIL_FAST));
 }
 
 #[test]
 fn stack_overflow_kills_only_the_host() {
-    crash_and_recover(Behavior::StackOverflow, "stack overflow");
+    crash_and_recover(Behavior::StackOverflow, "stack overflow", code(0xC000_00FD));
 }
 
 #[test]
 fn unexpected_exit_is_a_crash() {
-    crash_and_recover(Behavior::Exit, "exit code 0x00000003");
+    crash_and_recover(Behavior::Exit, "exit code 0x00000003", code(3));
 }
 
 #[test]
 fn memory_limit_kills_only_the_host() {
-    crash_and_recover(Behavior::Bomb, "memory limit (256 MiB)");
+    crash_and_recover(
+        Behavior::Bomb,
+        "memory limit (256 MiB)",
+        HostExitReason::MemoryLimit,
+    );
 }
 
 #[test]
@@ -280,7 +306,7 @@ fn hung_requests_hit_their_deadline() {
     let started = Instant::now();
     assert_eq!(
         render(&doc, 1).err(),
-        Some(EngineError::LimitExceeded(LimitKind::RenderTime))
+        Some(exited(HostExitReason::Deadline, false))
     );
     let took = started.elapsed();
     assert!(
@@ -334,25 +360,26 @@ fn cancellation_reaches_the_engine_in_the_host() {
 fn second_crash_on_a_page_is_permanent() {
     let engine = engine(patient(config()));
     let doc = open(&engine, &Spec::new(4).page(3, Behavior::Abort));
-    assert!(render(&doc, 3).is_err());
+    assert_eq!(render(&doc, 3).err(), Some(crashed(FAIL_FAST, false)));
     let err = render(&doc, 3).expect_err("crashes again");
-    assert!(
-        matches!(&err, EngineError::Internal(m) if m.contains("will not be retried")),
-        "{err}"
-    );
+    assert_eq!(err, crashed(FAIL_FAST, true));
+    assert!(!err.is_transient());
     let s = stats(&engine);
     assert_eq!(s.crashes, 2);
     assert_eq!(s.failed_pages, vec![PageIndex::new(3)]);
-    // From now on the page fails without touching a host.
+    // From now on the page fails without touching a host, with the reason
+    // it failed for, and its geometry says so too.
     let started = Instant::now();
     let err = render(&doc, 3).expect_err("permanent failure");
     assert!(started.elapsed() < Duration::from_millis(500));
-    assert!(
-        matches!(&err, EngineError::Internal(m) if m.contains("no longer rendered")),
-        "{err}"
-    );
+    assert_eq!(err, crashed(FAIL_FAST, true));
     assert_eq!(stats(&engine).crashes, 2);
     assert!(render(&doc, 0).is_ok());
+    let status = doc
+        .host_status()
+        .unwrap_or_else(|| panic!("no host status"));
+    assert_eq!(status.failed_pages, vec![PageIndex::new(3)]);
+    assert!(!status.restarts_disabled && status.pid.is_some());
 }
 
 #[test]
@@ -364,17 +391,26 @@ fn a_crash_storm_stops_restarts() {
         .page(3, Behavior::Abort);
     let doc = open(&engine, &spec);
     assert!(doc.page_info(PageIndex::FIRST).is_ok());
-    for page in 1..=3 {
-        assert!(render(&doc, page).is_err());
+    for page in 1..=2 {
+        assert_eq!(render(&doc, page).err(), Some(crashed(FAIL_FAST, false)));
     }
+    // The third crash within the window stops restarts: final.
+    assert_eq!(render(&doc, 3).err(), Some(crashed(FAIL_FAST, true)));
     let s = stats(&engine);
     assert!(s.disabled && s.crashes == 3 && s.pid.is_none(), "{s:?}");
     let started = Instant::now();
     let err = render(&doc, 0).expect_err("restarts are off");
     assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(err, crashed(FAIL_FAST, true));
+    // Pages whose geometry is known still answer; the document says why
+    // nothing renders any more.
+    assert!(doc.page_info(PageIndex::new(5)).is_ok());
+    let status = doc
+        .host_status()
+        .unwrap_or_else(|| panic!("no host status"));
     assert!(
-        matches!(&err, EngineError::Internal(m) if m.contains("rendering stopped")),
-        "{err}"
+        status.restarts_disabled && status.crashes == 3,
+        "{status:?}"
     );
 }
 
@@ -474,10 +510,8 @@ fn a_crash_while_opening_is_reported_and_the_engine_survives() {
     let err = open_with(&engine, &Spec::new(2).on_open(Behavior::Abort), None)
         .err()
         .unwrap_or_else(|| panic!("open succeeded"));
-    assert!(
-        matches!(&err, EngineError::Internal(m) if m.contains("while opening")),
-        "{err}"
-    );
+    // Opening is not retried automatically: the failure is final.
+    assert_eq!(err, crashed(FAIL_FAST, true));
     let doc = open(&engine, &Spec::new(2));
     assert!(render(&doc, 0).is_ok());
 }
@@ -655,10 +689,15 @@ fn page_geometry_skips_busy_render_workers_and_the_gate() {
     );
     let first = took;
 
-    // A page whose geometry never comes: bounded wait, then an error, and
-    // the next unknown page is not held up behind it.
+    // A page whose geometry never comes: bounded wait, then an error the
+    // caller retries later, and the next unknown page is not held up
+    // behind it.
     let (info, took) = timed_page_info(&doc, pages - 1);
-    assert!(info.is_err());
+    assert!(
+        info.as_ref()
+            .is_err_and(|e| matches!(e, EngineError::Unavailable(_))),
+        "{info:?}"
+    );
     assert!(
         took >= Duration::from_millis(900) && took < Duration::from_millis(1500),
         "worst case: {took:?}"
@@ -737,4 +776,133 @@ fn a_cancelled_exclusive_render_keeps_admission_until_the_host_is_done() {
     eprintln!(
         "cancelled exclusive: caller back after {returned:?}, next admitted after {admitted:?}"
     );
+}
+
+/// File bytes that FastPDF must not read when a render host opens the file
+/// (ADR 0008 §1.5): touching them is recorded.
+struct Unread {
+    touched: Arc<AtomicBool>,
+}
+
+impl AsRef<[u8]> for Unread {
+    fn as_ref(&self) -> &[u8] {
+        self.touched.store(true, Ordering::SeqCst);
+        &[]
+    }
+}
+
+/// Opens `path` like the loader in handle-only mode: read access without
+/// write sharing, bytes not read.
+fn file_source(path: &Path, network: bool, touched: &Arc<AtomicBool>) -> DocumentSource {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+        .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let len = file.metadata().map_or(0, |m| m.len());
+    let origin = Arc::new(FileOrigin::new(file, len, network));
+    let owner = Unread {
+        touched: Arc::clone(touched),
+    };
+    DocumentSource::from_bytes(SharedBytes::from_file(owner, origin)).with_path(path)
+}
+
+#[test]
+fn file_sources_reach_the_host_as_a_handle_and_are_never_read_here() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("file-sources-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+    let spec = Spec::new(5).page(3, Behavior::Abort);
+    let small = dir.join("small.pdf");
+    std::fs::write(&small, spec.bytes()).unwrap_or_else(|e| panic!("{e}"));
+    // Over the 64 MiB read limit: the host maps it.
+    let large = dir.join("large.pdf");
+    let mut bytes = spec.bytes();
+    bytes.extend_from_slice(b"end\n");
+    bytes.resize(65 << 20, 0);
+    std::fs::write(&large, &bytes).unwrap_or_else(|e| panic!("{e}"));
+    drop(bytes);
+
+    let engine = engine(patient(config()));
+    let reference = open(&SyntheticEngine, &Spec::new(5));
+    for (path, network) in [
+        (&small, false),
+        (&small, true),
+        (&large, false),
+        (&large, true),
+    ] {
+        let touched = Arc::new(AtomicBool::new(false));
+        let doc = open_guarded(
+            &engine,
+            file_source(path, network, &touched),
+            &OpenOptions::default(),
+        )
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(doc.page_count(), 5);
+        assert_eq!(render(&doc, 1), render(&reference, 1));
+        // A restarted host gets the file again.
+        assert!(render(&doc, 3).is_err());
+        assert_eq!(render(&doc, 4), render(&reference, 4));
+        assert_eq!(stats_of(&doc).restarts, 1);
+        // Nobody can write the file while it is open.
+        assert!(std::fs::OpenOptions::new().write(true).open(path).is_err());
+        assert!(!touched.load(Ordering::SeqCst), "FastPDF read the file");
+        drop(doc);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn stats_of(doc: &GuardedDocument) -> fastpdf_engine_api::HostStatus {
+    doc.host_status()
+        .unwrap_or_else(|| panic!("no host status"))
+}
+
+#[test]
+fn starting_in_the_background_does_not_wait_for_the_host() {
+    let started = Instant::now();
+    let engine = RemoteEngine::start(config(), SyntheticEngine.info())
+        .unwrap_or_else(|e| panic!("start: {e}"));
+    let returned = started.elapsed();
+    assert_eq!(engine.info(), SyntheticEngine.info());
+    assert_eq!(engine.ready(), Ok(()));
+    let ready = started.elapsed();
+    assert!(engine.spare_pid().is_some());
+    // A document opened right away waits for that host instead of
+    // starting a second one.
+    let reference = open(&SyntheticEngine, &Spec::new(2));
+    let doc = open(&engine, &Spec::new(2));
+    assert_eq!(render(&doc, 1), render(&reference, 1));
+    assert!(
+        returned < ready / 2,
+        "start returned after {returned:?}, host ready after {ready:?}"
+    );
+    eprintln!("background start: returned after {returned:?}, ready after {ready:?}");
+
+    // Open before the host is ready: the open waits for it.
+    let engine = RemoteEngine::start(config(), SyntheticEngine.info())
+        .unwrap_or_else(|e| panic!("start: {e}"));
+    let doc = open(&engine, &Spec::new(2));
+    assert_eq!(render(&doc, 0), render(&reference, 0));
+}
+
+#[test]
+fn background_start_failures_are_reported_by_ready() {
+    let mut c = config();
+    c.program = r"C:\definitely\missing\fastpdf-host.exe".into();
+    let engine =
+        RemoteEngine::start(c, SyntheticEngine.info()).unwrap_or_else(|e| panic!("start: {e}"));
+    assert!(
+        matches!(engine.ready(), Err(EngineError::Internal(m)) if m.contains("cannot start")),
+        "missing program"
+    );
+    assert!(open_with(&engine, &Spec::new(1), None).is_err());
+
+    // A host that runs a different engine than expected is refused.
+    let mut expected = SyntheticEngine.info();
+    expected.version = "not-the-host-version";
+    let engine = RemoteEngine::start(config(), expected).unwrap_or_else(|e| panic!("start: {e}"));
+    assert!(engine.ready().is_err());
+    assert_eq!(engine.spare_pid(), None);
 }

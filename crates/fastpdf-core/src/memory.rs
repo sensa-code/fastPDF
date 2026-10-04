@@ -78,20 +78,36 @@ impl MemoryMonitor {
         }
         self.last_sample = Some(now);
         let private = (self.probe)()?;
+        let documents: Vec<Arc<GuardedDocument>> =
+            self.documents.iter().filter_map(Weak::upgrade).collect();
+        // Render hosts (ADR 0008) hold their documents' engine memory in
+        // other processes; it is this reader's memory all the same.
+        let hosts = host_private_bytes(&documents);
         // Memory we do not track in registered caches: engine-internal
-        // caches, allocator slack, GPU staging, code.
-        let external = usize::try_from(private)
+        // caches (here or in render hosts), allocator slack, GPU staging,
+        // code.
+        let external = usize::try_from(private.saturating_add(hosts))
             .unwrap_or(usize::MAX)
             .saturating_sub(self.manager.cache_bytes());
         let relief = self.manager.relieve(external);
         if relief.pressure > MemoryPressure::Normal {
-            for doc in self.documents.iter().filter_map(Weak::upgrade) {
+            for doc in &documents {
                 doc.trim_memory(relief.pressure);
             }
         }
         self.last_pressure = relief.pressure;
         Some(relief)
     }
+}
+
+/// Private bytes of the render hosts behind `documents` (zero for
+/// in-process engines).
+pub fn host_private_bytes(documents: &[Arc<GuardedDocument>]) -> u64 {
+    documents
+        .iter()
+        .filter_map(|d| d.host_status())
+        .filter_map(|h| h.private_bytes)
+        .fold(0, u64::saturating_add)
 }
 
 /// Committed private bytes of this process.
@@ -183,6 +199,85 @@ mod tests {
         let relief = monitor.poll().unwrap();
         assert_eq!(relief.pressure, MemoryPressure::Hard);
         assert_eq!(fastpdf_cache::BudgetedCache::bytes(thumbs.as_ref()), 0);
+    }
+
+    #[test]
+    fn render_host_memory_counts_as_external() {
+        use fastpdf_engine_api::{
+            CancelToken, DocumentSource, EngineCapabilities, EngineDocument, EngineError,
+            EngineInfo, HostStatus, OpenOptions, PageIndex, PageInfo, PageSize, PdfEngine,
+            PixmapMut, RenderOutcome, RenderRequest, Rotation, SharedBytes, open_guarded,
+        };
+        /// A document whose engine lives in a 300 MB host process.
+        struct Hosted;
+        impl EngineDocument for Hosted {
+            fn page_count(&self) -> u32 {
+                1
+            }
+            fn page_info(&self, _: PageIndex) -> Result<PageInfo, EngineError> {
+                Ok(PageInfo {
+                    size: PageSize::LETTER,
+                    rotation: Rotation::R0,
+                })
+            }
+            fn render(
+                &self,
+                _: &RenderRequest,
+                _: &mut PixmapMut<'_>,
+                _: &CancelToken,
+            ) -> Result<RenderOutcome, EngineError> {
+                Ok(RenderOutcome::default())
+            }
+            fn host_status(&self) -> Option<HostStatus> {
+                Some(HostStatus {
+                    pid: Some(4),
+                    private_bytes: Some(300 * MB),
+                    ..HostStatus::default()
+                })
+            }
+        }
+        struct HostedEngine;
+        impl PdfEngine for HostedEngine {
+            fn info(&self) -> EngineInfo {
+                EngineInfo {
+                    name: "hosted",
+                    version: "0",
+                    capabilities: EngineCapabilities::default(),
+                }
+            }
+            fn open(
+                &self,
+                _: DocumentSource,
+                _: &OpenOptions,
+            ) -> Result<Box<dyn EngineDocument>, EngineError> {
+                Ok(Box::new(Hosted))
+            }
+        }
+        let doc = Arc::new(
+            open_guarded(
+                &HostedEngine,
+                DocumentSource::from_bytes(SharedBytes::from_vec(vec![0])),
+                &OpenOptions::default(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(host_private_bytes(&[Arc::clone(&doc)]), 300 * MB);
+        let manager = Arc::new(MemoryBudgetManager::new(BudgetConfig {
+            soft_limit: 100 * MB as usize,
+            hard_limit: 200 * MB as usize,
+            relief_target_percent: 80,
+        }));
+        // This process alone is small; with its host it is over the limit.
+        let mut monitor = MemoryMonitor::with_probe(manager, Duration::ZERO, move || Some(20 * MB));
+        assert_eq!(
+            monitor.poll().map(|r| r.pressure),
+            Some(MemoryPressure::Normal)
+        );
+        monitor.watch(&doc);
+        assert_eq!(
+            monitor.poll().map(|r| r.pressure),
+            Some(MemoryPressure::Hard)
+        );
     }
 
     #[test]

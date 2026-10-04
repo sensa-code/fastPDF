@@ -10,6 +10,7 @@ pub mod loader;
 pub mod memory;
 pub mod paths;
 pub mod recent;
+mod retry;
 pub mod selection;
 pub mod session;
 

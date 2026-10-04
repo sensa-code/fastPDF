@@ -10,7 +10,7 @@
 use std::fmt::Write as _;
 
 use fastpdf_core::loader::LoadError;
-use fastpdf_engine_api::EngineError;
+use fastpdf_engine_api::{EngineError, HostExit, HostExitReason};
 
 use crate::document::OpenFailure;
 
@@ -503,6 +503,87 @@ impl Strings {
         }
     }
 
+    /// A page's final error, worded for the user when it comes from the
+    /// render host (ADR 0008); `error` (the engine's English text) otherwise.
+    pub(crate) fn page_failure(
+        &self,
+        page: u32,
+        cause: Option<&EngineError>,
+        error: &str,
+    ) -> String {
+        let zh = self.zh();
+        match cause {
+            Some(EngineError::HostExited(HostExit {
+                reason,
+                permanent: true,
+            })) => {
+                if zh {
+                    format!(
+                        "第 {page} 頁無法繪製：{}。這一頁不會再重試。",
+                        self.host_reason(reason)
+                    )
+                } else {
+                    format!(
+                        "Page {page} could not be rendered: {}. FastPDF will not try this page again.",
+                        self.host_reason(reason)
+                    )
+                }
+            }
+            Some(EngineError::HostExited(HostExit { reason, .. })) => {
+                if zh {
+                    format!("第 {page} 頁無法繪製：{}。", self.host_reason(reason))
+                } else {
+                    format!(
+                        "Page {page} could not be rendered: {}.",
+                        self.host_reason(reason)
+                    )
+                }
+            }
+            Some(EngineError::Unavailable(_)) => {
+                if zh {
+                    format!("第 {page} 頁無法繪製：繪製程式沒有回應。")
+                } else {
+                    format!("Page {page} could not be rendered: the renderer is not responding.")
+                }
+            }
+            _ => self.page_error(page, error),
+        }
+    }
+
+    /// Why the render host stopped, as a clause.
+    fn host_reason(&self, reason: &HostExitReason) -> String {
+        let zh = self.zh();
+        match reason {
+            HostExitReason::Crashed {
+                exit_code: Some(code),
+            } => {
+                if zh {
+                    format!("繪製程式當掉了（代碼 {code:#010X}）")
+                } else {
+                    format!("the renderer crashed (code {code:#010X})")
+                }
+            }
+            HostExitReason::MemoryLimit if zh => "需要的記憶體超過繪製程式的上限".into(),
+            HostExitReason::MemoryLimit => "it needs more memory than the renderer may use".into(),
+            HostExitReason::Deadline if zh => "繪製時間過長".into(),
+            HostExitReason::Deadline => "it took too long to render".into(),
+            _ if zh => "繪製程式當掉了".into(),
+            _ => "the renderer crashed".into(),
+        }
+    }
+
+    /// Document-level notice once the render host stopped restarting after
+    /// a crash storm (ADR 0008 §2).
+    pub(crate) fn rendering_stopped(&self, crashes: u32) -> String {
+        if self.zh() {
+            format!("已停止繪製：繪製程式當掉了 {crashes} 次。請重新開啟文件再試一次。")
+        } else {
+            format!(
+                "Rendering stopped: the renderer crashed {crashes} times. Reopen the document to try again."
+            )
+        }
+    }
+
     /// Why a document did not open, for the empty window. Engine details
     /// (English, from the engine) follow in parentheses where they help.
     pub(crate) fn open_failure(&self, failure: &OpenFailure) -> String {
@@ -548,6 +629,19 @@ impl Strings {
                 "The document exceeds a safety limit",
                 kind,
             ),
+            OpenFailure::Engine(EngineError::HostExited(HostExit { reason, .. })) => {
+                if zh {
+                    format!("開啟文件時{}。", self.host_reason(reason))
+                } else {
+                    format!(
+                        "The document could not be opened: {}.",
+                        self.host_reason(reason)
+                    )
+                }
+            }
+            OpenFailure::Engine(EngineError::Unavailable(m)) => {
+                detail("繪製程式目前無法使用", "The renderer is not available", m)
+            }
             OpenFailure::Engine(e) => detail("PDF 引擎發生錯誤", "The PDF engine failed", e),
         }
     }
@@ -691,6 +785,65 @@ mod tests {
         assert!(
             en.open_failure(&OpenFailure::Load(LoadError::TooLarge(3 << 30)))
                 .contains("3072 MiB")
+        );
+    }
+
+    #[test]
+    fn render_host_failures_are_worded_for_people() {
+        let zh = Language::TraditionalChinese.strings();
+        let en = Language::English.strings();
+        let exited = |reason, permanent| EngineError::HostExited(HostExit { reason, permanent });
+        let crash = exited(
+            HostExitReason::Crashed {
+                exit_code: Some(0xC000_0409),
+            },
+            false,
+        );
+        assert_eq!(
+            zh.page_failure(3, Some(&crash), "x"),
+            "第 3 頁無法繪製：繪製程式當掉了（代碼 0xC0000409）。"
+        );
+        assert_eq!(
+            en.page_failure(3, Some(&crash), "x"),
+            "Page 3 could not be rendered: the renderer crashed (code 0xC0000409)."
+        );
+        let memory = exited(HostExitReason::MemoryLimit, true);
+        assert_eq!(
+            zh.page_failure(7, Some(&memory), "x"),
+            "第 7 頁無法繪製：需要的記憶體超過繪製程式的上限。這一頁不會再重試。"
+        );
+        assert!(
+            en.page_failure(7, Some(&memory), "x")
+                .ends_with("FastPDF will not try this page again.")
+        );
+        let slow = exited(HostExitReason::Deadline, true);
+        assert!(
+            zh.page_failure(1, Some(&slow), "x")
+                .contains("繪製時間過長")
+        );
+        assert!(
+            en.page_failure(1, Some(&slow), "x")
+                .contains("took too long")
+        );
+        let busy = EngineError::Unavailable("host restarting".into());
+        assert!(zh.page_failure(2, Some(&busy), "x").contains("沒有回應"));
+        // Engine errors keep the engine's text.
+        let broken = EngineError::Malformed("bad stream".into());
+        assert_eq!(
+            en.page_failure(4, Some(&broken), "malformed PDF: bad stream"),
+            "Page 4 could not be rendered: malformed PDF: bad stream"
+        );
+        assert_eq!(en.page_failure(4, None, "?"), en.page_error(4, "?"));
+        assert!(zh.rendering_stopped(3).contains("當掉了 3 次"));
+        assert!(en.rendering_stopped(5).contains("crashed 5 times"));
+        let open = OpenFailure::Engine(crash);
+        assert_eq!(
+            zh.open_failure(&open),
+            "開啟文件時繪製程式當掉了（代碼 0xC0000409）。"
+        );
+        assert!(
+            en.open_failure(&open)
+                .starts_with("The document could not be opened")
         );
     }
 

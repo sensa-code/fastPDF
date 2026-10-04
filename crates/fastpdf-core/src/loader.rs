@@ -6,13 +6,28 @@
 //! nothing up front and only the pages the engine touches are paged in
 //! (spec §11) — file-backed pages do not count against the commit charge and
 //! the OS can drop them under pressure.
+//!
+//! Files on network drives (UNC paths and drive letters mapped to a share)
+//! are never mapped, whatever their size (R10): when the connection drops,
+//! touching a mapped page that has to be read again raises
+//! `EXCEPTION_IN_PAGE_ERROR` in whatever code touches it — the engine — and
+//! the process ends. They are read instead, under the same size rules.
+//!
+//! In render-host mode ([`set_handle_only`], ADR 0008 §1.5) FastPDF does not
+//! read the file at all: it opens it without `FILE_SHARE_WRITE`, keeps that
+//! handle while the document is open (the bytes cannot change under the
+//! host), and the remote engine hands a duplicate of the handle to the host,
+//! which reads or maps it itself. The bytes are still produced here on first
+//! access, should an in-process engine end up with them.
 
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
-use fastpdf_engine_api::SharedBytes;
+use fastpdf_engine_api::{FileOrigin, SharedBytes};
 
 /// Files up to this size are read; larger files are mapped.
 pub const MMAP_THRESHOLD: u64 = 64 * 1024 * 1024;
@@ -21,6 +36,9 @@ pub const MMAP_THRESHOLD: u64 = 64 * 1024 * 1024;
 pub enum LoadStrategy {
     Read,
     Mapped,
+    /// Opened for another process (the render host); read here only if an
+    /// in-process engine needs the bytes.
+    Handle,
 }
 
 impl fmt::Display for LoadStrategy {
@@ -28,6 +46,7 @@ impl fmt::Display for LoadStrategy {
         f.write_str(match self {
             Self::Read => "read",
             Self::Mapped => "mapped",
+            Self::Handle => "handle",
         })
     }
 }
@@ -63,20 +82,33 @@ impl From<io::Error> for LoadError {
     }
 }
 
+static HANDLE_ONLY: AtomicBool = AtomicBool::new(false);
+
+/// Render-host mode (see the module docs). Set once by the application
+/// when its engine runs documents in a render host.
+pub fn set_handle_only(on: bool) {
+    HANDLE_ONLY.store(on, Ordering::Release);
+}
+
+pub fn handle_only() -> bool {
+    HANDLE_ONLY.load(Ordering::Acquire)
+}
+
 /// Loads `path` with the default threshold.
 pub fn load(path: &Path) -> Result<LoadedFile, LoadError> {
     load_with_threshold(path, MMAP_THRESHOLD)
 }
 
 pub fn load_with_threshold(path: &Path, mmap_threshold: u64) -> Result<LoadedFile, LoadError> {
+    let network = is_network_path(path);
+    if handle_only()
+        && let Some(loaded) = load_handle(path, mmap_threshold, network)?
+    {
+        return Ok(loaded);
+    }
     let len = std::fs::metadata(path)?.len();
-    if len == 0 {
-        return Err(LoadError::Empty);
-    }
-    if usize::try_from(len).is_err() {
-        return Err(LoadError::TooLarge(len));
-    }
-    if len > mmap_threshold {
+    check_len(len)?;
+    if len > mmap_threshold && !network {
         match map(path) {
             Ok(bytes) => {
                 return Ok(LoadedFile {
@@ -100,6 +132,121 @@ pub fn load_with_threshold(path: &Path, mmap_threshold: u64) -> Result<LoadedFil
         bytes: SharedBytes::from_vec(data),
         strategy: LoadStrategy::Read,
     })
+}
+
+fn check_len(len: u64) -> Result<(), LoadError> {
+    if len == 0 {
+        return Err(LoadError::Empty);
+    }
+    if usize::try_from(len).is_err() {
+        return Err(LoadError::TooLarge(len));
+    }
+    Ok(())
+}
+
+/// Render-host mode: the file opened for writer-proof sharing, nothing
+/// read. `None` when another process has it open for writing (the caller
+/// then reads a copy).
+fn load_handle(
+    path: &Path,
+    mmap_threshold: u64,
+    network: bool,
+) -> Result<Option<LoadedFile>, LoadError> {
+    let file = match open_deny_write(path) {
+        Ok(file) => file,
+        Err(e) if is_sharing_violation(&e) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let len = file.metadata()?.len();
+    check_len(len)?;
+    let origin = Arc::new(FileOrigin::new(file, len, network));
+    let lazy = LazyFile {
+        origin: Arc::clone(&origin),
+        mmap_threshold,
+        bytes: OnceLock::new(),
+    };
+    Ok(Some(LoadedFile {
+        bytes: SharedBytes::from_file(lazy, origin),
+        strategy: LoadStrategy::Handle,
+    }))
+}
+
+/// Bytes of a file opened in render-host mode, produced on first access by
+/// the same rules as [`load`] (read, or map when large and local).
+struct LazyFile {
+    origin: Arc<FileOrigin>,
+    mmap_threshold: u64,
+    bytes: OnceLock<Materialized>,
+}
+
+enum Materialized {
+    Read(Vec<u8>),
+    Mapped(memmap2::Mmap),
+    /// Reading failed; the engine sees no bytes and reports a broken file.
+    Failed,
+}
+
+impl AsRef<[u8]> for LazyFile {
+    fn as_ref(&self) -> &[u8] {
+        match self.bytes.get_or_init(|| self.materialize()) {
+            Materialized::Read(data) => data,
+            Materialized::Mapped(map) => map,
+            Materialized::Failed => &[],
+        }
+    }
+}
+
+impl LazyFile {
+    #[allow(unsafe_code)]
+    fn materialize(&self) -> Materialized {
+        let origin = &self.origin;
+        if origin.len() > self.mmap_threshold && !origin.is_network() {
+            // SAFETY: memmap2 requires that the file is not modified while
+            // mapped. `origin` holds a handle opened without FILE_SHARE_WRITE
+            // for as long as the mapping lives (the mapping is dropped
+            // before `origin` with this struct), so no process can open the
+            // file for writing (Windows; best-effort elsewhere, ADR 0006).
+            if let Ok(map) = unsafe { memmap2::Mmap::map(origin.file()) } {
+                return Materialized::Mapped(map);
+            }
+        }
+        match read_all_at(origin.file(), origin.len()) {
+            Ok(data) if !data.is_empty() => Materialized::Read(data),
+            _ => Materialized::Failed,
+        }
+    }
+}
+
+/// Reads `len` bytes from offset 0 without moving the handle's cursor
+/// (the handle may be duplicated into another process).
+fn read_all_at(file: &File, len: u64) -> io::Result<Vec<u8>> {
+    let len = usize::try_from(len).map_err(|_| io::Error::other("file too large"))?;
+    let mut data = vec![0u8; len];
+    let mut done = 0;
+    while done < len {
+        let n = read_at(file, &mut data[done..], done as u64)?;
+        if n == 0 {
+            break;
+        }
+        done += n;
+    }
+    data.truncate(done);
+    Ok(data)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buf, offset)
+}
+
+#[cfg(unix)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buf, offset)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn read_at(_file: &File, _buf: &mut [u8], _offset: u64) -> io::Result<usize> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
 /// A read-only mapping plus the handle that keeps writers out.
@@ -156,12 +303,74 @@ fn is_sharing_violation(_e: &io::Error) -> bool {
     false
 }
 
+/// Where a path lives, as far as loading is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Location {
+    /// `\\server\share\...`, `\\?\UNC\server\share\...`.
+    Unc,
+    /// A drive letter (`C:\...`, `\\?\C:\...`): local or mapped, the volume
+    /// decides.
+    Drive(u8),
+    /// Relative, rooted without a drive, device namespace, volume GUID.
+    Other,
+}
+
+/// Classifies an absolute path by its prefix alone (no system calls).
+fn locate(path: &Path) -> Location {
+    use std::path::{Component, Prefix};
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) => Location::Unc,
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                Location::Drive(letter.to_ascii_uppercase())
+            }
+            _ => Location::Other,
+        },
+        _ => Location::Other,
+    }
+}
+
+/// [`is_network_path`] with the volume query injected (for tests).
+fn is_network_with(path: &Path, drive_is_remote: impl Fn(u8) -> bool) -> bool {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    match locate(&absolute) {
+        Location::Unc => true,
+        Location::Drive(letter) => drive_is_remote(letter),
+        Location::Other => false,
+    }
+}
+
+/// True for files on a network share: UNC paths (`\\server\share\...`,
+/// `\\?\UNC\...`) and drive letters whose volume root is a remote drive
+/// (`GetDriveTypeW` reports `DRIVE_REMOTE`, i.e. mapped network drives).
+pub fn is_network_path(path: &Path) -> bool {
+    is_network_with(path, drive_is_remote)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn drive_is_remote(letter: u8) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    /// `DRIVE_REMOTE` (WinBase.h); its windows-sys home is a feature this
+    /// crate does not otherwise need.
+    const DRIVE_REMOTE: u32 = 4;
+    let root: [u16; 4] = [u16::from(letter), u16::from(b':'), u16::from(b'\\'), 0];
+    // SAFETY: `root` is a NUL-terminated wide string that outlives the call.
+    unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+}
+
+#[cfg(not(windows))]
+fn drive_is_remote(_letter: u8) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::PathBuf;
 
-    fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+    fn temp_file(name: &str, bytes: &[u8]) -> PathBuf {
         let dir = std::env::temp_dir().join("fastpdf-core-tests");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("{}-{name}", std::process::id()));
@@ -198,5 +407,77 @@ mod tests {
         assert!(matches!(load(&path), Err(LoadError::Empty)));
         std::fs::remove_file(&path).unwrap();
         assert!(matches!(load(&path), Err(LoadError::Io(_))));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn paths_are_classified_by_their_prefix() {
+        let p = |s: &str| locate(Path::new(s));
+        assert_eq!(p(r"\\server\share\docs\a.pdf"), Location::Unc);
+        assert_eq!(p("//server/share/a.pdf"), Location::Unc);
+        assert_eq!(p(r"\\?\UNC\server\share\a.pdf"), Location::Unc);
+        assert_eq!(p(r"C:\docs\a.pdf"), Location::Drive(b'C'));
+        assert_eq!(p("z:/a.pdf"), Location::Drive(b'Z'));
+        assert_eq!(p(r"\\?\D:\docs\a.pdf"), Location::Drive(b'D'));
+        assert_eq!(p(r"\\.\COM1"), Location::Other);
+        assert_eq!(
+            p(r"\\?\Volume{12345678-1234-1234-1234-123456789abc}\a.pdf"),
+            Location::Other
+        );
+        assert_eq!(p(r"docs\a.pdf"), Location::Other);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn network_paths_are_unc_or_remote_drives() {
+        // Z: plays a mapped network drive, C: a local disk.
+        let remote = |letter: u8| letter == b'Z';
+        assert!(is_network_with(Path::new(r"\\nas\scans\a.pdf"), remote));
+        assert!(is_network_with(
+            Path::new(r"\\?\UNC\nas\scans\a.pdf"),
+            remote
+        ));
+        assert!(is_network_with(Path::new(r"Z:\scans\a.pdf"), remote));
+        assert!(is_network_with(Path::new(r"\\?\z:\scans\a.pdf"), remote));
+        assert!(!is_network_with(Path::new(r"C:\docs\a.pdf"), remote));
+        assert!(!is_network_with(Path::new(r"\\.\C:\docs\a.pdf"), remote));
+        // Relative paths are resolved first; the test runs on a local disk.
+        assert!(!is_network_with(Path::new("a.pdf"), |_| false));
+        // The real query: the temp directory is local.
+        assert!(!is_network_path(&std::env::temp_dir().join("a.pdf")));
+    }
+
+    #[test]
+    fn handle_only_mode_opens_without_reading() {
+        let data = b"%PDF-1.7 handle".to_vec();
+        let path = temp_file("handle.pdf", &data);
+        let loaded = load_handle(&path, MMAP_THRESHOLD, false).unwrap().unwrap();
+        assert_eq!(loaded.strategy, LoadStrategy::Handle);
+        assert_eq!(loaded.bytes.len(), data.len());
+        let origin = loaded.bytes.origin().cloned().unwrap();
+        assert_eq!(origin.len(), data.len() as u64);
+        assert!(!origin.is_network());
+        // Writers stay out while the document is open.
+        #[cfg(windows)]
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
+        // An in-process engine still gets the bytes, on first access.
+        assert_eq!(loaded.bytes.as_slice(), &data[..]);
+        drop((loaded, origin));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn handle_only_mode_maps_large_local_files_lazily() {
+        let data = vec![3u8; 8192];
+        let path = temp_file("handle-large.pdf", &data);
+        let loaded = load_handle(&path, 1024, false).unwrap().unwrap();
+        assert_eq!(loaded.bytes.as_slice(), &data[..]);
+        drop(loaded);
+        // A file on a network drive of the same size is read, not mapped.
+        let net = load_handle(&path, 1024, true).unwrap().unwrap();
+        assert!(net.bytes.origin().is_some_and(|o| o.is_network()));
+        assert_eq!(net.bytes.as_slice(), &data[..]);
+        drop(net);
+        std::fs::remove_file(path).unwrap();
     }
 }

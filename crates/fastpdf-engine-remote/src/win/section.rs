@@ -14,8 +14,16 @@
 //!   keeps only a read-only handle; the host maps it read-only. After the
 //!   copy nobody can write the section any more, so handing out `&[u8]` to
 //!   the mapping is sound for the mapping's lifetime.
+//! * **Document files.** For a document loaded from a file, the parent
+//!   hands the host a read-only duplicate of its file handle instead of a
+//!   copy (ADR 0008 §1.5). The parent opened the file without write
+//!   sharing, and the duplicate refers to the same file object, so nobody
+//!   can open the file for writing while the host keeps that handle open;
+//!   the host keeps it for as long as it maps the file.
 
+use std::fs::File;
 use std::io;
+use std::os::windows::fs::FileExt;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 use std::ptr::NonNull;
 use std::sync::Mutex;
@@ -23,11 +31,11 @@ use std::sync::Mutex;
 use windows_sys::Win32::Foundation::{DuplicateHandle, FALSE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
-    PAGE_READWRITE, UnmapViewOfFile,
+    PAGE_READONLY, PAGE_READWRITE, UnmapViewOfFile,
 };
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-use super::{check, claim, owned, release};
+use super::{Claim, check, claim, owned, release};
 
 /// Access rights for mapping a section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +296,96 @@ impl AsRef<[u8]> for MappedBytes {
     }
 }
 
+/// Host side: a read-only handle to the document file, duplicated into
+/// this process by the parent (module docs, "Document files").
+#[derive(Debug)]
+pub(crate) struct ParentFile {
+    // Declared before the claim: closed before the value is released.
+    file: File,
+    _claim: Claim,
+}
+
+impl ParentFile {
+    pub(crate) fn adopt(value: u64) -> io::Result<Self> {
+        let (claim, raw) = Claim::take(value)?;
+        // SAFETY: the parent duplicated this handle into our process for
+        // this command only (DuplicateHandle), so nothing else in the host
+        // owns it, and `Claim::take` refuses a value that is already
+        // adopted. Reads and mapping fail cleanly if it is not a file.
+        let file = unsafe { File::from_raw_handle(raw) };
+        Ok(Self {
+            file,
+            _claim: claim,
+        })
+    }
+
+    /// Reads the first `len` bytes with positional reads (the file
+    /// position belongs to the parent's file object as well).
+    pub(crate) fn read(&self, len: u64) -> io::Result<Vec<u8>> {
+        let too_large = || io::Error::new(io::ErrorKind::OutOfMemory, "document too large");
+        let len = usize::try_from(len).map_err(|_| too_large())?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(len).map_err(|_| too_large())?;
+        data.resize(len, 0);
+        let mut done = 0;
+        while let Some(rest) = data.get_mut(done..).filter(|r| !r.is_empty()) {
+            match self.file.seek_read(rest, done as u64) {
+                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(n) => done += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(data)
+    }
+}
+
+/// Host side: the document file mapped read-only.
+#[derive(Debug)]
+pub(crate) struct FileView {
+    view: View,
+    // Keeps writers out for as long as the view exists (module docs).
+    _file: ParentFile,
+}
+
+impl FileView {
+    /// Maps the first `len` bytes of `file`; fails if the file is shorter.
+    pub(crate) fn map(file: ParentFile, len: u64) -> io::Result<Self> {
+        let len = usize::try_from(len)
+            .ok()
+            .filter(|&l| l > 0)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "bad document length"))?;
+        // SAFETY: plain FFI call on a file handle we own; a maximum size of
+        // zero maps the file at its current size, a null name makes the
+        // section unnamed.
+        let raw = unsafe {
+            CreateFileMappingW(
+                file.file.as_raw_handle(),
+                std::ptr::null(),
+                PAGE_READONLY,
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        // SAFETY: `raw` was just created and has no other owner.
+        let handle = unsafe { owned(raw) }?;
+        let section = Section { handle, len };
+        // The view keeps the section alive after its handle closes.
+        let view = section.map(Access::Read)?;
+        Ok(Self { view, _file: file })
+    }
+}
+
+impl AsRef<[u8]> for FileView {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: the view covers `len` mapped, readable bytes for as long as
+        // `self` lives, and nobody can write the file while `_file` is open
+        // (module docs), so the slice is never mutated while borrowed.
+        unsafe { std::slice::from_raw_parts(self.view.ptr.as_ptr(), self.view.len) }
+    }
+}
+
 /// Host side: the tile slot section with one busy flag per slot, so at most
 /// one `&mut [u8]` per slot exists in the host at any time.
 #[derive(Debug)]
@@ -466,5 +564,67 @@ mod tests {
     #[test]
     fn empty_sections_are_refused() {
         assert!(Section::create(0).is_err());
+    }
+
+    /// A file opened like the loader does: read access, no write sharing.
+    fn deny_write(path: &std::path::Path) -> File {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+            .unwrap()
+    }
+
+    /// What the parent does for the host, within one process.
+    fn hand_over(file: &File) -> u64 {
+        use std::os::windows::io::IntoRawHandle;
+        file.try_clone().unwrap().into_raw_handle() as usize as u64
+    }
+
+    #[test]
+    fn document_files_are_read_or_mapped_and_stay_unwritable() {
+        let dir = std::env::temp_dir().join(format!("fastpdf-file-view-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.pdf");
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let parent = deny_write(&path);
+
+        let read = ParentFile::adopt(hand_over(&parent)).unwrap();
+        assert_eq!(read.read(data.len() as u64).unwrap(), data);
+        // Positional reads ignore (and survive) the shared file position.
+        assert_eq!(read.read(10).unwrap(), &data[..10]);
+        assert!(read.read(data.len() as u64 + 1).is_err(), "short file");
+        drop(read);
+
+        let view = FileView::map(ParentFile::adopt(hand_over(&parent)).unwrap(), 300_000).unwrap();
+        // The parent closes its handle; the host's view keeps writers out.
+        drop(parent);
+        assert_eq!(view.as_ref(), &data[..]);
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
+        drop(view);
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_ok());
+
+        let parent = deny_write(&path);
+        assert!(FileView::map(ParentFile::adopt(hand_over(&parent)).unwrap(), 400_000).is_err());
+        assert!(FileView::map(ParentFile::adopt(hand_over(&parent)).unwrap(), 0).is_err());
+        drop(parent);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_handle_value_is_adopted_once() {
+        let path = std::env::temp_dir().join(format!("fastpdf-adopt-{}.bin", std::process::id()));
+        std::fs::write(&path, b"x").unwrap();
+        let file = deny_write(&path);
+        let value = hand_over(&file);
+        let first = ParentFile::adopt(value).unwrap();
+        assert!(ParentFile::adopt(value).is_err());
+        drop(first);
+        assert!(ParentFile::adopt(0).is_err());
+        drop(file);
+        let _ = std::fs::remove_file(&path);
     }
 }

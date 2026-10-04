@@ -214,7 +214,7 @@ Dependency policy（spec §36）的落實方式：
 
 | # | 風險 | 影響 | 機率 | 對策 |
 |---|---|---|---|---|
-| R1 | **Hostile PDF 造成無法攔截的失敗**：Hayro 的 10,000 層 `/Indexed` 鏈會 stack overflow，`catch_unwind` 無效；1 KB 檔可配置 1–2 GB；form XObject DAG 可讓 interpret 執行 30 秒以上 | 高（crash 或卡死） | 中 | 已做：Hayro adapter 的靜態掃描、有預算的預先解譯與 bomb 預解壓（`LimitExceeded` 取代 crash）。已設計：render host process + Job Object 記憶體上限（[ADR 0008](adr/0008-out-of-process-rendering.md)，原型實測成本約為 0，分 5 個 PR 實作）；upstream issue 草稿在 `docs/upstream-issues/` |
+| R1 | **Hostile PDF 造成無法攔截的失敗**：Hayro 的 10,000 層 `/Indexed` 鏈會 stack overflow，`catch_unwind` 無效；1 KB 檔可配置 1–2 GB；form XObject DAG 可讓 interpret 執行 30 秒以上 | 高（crash 或卡死） | 中 | 已做：Hayro adapter 的靜態掃描、有預算的預先解譯與 bomb 預解壓（`LimitExceeded` 取代 crash）。render host process + Job Object 記憶體上限（[ADR 0008](adr/0008-out-of-process-rendering.md) PR 1–4）已實作，以 `--engine hayro-isolated` opt-in：crash、記憶體上限、hang 只會結束 host，頁面先重試、2 次 strike 後才永久失敗，crash storm 時停止重啟並顯示文件層級提示；hostile 語料經由 UI 跑完，UI 0 次結束。預設仍是 in-process：B-8 的 300 頁啟動時間比較在本機負載下無法確認。upstream issue 草稿在 `docs/upstream-issues/` |
 | R2 | GPU texture 洩漏或碎片化 | 高（VRAM、commit 持續成長） | 中 | 用 main 版 GPUI；tile cache eviction hook 一律 `drop_image`；CI churn 測試 |
 | R3 | GPUI API 變動與 git pin 的維護成本 | 中 | 高 | GPUI 只出現在 `fastpdf-ui`；每 4–8 週評估升級一次；用 probe 與 bench 當升級門檻 |
 | R4 | 依賴授權回歸（例如再度引入 GPL crate） | 高（商業化受阻） | 低 | `license_report.py --check` 放進 CI；升級 GPUI 或 engine 時必跑 |
@@ -223,7 +223,7 @@ Dependency policy（spec §36）的落實方式：
 | R7 | **非內嵌 CJK 字型**（台灣政府文件常見）顯示成 Helvetica 或空白 | 高（台灣使用場景） | 高 | adapter 實作 Windows 系統字型 resolver（MingLiU／JhengHei 等），並用 `fixtures/generated/cjk`、`traditional-chinese` 驗證 |
 | R8 | KPI 定義不清：GPUI 本身到第一個 frame 就要 205–228 ms，「首頁 < 200 ms」從 process 啟動起算做不到；idle RAM 依指標而定：private WS 約 16 MiB，working set 約 68 MiB | 中 | 確定 | 在 benchmark plan 定義起點與指標；讀檔、開檔與 GPUI 初始化平行進行 |
 | R9 | idle CPU 無法到 0：GPUI vsync thread 以 refresh rate 喚醒 | 低到中 | 確定 | 需要時對 GPUI 打 vsync park patch（`[patch]`）；以 WPA 驗證 |
-| R10 | 網路磁碟上的 mmap 在斷線時讓 process crash | 中 | 低 | 偵測 `DRIVE_REMOTE` 時改為讀取（ADR 0006 待辦） |
+| R10 | 網路磁碟上的 mmap 在斷線時讓 process crash | 中 | 低 | 已做：UNC 路徑與 `DRIVE_REMOTE` 磁碟機上的檔案一律讀取、不 mmap（`loader::is_network_path`，ADR 0006）；render host 模式下由 host 讀取網路上的檔案，同樣不 mmap |
 | R11 | Windows Defender 隔離惡意 PDF 測試檔（zpdf repo 已實際發生） | 低 | 中 | 惡意語料不 commit，放 `fixtures/local/`，由使用者決定是否加入排除清單 |
 | R12 | 目前所有量測都在高階機器上（RTX 5090、60 Hz、100% 縮放） | 中（KPI 過度樂觀） | 確定 | B-8 需要在 iGPU 筆電、高更新率、混合 DPI 的環境補測 |
 | R13 | 列印：GPUI 沒有列印 API | 中（V0.1 功能） | 確定 | Win32 GDI／XPS 列印路徑，以 engine 直接 render 到印表機解析度；V0.1 可以延後（spec §8） |

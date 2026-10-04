@@ -12,18 +12,27 @@
 //! A page that is not known yet is requested directly from the host's
 //! geometry threads — bypassing the admission gate, the state lock and the
 //! render queue — and the UI thread waits at most [`UI_GEOMETRY_WAIT`].
+//!
+//! Errors that come from the host's supervision rather than from the
+//! engine are typed so that callers can retry them (ADR 0008 §2):
+//! `EngineError::HostExited` when the host died while handling the request
+//! (with the reason; `permanent` once the request is not sent to a host
+//! again, or the document stopped restarting hosts), and
+//! `EngineError::Unavailable` when no host could answer in time (restart
+//! failed, no answer, geometry wait exceeded).
 
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use fastpdf_engine_api::{
     CancelToken, DocumentMetadata, DocumentSource, EngineDocument, EngineError, EngineInfo,
-    LimitKind, Link, MemoryPressure, OpenOptions, OutlineItem, PageIndex, PageInfo, PdfEngine,
-    PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
+    FileOrigin, HostExit, HostExitReason, HostStatus, Link, MemoryPressure, OpenOptions,
+    OutlineItem, PageIndex, PageInfo, PdfEngine, PixmapMut, RenderOutcome, RenderRequest,
+    ResourceLimits, TextLayer,
 };
 
 use crate::HostStats;
@@ -33,7 +42,8 @@ use crate::gate::Gate;
 use crate::geometry::Geometry;
 use crate::policy::{DeathCause, Ledger, Subject, Verdict};
 use crate::protocol::{
-    Command, MAX_NAME, MAX_SLOT_BYTES, MAX_SLOTS, Open, Payload, Render, WireEngineInfo,
+    Command, DocumentRef, MAX_NAME, MAX_SLOT_BYTES, MAX_SLOTS, Open, Payload, Render,
+    WireEngineInfo,
 };
 use crate::win::section::{Access, Section};
 
@@ -51,6 +61,10 @@ pub(crate) const UI_GEOMETRY_WAIT: Duration = Duration::from_secs(1);
 const GEOMETRY_POLL: Duration = Duration::from_millis(20);
 /// Verdict maps kept for late callers of a dead connection.
 const KEPT_VERDICTS: usize = 8;
+/// Waiting for a background start: its own timeout plus this.
+const START_GRACE: Duration = Duration::from_secs(1);
+/// Delay before a taken spare host is replaced.
+const REFILL_DELAY: Duration = Duration::from_secs(1);
 
 /// A [`PdfEngine`] whose documents live in render host processes.
 ///
@@ -76,12 +90,22 @@ struct EngineShared {
     config: RemoteConfig,
     info: EngineInfo,
     wire_info: WireEngineInfo,
-    /// A started host without a document, ready for the next open or
-    /// restart (ADR 0008 §5).
-    spare: Mutex<Option<Arc<Connection>>>,
-    refilling: AtomicBool,
+    spare: Mutex<Spare>,
+    /// Signalled when a background start ends.
+    spare_done: Condvar,
     generation: AtomicU64,
     documents: Mutex<Vec<Weak<DocShared>>>,
+}
+
+/// A started host without a document, ready for the next open or restart
+/// (ADR 0008 §5), and the background start of the next one.
+#[derive(Default)]
+struct Spare {
+    conn: Option<Arc<Connection>>,
+    /// A host is being started in the background.
+    starting: bool,
+    /// How the first start ended; `None` while it runs.
+    first: Option<Result<(), EngineError>>,
 }
 
 fn validate(config: &RemoteConfig) -> Result<(), EngineError> {
@@ -118,6 +142,7 @@ fn intern(s: &str) -> &'static str {
 impl RemoteEngine {
     /// Starts a render host (which proves that the executable runs and
     /// speaks this protocol) and keeps it ready for the first document.
+    /// Blocks until the host is ready; see [`RemoteEngine::start`].
     pub fn new(config: RemoteConfig) -> Result<Self, EngineError> {
         validate(&config)?;
         let first = Connection::spawn(&config, 1)?;
@@ -127,22 +152,60 @@ impl RemoteEngine {
             version: intern(&wire_info.version),
             capabilities: wire_info.capabilities,
         };
+        let spare = Spare {
+            conn: Some(first),
+            starting: false,
+            first: Some(Ok(())),
+        };
         Ok(Self {
-            shared: Arc::new(EngineShared {
-                config,
-                info,
-                wire_info,
-                spare: Mutex::new(Some(first)),
-                refilling: AtomicBool::new(false),
-                generation: AtomicU64::new(2),
-                documents: Mutex::new(Vec::new()),
-            }),
+            shared: EngineShared::new(config, info, wire_info, spare),
         })
+    }
+
+    /// Like [`RemoteEngine::new`] without waiting: the first host starts on
+    /// a background thread, so FastPDF's own start-up does not wait for it
+    /// (ADR 0008 §5). `expected` is the engine the host must run (the same
+    /// engine in-process); a host reporting anything else is refused.
+    /// Opening a document waits for the start; [`RemoteEngine::ready`]
+    /// tells whether it worked.
+    pub fn start(config: RemoteConfig, expected: EngineInfo) -> Result<Self, EngineError> {
+        validate(&config)?;
+        let wire_info = WireEngineInfo {
+            name: expected.name.to_owned(),
+            version: expected.version.to_owned(),
+            capabilities: expected.capabilities,
+        };
+        let shared = EngineShared::new(config, expected, wire_info, Spare::default());
+        shared.start_spare(true);
+        Ok(Self { shared })
+    }
+
+    /// Waits until the first host has started (at most the configured
+    /// start-up timeout) and returns how that went.
+    pub fn ready(&self) -> Result<(), EngineError> {
+        let shared = &self.shared;
+        let mut spare = lock(&shared.spare);
+        let deadline = Instant::now() + shared.config.startup_timeout + START_GRACE;
+        while spare.first.is_none() {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(EngineError::Unavailable(
+                    "the render host did not start in time".into(),
+                ));
+            }
+            spare = shared
+                .spare_done
+                .wait_timeout(spare, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        spare.first.clone().unwrap_or(Ok(()))
     }
 
     /// Process id of the started host kept in reserve, if any.
     pub fn spare_pid(&self) -> Option<u32> {
         lock(&self.shared.spare)
+            .conn
             .as_ref()
             .filter(|c| c.is_alive())
             .map(|c| c.pid())
@@ -177,6 +240,23 @@ impl PdfEngine for RemoteEngine {
 }
 
 impl EngineShared {
+    fn new(
+        config: RemoteConfig,
+        info: EngineInfo,
+        wire_info: WireEngineInfo,
+        spare: Spare,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config,
+            info,
+            wire_info,
+            spare: Mutex::new(spare),
+            spare_done: Condvar::new(),
+            generation: AtomicU64::new(2),
+            documents: Mutex::new(Vec::new()),
+        })
+    }
+
     fn next_generation(&self) -> u64 {
         self.generation.fetch_add(1, Ordering::Relaxed)
     }
@@ -196,33 +276,94 @@ impl EngineShared {
         Ok(conn)
     }
 
-    /// A live host without a document: the spare if there is one.
+    /// A live host without a document: the spare if there is one, else
+    /// the one being started in the background (rather than a second
+    /// start next to it), else a new one.
     fn host(self: &Arc<Self>) -> Result<Arc<Connection>, EngineError> {
-        let spare = lock(&self.spare).take();
-        let conn = match spare {
+        let ready = {
+            let mut spare = lock(&self.spare);
+            let deadline = Instant::now() + self.config.startup_timeout + START_GRACE;
+            while spare.starting && spare.conn.is_none() {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                spare = self
+                    .spare_done
+                    .wait_timeout(spare, deadline - now)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+            }
+            spare.conn.take()
+        };
+        let conn = match ready {
             Some(conn) if conn.is_alive() => conn,
             _ => self.spawn()?,
         };
-        self.refill();
+        if self.config.keep_spare {
+            self.refill();
+        }
         Ok(conn)
     }
 
-    /// Starts the next spare in the background.
+    /// A new spare after one was taken, started [`REFILL_DELAY`] later so
+    /// that its start-up never competes with the document being opened or
+    /// reopened (its first pages render meanwhile). A host needed within
+    /// that window is started on the spot, as without a spare.
     fn refill(self: &Arc<Self>) {
-        if !self.config.keep_spare || self.refilling.swap(true, Ordering::AcqRel) {
-            return;
+        let me = Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("fastpdf-remote-refill".into())
+            .spawn(move || {
+                std::thread::sleep(REFILL_DELAY);
+                if let Some(me) = me.upgrade() {
+                    me.start_spare(false);
+                }
+            });
+        if spawned.is_err() {
+            self.start_spare(false);
+        }
+    }
+
+    /// Starts a spare host in the background unless one is ready or
+    /// starting. `first`: this is the engine's first host, whose outcome
+    /// [`RemoteEngine::ready`] reports.
+    fn start_spare(self: &Arc<Self>, first: bool) {
+        {
+            let mut spare = lock(&self.spare);
+            if spare.starting || spare.conn.is_some() {
+                return;
+            }
+            spare.starting = true;
         }
         let me = Arc::clone(self);
         let started = std::thread::Builder::new()
             .name("fastpdf-remote-spare".into())
             .spawn(move || {
-                if let Ok(conn) = me.spawn() {
-                    *lock(&me.spare) = Some(conn);
+                let result = me.spawn();
+                {
+                    let mut spare = lock(&me.spare);
+                    spare.starting = false;
+                    if first {
+                        spare.first = Some(result.as_ref().map(drop).map_err(Clone::clone));
+                    }
+                    match result {
+                        Ok(conn) => spare.conn = Some(conn),
+                        Err(e) => log::warn!("render host start failed: {e}"),
+                    }
                 }
-                me.refilling.store(false, Ordering::Release);
+                me.spare_done.notify_all();
             });
-        if started.is_err() {
-            self.refilling.store(false, Ordering::Release);
+        if let Err(e) = started {
+            let mut spare = lock(&self.spare);
+            spare.starting = false;
+            if first {
+                spare.first = Some(Err(EngineError::Internal(format!(
+                    "cannot start the render host: no thread: {e}"
+                ))));
+            }
+            drop(spare);
+            self.spare_done.notify_all();
         }
     }
 }
@@ -234,7 +375,9 @@ struct Summary {
     restarts: u32,
     crashes: u32,
     last_crash: Option<String>,
-    failed_pages: Vec<u32>,
+    last_reason: Option<HostExitReason>,
+    /// Pages that failed permanently, with what they did to the host.
+    failed_pages: Vec<(u32, HostExitReason)>,
     disabled: bool,
 }
 
@@ -245,13 +388,36 @@ struct DocState {
     verdicts: Vec<(u64, HashMap<u64, Verdict>)>,
     restarts: u32,
     last_crash: Option<String>,
+    last_reason: Option<HostExitReason>,
+    /// How each subject last brought a host down.
+    reasons: HashMap<Subject, HostExitReason>,
     closed: bool,
+}
+
+/// `EngineError::HostExited`; an unknown reason counts as a crash.
+fn host_exit(reason: Option<HostExitReason>, permanent: bool) -> EngineError {
+    EngineError::HostExited(HostExit {
+        reason: reason.unwrap_or(HostExitReason::Crashed { exit_code: None }),
+        permanent,
+    })
+}
+
+/// Where a document's bytes are, for every host that opens it.
+enum DocBytes {
+    /// An empty source.
+    Empty,
+    /// A frozen, read-only copy: sources that are not a file.
+    Section(Section),
+    /// The file itself, which the loader keeps open without write sharing:
+    /// each host gets a read-only duplicate of the handle and reads or maps
+    /// the file, so FastPDF neither copies nor reads it (ADR 0008 §1.5).
+    File(Arc<FileOrigin>),
 }
 
 struct DocShared {
     engine: Arc<EngineShared>,
-    /// Document bytes, frozen read-only; re-shared with every new host.
-    section: Option<Section>,
+    /// Document bytes; shared again with every new host.
+    bytes: DocBytes,
     path: Option<PathBuf>,
     password: Option<String>,
     limits: ResourceLimits,
@@ -309,13 +475,18 @@ impl DocShared {
         options: &OpenOptions,
     ) -> Result<Arc<Self>, EngineError> {
         let DocumentSource { data, path } = source;
-        let section = upload(data.as_slice())?;
-        // The host maps the section; the caller's bytes are not needed here.
+        let bytes = match data.origin() {
+            // Not `data.as_slice()`: a file source has not been read, and
+            // must not be.
+            Some(origin) => DocBytes::File(Arc::clone(origin)),
+            None => upload(data.as_slice())?.map_or(DocBytes::Empty, DocBytes::Section),
+        };
+        // The host has its own access to the bytes now.
         drop(data);
         let config = &engine.config;
         let mut doc = Self {
             engine: Arc::clone(engine),
-            section,
+            bytes,
             path,
             password: options.password.clone(),
             limits: options.limits.clone(),
@@ -328,6 +499,8 @@ impl DocShared {
                 verdicts: Vec::new(),
                 restarts: 0,
                 last_crash: None,
+                last_reason: None,
+                reasons: HashMap::new(),
                 closed: false,
             }),
             current: Mutex::new(None),
@@ -343,19 +516,13 @@ impl DocShared {
                 return Err(match e {
                     CallError::Engine(e) | CallError::Fatal(e) => e,
                     CallError::Cancelled => EngineError::Cancelled,
-                    CallError::Lost => match conn.death() {
-                        Some(d) if matches!(d.cause, DeathCause::Deadline { .. }) => {
-                            EngineError::Internal(format!(
-                                "opening the document took longer than {:?}",
-                                doc.open_timeout
-                            ))
+                    // Opening is not retried: the user may open it again.
+                    CallError::Lost => {
+                        if let Some(d) = conn.death() {
+                            log::warn!("opening the document failed: {}", d.description);
                         }
-                        Some(d) => EngineError::Internal(format!(
-                            "{} while opening the document",
-                            d.description
-                        )),
-                        None => EngineError::Internal("render host lost while opening".into()),
-                    },
+                        host_exit(conn.death().map(|d| d.reason), true)
+                    }
                 });
             }
         };
@@ -412,22 +579,11 @@ impl DocShared {
         }
         {
             let summary = lock(&self.summary);
-            let last = summary
-                .last_crash
-                .as_deref()
-                .map(|c| format!(" (last: {c})"))
-                .unwrap_or_default();
-            if summary.failed_pages.contains(&page.get()) {
-                return Err(EngineError::Internal(format!(
-                    "{} crashed the render host repeatedly and is no longer rendered{last}",
-                    subject_name(Subject::Page(page.get()))
-                )));
+            if let Some((_, reason)) = summary.failed_pages.iter().find(|(p, _)| *p == page.get()) {
+                return Err(host_exit(Some(*reason), true));
             }
             if summary.disabled {
-                return Err(EngineError::Internal(format!(
-                    "rendering stopped after {} render host crashes{last}",
-                    summary.crashes
-                )));
+                return Err(host_exit(summary.last_reason, true));
             }
         }
         let deadline = Instant::now() + UI_GEOMETRY_WAIT;
@@ -447,8 +603,8 @@ impl DocShared {
                 return known;
             }
             if Instant::now() >= deadline {
-                return Err(EngineError::Internal(format!(
-                    "the size of {} is not available yet: the render host is busy or restarting",
+                return Err(EngineError::Unavailable(format!(
+                    "the size of {} is not known yet: the render host is busy or restarting",
                     subject_name(Subject::Page(page.get()))
                 )));
             }
@@ -457,9 +613,10 @@ impl DocShared {
 
     /// Opens the document in `conn` and returns its page count.
     fn open_on(&self, conn: &Connection) -> Result<u32, CallError> {
-        let document = match &self.section {
-            Some(s) => Some(conn.share(s, Access::Read)?),
-            None => None,
+        let document = match &self.bytes {
+            DocBytes::Empty => None,
+            DocBytes::Section(s) => Some(DocumentRef::Section(conn.share(s, Access::Read)?)),
+            DocBytes::File(origin) => Some(conn.share_file(origin)?),
         };
         let id = conn.next_id();
         let command = Command::Open(Open {
@@ -551,7 +708,7 @@ impl DocShared {
                 },
             }
         }
-        Err(EngineError::Internal(
+        Err(EngineError::Unavailable(
             "the render host kept failing; request abandoned".into(),
         ))
     }
@@ -577,7 +734,9 @@ impl DocShared {
         if st.ledger.is_permanent(Subject::Open) {
             return Err(self.permanent_error(Subject::Open, &st));
         }
-        let conn = self.engine.host()?;
+        let conn = self.engine.host().map_err(|e| {
+            EngineError::Unavailable(format!("cannot restart the render host: {e}"))
+        })?;
         match self.open_on(&conn) {
             Ok(n) if n == self.page_count => {}
             Ok(n) => {
@@ -589,12 +748,10 @@ impl DocShared {
             }
             Err(CallError::Lost) => {
                 self.account(&mut st, &conn);
-                let what = conn
-                    .death()
-                    .map_or("the render host failed", |d| d.description.as_str());
-                return Err(EngineError::Internal(format!(
-                    "{what} while reopening the document"
-                )));
+                // Blamed on the document itself: final once reopening is
+                // not tried any more.
+                let permanent = st.ledger.is_disabled() || st.ledger.is_permanent(Subject::Open);
+                return Err(host_exit(conn.death().map(|d| d.reason), permanent));
             }
             Err(CallError::Engine(e) | CallError::Fatal(e)) => {
                 conn.shutdown();
@@ -632,6 +789,14 @@ impl DocShared {
             .host_died(Instant::now(), death.cause, &death.in_flight);
         if death.cause != DeathCause::Shutdown {
             st.last_crash = Some(death.description.clone());
+            st.last_reason = Some(death.reason);
+            for f in &death.in_flight {
+                if let Some(s) = f.subject
+                    && verdicts.get(&f.id) == Some(&Verdict::Culprit)
+                {
+                    st.reasons.insert(s, death.reason);
+                }
+            }
         }
         if st.ledger.is_disabled() && !was_disabled {
             log::error!(
@@ -684,32 +849,17 @@ impl DocShared {
         })
     }
 
+    /// The request brought its host down: transient the first time (the
+    /// next attempt runs alone), final once the ledger gave up on it.
     fn culprit_error(&self, conn: &Connection, subject: Option<Subject>) -> EngineError {
-        let death = conn.death();
-        if death.is_some_and(|d| matches!(d.cause, DeathCause::Deadline { .. })) {
-            return EngineError::LimitExceeded(LimitKind::RenderTime);
-        }
-        let what = death.map_or("the render host failed", |d| d.description.as_str());
         let st = lock(&self.state);
-        let tail = match subject {
-            Some(s) if st.ledger.is_permanent(s) => {
-                format!("; {} will not be retried", subject_name(s))
-            }
-            _ => String::new(),
-        };
-        EngineError::Internal(format!("{what}{tail}"))
+        let permanent =
+            st.ledger.is_disabled() || subject.is_some_and(|s| st.ledger.is_permanent(s));
+        host_exit(conn.death().map(|d| d.reason), permanent)
     }
 
     fn permanent_error(&self, s: Subject, st: &DocState) -> EngineError {
-        let last = st
-            .last_crash
-            .as_deref()
-            .map(|c| format!(" (last: {c})"))
-            .unwrap_or_default();
-        EngineError::Internal(format!(
-            "{} crashed the render host repeatedly and is no longer rendered{last}",
-            subject_name(s)
-        ))
+        host_exit(st.reasons.get(&s).copied().or(st.last_reason), true)
     }
 
     fn disabled_error(&self) -> EngineError {
@@ -718,23 +868,25 @@ impl DocShared {
     }
 
     fn disabled_error_locked(&self, st: &DocState) -> EngineError {
-        let last = st
-            .last_crash
-            .as_deref()
-            .map(|c| format!(" (last: {c})"))
-            .unwrap_or_default();
-        EngineError::Internal(format!(
-            "rendering stopped after {} render host crashes{last}",
-            st.ledger.total_crashes()
-        ))
+        host_exit(st.last_reason, true)
     }
 
     fn publish(&self, st: &DocState) {
+        let no_code = HostExitReason::Crashed { exit_code: None };
         *lock(&self.summary) = Summary {
             restarts: st.restarts,
             crashes: st.ledger.total_crashes(),
             last_crash: st.last_crash.clone(),
-            failed_pages: st.ledger.failed_pages(),
+            last_reason: st.last_reason,
+            failed_pages: st
+                .ledger
+                .failed_pages()
+                .into_iter()
+                .map(|p| {
+                    let reason = st.reasons.get(&Subject::Page(p)).copied();
+                    (p, reason.or(st.last_reason).unwrap_or(no_code))
+                })
+                .collect(),
             disabled: st.ledger.is_disabled(),
         };
     }
@@ -751,10 +903,23 @@ impl DocShared {
             failed_pages: summary
                 .failed_pages
                 .into_iter()
-                .map(PageIndex::new)
+                .map(|(p, _)| PageIndex::new(p))
                 .collect(),
             disabled: summary.disabled,
             geometry_missing: self.geometry.missing(),
+        }
+    }
+
+    fn host_status(&self) -> HostStatus {
+        let s = self.stats();
+        HostStatus {
+            pid: s.pid,
+            private_bytes: s.private_bytes,
+            restarts: s.restarts,
+            crashes: s.crashes,
+            last_crash: s.last_crash,
+            failed_pages: s.failed_pages,
+            restarts_disabled: s.disabled,
         }
     }
 
@@ -902,6 +1067,10 @@ impl EngineDocument for RemoteDocument {
     fn memory_usage(&self) -> Option<u64> {
         let conn = lock(&self.shared.current).clone()?;
         conn.memory_usage(self.shared.timeout)
+    }
+
+    fn host_status(&self) -> Option<HostStatus> {
+        Some(self.shared.host_status())
     }
 }
 

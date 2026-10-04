@@ -164,6 +164,10 @@ impl Spec {
         }
         let mut spec = Self::default();
         for line in lines {
+            if line == "end" {
+                // Padding follows (large-file tests).
+                break;
+            }
             if let Some(path) = line.strip_prefix("marker ") {
                 spec.marker = Some(std::path::PathBuf::from(path));
                 continue;

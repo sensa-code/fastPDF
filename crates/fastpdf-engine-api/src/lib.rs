@@ -31,10 +31,10 @@ mod text;
 
 pub use cancel::CancelToken;
 pub use engine::{
-    EngineCapabilities, EngineDocument, EngineInfo, MemoryPressure, OpenOptions, PageInfo,
-    PdfEngine,
+    EngineCapabilities, EngineDocument, EngineInfo, HostStatus, MemoryPressure, OpenOptions,
+    PageInfo, PdfEngine,
 };
-pub use error::{EngineError, LimitKind};
+pub use error::{EngineError, HostExit, HostExitReason, LimitKind};
 pub use geometry::{PageRect, PageSize, PixelRect, PixelSize, RenderScale, Rotation};
 pub use guard::{GuardedDocument, open_guarded};
 pub use ids::{DocumentId, PageId, PageIndex};
@@ -43,5 +43,5 @@ pub use metadata::DocumentMetadata;
 pub use nav::{Destination, DestinationView, Link, LinkTarget, OutlineItem};
 pub use pixmap::{PixelFormat, Pixmap, PixmapMut, Rgba8};
 pub use render::{ColorMode, RenderOutcome, RenderRequest};
-pub use source::{DocumentSource, SharedBytes};
+pub use source::{DocumentSource, FileOrigin, SharedBytes};
 pub use text::{TextLayer, TextSpan};

@@ -85,6 +85,25 @@ fn release(value: u64) {
     }
 }
 
+/// An adopted handle value, released on drop. Owners declare it after the
+/// handle itself, so the handle is closed before the value can be adopted
+/// again.
+#[derive(Debug)]
+struct Claim(u64);
+
+impl Claim {
+    fn take(value: u64) -> io::Result<(Self, RawHandle)> {
+        let raw = claim(value)?;
+        Ok((Self(value), raw))
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        release(self.0);
+    }
+}
+
 /// Host process only: crashes end the process silently instead of showing
 /// Windows Error Reporting or critical-error dialogs (the job object also
 /// sets `DIE_ON_UNHANDLED_EXCEPTION`).

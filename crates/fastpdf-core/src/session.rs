@@ -6,13 +6,21 @@
 //! resolution stand-ins for tiles that are still rendering (spec §13: the
 //! view never waits for a render). Everything expensive happens on the
 //! render scheduler's worker threads; `frame` only does bookkeeping.
+//!
+//! Transient engine failures (`EngineError::is_transient`: a render host
+//! restarting or gone while it handled a request) are not shown as errors:
+//! the page keeps its estimated size or its stand-ins, and the request is
+//! made again after a growing delay (`crate::retry`); a retry clock wakes
+//! the UI through the session's wake hook when one is due.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::hash::Hash;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use fastpdf_cache::{BudgetedCache, SharedCache, retention};
 use fastpdf_engine_api::{
@@ -25,6 +33,8 @@ use fastpdf_render::{
     ScaleBucket, SchedulerConfig, SchedulerStats, TileCache, TileGrid, TileKey, Viewport,
     ZoomLevel, plan_tiles,
 };
+
+use crate::retry::{Backoff, RetryClock};
 
 /// Session settings.
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +87,8 @@ pub struct FramePage {
     pub rect: [f32; 4],
     /// Set when the page cannot be rendered; the UI shows it instead of content.
     pub error: Option<String>,
+    /// The engine error behind `error`, for localized messages.
+    pub cause: Option<EngineError>,
 }
 
 /// An image to draw, already positioned.
@@ -118,6 +130,8 @@ pub struct SessionStats {
     pub tile_evictions: u64,
     pub thumbnail_bytes: usize,
     pub thumbnail_entries: usize,
+    /// Pages, tiles and thumbnails waiting to retry a transient failure.
+    pub pending_retries: usize,
 }
 
 /// Identity of a sidebar thumbnail.
@@ -201,7 +215,16 @@ pub struct DocumentSession<V: Clone + Send + 'static> {
     wake_pending: Arc<AtomicBool>,
     tiles: TileCache<V>,
     failed: HashSet<TileKey>,
-    page_errors: Vec<(PageIndex, String)>,
+    page_errors: Vec<(PageIndex, EngineError)>,
+    /// Transient failures waiting for their next attempt.
+    geometry_retry: HashMap<PageIndex, Backoff>,
+    /// Pages whose geometry failed for good (a permanent error, or the last
+    /// retry of a transient one), shared by the page view and thumbnails so
+    /// neither asks the engine again.
+    geometry_failed: HashMap<PageIndex, EngineError>,
+    tile_retry: HashMap<TileKey, Backoff>,
+    thumbnail_retry: HashMap<ThumbnailKey, Backoff>,
+    retry_clock: RetryClock,
     planned: Option<PlanInputs>,
     thumbnails: Option<Thumbnails<V>>,
     thumbnail_evict: Option<ThumbnailEvict<V>>,
@@ -246,6 +269,16 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         let (tx, incoming) = mpsc::channel();
         let tx = Mutex::new(tx);
         let wake_pending = Arc::new(AtomicBool::new(false));
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+        let retry_wake = {
+            let pending = Arc::clone(&wake_pending);
+            let wake = Arc::clone(&wake);
+            move || {
+                if !pending.swap(true, Ordering::AcqRel) {
+                    wake();
+                }
+            }
+        };
         let pending = Arc::clone(&wake_pending);
         let sink = move |result: fastpdf_render::TileResult<RenderKey>| {
             let msg = match (result.key, result.result) {
@@ -310,6 +343,11 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             tiles,
             failed: HashSet::new(),
             page_errors: Vec::new(),
+            geometry_retry: HashMap::new(),
+            geometry_failed: HashMap::new(),
+            tile_retry: HashMap::new(),
+            thumbnail_retry: HashMap::new(),
+            retry_clock: RetryClock::new(Arc::new(retry_wake)),
             planned: None,
             thumbnails: None,
             thumbnail_evict: None,
@@ -599,9 +637,14 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             self.planned = None;
         }
         if self.planned.as_ref() != Some(&inputs) {
+            let now = Instant::now();
             let needed: Vec<_> = plan
                 .into_iter()
-                .filter(|t| !self.tiles.contains(&t.key) && !self.failed.contains(&t.key))
+                .filter(|t| {
+                    !self.tiles.contains(&t.key)
+                        && !self.failed.contains(&t.key)
+                        && !self.tile_retry.get(&t.key).is_some_and(|b| b.waiting(now))
+                })
                 .map(|t| RenderJob {
                     key: RenderKey::Tile(t.key),
                     priority: t.priority,
@@ -612,7 +655,31 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             self.scheduler.submit_plan(needed);
             self.planned = Some(inputs);
         }
+        self.schedule_retries();
         frame
+    }
+
+    /// Asks the retry clock to wake the UI when the earliest pending retry
+    /// is due (nothing at all when none is pending).
+    ///
+    /// Only retries still in the future count. One that is already due was
+    /// either attempted by this frame (and then succeeded, failed for good
+    /// or moved its time forward) or is not needed right now (a page scrolled
+    /// away, a tile no longer planned); waking the UI for it would only
+    /// repeat this frame, forever. It is attempted again when it is needed.
+    fn schedule_retries(&self) {
+        let now = Instant::now();
+        let next = self
+            .geometry_retry
+            .values()
+            .chain(self.tile_retry.values())
+            .chain(self.thumbnail_retry.values())
+            .map(|b| b.next)
+            .filter(|&next| next > now)
+            .min();
+        if let Some(next) = next {
+            self.retry_clock.schedule(next);
+        }
     }
 
     /// Releases everything this session shows: cancels all rendering and
@@ -641,6 +708,9 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             tile_evictions: t.evictions,
             thumbnail_bytes: th.bytes,
             thumbnail_entries: th.entries,
+            pending_retries: self.geometry_retry.len()
+                + self.tile_retry.len()
+                + self.thumbnail_retry.len(),
         }
     }
 
@@ -713,10 +783,43 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
 
         let mut items = Vec::with_capacity(visible.len());
         let mut jobs = Vec::new();
+        let now = Instant::now();
         for page in wanted.clone() {
             let k = key(page);
             let in_view = visible.contains(&page);
-            let info = self.doc.page_info(PageIndex::new(page)).ok();
+            let index = PageIndex::new(page);
+            // A page whose geometry is waiting for a retry is still loading:
+            // neither asked again yet nor shown as failed.
+            let geometry_waiting = self
+                .geometry_retry
+                .get(&index)
+                .is_some_and(|b| b.waiting(now));
+            let (info, info_failed) = if self.geometry_failed.contains_key(&index) {
+                (None, true)
+            } else if geometry_waiting {
+                (None, false)
+            } else {
+                match self.doc.page_info(index) {
+                    Ok(info) => {
+                        self.geometry_retry.remove(&index);
+                        (Some(info), false)
+                    }
+                    Err(e)
+                        if e.is_transient()
+                            && note_failure(&mut self.geometry_retry, index, now) =>
+                    {
+                        (None, false)
+                    }
+                    Err(e) => {
+                        // Final: remembered, so neither this list nor the
+                        // page view asks the engine again.
+                        self.geometry_retry.remove(&index);
+                        self.geometry_failed.insert(index, e);
+                        (None, true)
+                    }
+                }
+            };
+            let thumbnail_waiting = self.thumbnail_retry.get(&k).is_some_and(|b| b.waiting(now));
             let size = info.map_or([th.width_px, th.width_px], |i| {
                 let d = i.display_size(rotation);
                 let h = (th.width_px as f32 * d.height / d.width.max(1.0))
@@ -730,7 +833,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
                 None
             };
             let cached = image.is_some() || th.cache.contains(&k);
-            let failed = th.failed.contains(&k) || info.is_none();
+            let failed = th.failed.contains(&k) || info_failed;
             if in_view {
                 items.push(ThumbnailItem {
                     page: PageIndex::new(page),
@@ -739,7 +842,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
                     failed,
                 });
             }
-            if cached || failed {
+            if cached || failed || thumbnail_waiting {
                 continue;
             }
             let Some(info) = info else { continue };
@@ -779,6 +882,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             self.scheduler.submit(Lane::Thumbnails, jobs);
             th.requested = Some(request);
         }
+        self.schedule_retries();
         items
     }
 
@@ -805,41 +909,57 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         while let Ok(msg) = self.incoming.try_recv() {
             match msg {
                 Incoming::Tile { key, image, bytes } => {
+                    self.tile_retry.remove(&key);
                     // Results for an old rotation are useless now; tiles of
                     // the other color mode are kept for a quick switch back.
                     if key.rotation == self.rotation {
                         self.tiles.insert(key, image, bytes);
                     }
                 }
-                Incoming::Thumbnail { key, image, bytes } => match &self.thumbnails {
-                    Some(th)
-                        if th.width_px == key.width_px
-                            && key.rotation == self.rotation
-                            && key.color == self.color =>
-                    {
-                        th.cache.insert(key, image, bytes);
-                    }
-                    // Sidebar closed or resized meanwhile: release right away.
-                    _ => {
-                        if let Some(evict) = &self.thumbnail_evict {
-                            evict(vec![(key, image)]);
+                Incoming::Thumbnail { key, image, bytes } => {
+                    self.thumbnail_retry.remove(&key);
+                    match &self.thumbnails {
+                        Some(th)
+                            if th.width_px == key.width_px
+                                && key.rotation == self.rotation
+                                && key.color == self.color =>
+                        {
+                            th.cache.insert(key, image, bytes);
+                        }
+                        // Sidebar closed or resized meanwhile: release right away.
+                        _ => {
+                            if let Some(evict) = &self.thumbnail_evict {
+                                evict(vec![(key, image)]);
+                            }
                         }
                     }
-                },
+                }
                 Incoming::Failed {
                     key: RenderKey::Tile(key),
                     error,
                 } => {
+                    if error.is_transient()
+                        && note_failure(&mut self.tile_retry, key, Instant::now())
+                    {
+                        continue;
+                    }
+                    self.tile_retry.remove(&key);
                     self.failed.insert(key);
                     let page = key.page.page;
                     if !self.page_errors.iter().any(|(p, _)| *p == page) {
-                        self.page_errors.push((page, error.to_string()));
+                        self.page_errors.push((page, error));
                     }
                 }
                 Incoming::Failed {
                     key: RenderKey::Thumbnail(key),
-                    ..
+                    error,
                 } => {
+                    if error.is_transient()
+                        && note_failure(&mut self.thumbnail_retry, key, Instant::now())
+                    {
+                        continue;
+                    }
+                    self.thumbnail_retry.remove(&key);
                     if let Some(th) = self.thumbnails.as_mut() {
                         th.failed.insert(key);
                     }
@@ -850,9 +970,11 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
 
     /// Resolves real sizes for `pages`, keeping the view anchored.
     fn resolve_pages(&mut self, pages: std::ops::Range<u32>) {
+        let now = Instant::now();
         let unknown: Vec<PageIndex> = pages
             .map(PageIndex::new)
             .filter(|p| !self.layout.is_known(*p))
+            .filter(|p| !self.geometry_retry.get(p).is_some_and(|b| b.waiting(now)))
             .collect();
         if unknown.is_empty() {
             return;
@@ -860,15 +982,36 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         let anchor = self.layout.anchor_at(self.viewport.scroll_y);
         let mut updates = Vec::with_capacity(unknown.len());
         for page in unknown {
-            match self.doc.page_info(page) {
-                Ok(info) => updates.push((page, info.display_size(self.rotation))),
+            // A page that failed for good already (e.g. while listing
+            // thumbnails) is not asked again, and its error stays final
+            // even when it was a transient one that ran out of retries.
+            let (answer, already_final) = match self.geometry_failed.get(&page) {
+                Some(e) => (Err(e.clone()), true),
+                None => (self.doc.page_info(page), false),
+            };
+            match answer {
+                Ok(info) => {
+                    self.geometry_retry.remove(&page);
+                    updates.push((page, info.display_size(self.rotation)));
+                }
+                // Not known yet (render host restarting, ...): keep the
+                // estimate, show no error, ask again later.
+                Err(e)
+                    if !already_final
+                        && e.is_transient()
+                        && note_failure(&mut self.geometry_retry, page, now) => {}
                 Err(e) => {
                     // Keep the estimate but stop asking; show the error.
+                    self.geometry_retry.remove(&page);
+                    self.geometry_failed.insert(page, e.clone());
                     let estimate = self.layout.page_size(page).unwrap_or(PageSize::LETTER);
                     updates.push((page, estimate));
-                    self.page_errors.push((page, e.to_string()));
+                    self.page_errors.push((page, e));
                 }
             }
+        }
+        if updates.is_empty() {
+            return;
         }
         // Newly known pages need planning even when their size matched the
         // estimate, so the version always moves.
@@ -894,14 +1037,16 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
                 .map(PageIndex::new)
                 .filter_map(|page| {
                     let rect = self.layout.page_rect(page)?;
+                    let cause = self
+                        .page_errors
+                        .iter()
+                        .find(|(p, _)| *p == page)
+                        .map(|(_, e)| e.clone());
                     Some(FramePage {
                         page,
                         rect: self.to_view(&rect),
-                        error: self
-                            .page_errors
-                            .iter()
-                            .find(|(p, _)| *p == page)
-                            .map(|(_, e)| e.clone()),
+                        error: cause.as_ref().map(ToString::to_string),
+                        cause,
                     })
                 })
                 .collect()
@@ -1067,6 +1212,25 @@ fn src_rect(
         inner.width as f32,
         inner.height as f32,
     ]
+}
+
+/// Records a transient failure of `key`; `true` while it will be retried,
+/// `false` once its attempts are used up (the error is final then).
+fn note_failure<K: Hash + Eq + Copy>(
+    retries: &mut HashMap<K, Backoff>,
+    key: K,
+    now: Instant,
+) -> bool {
+    match Backoff::after_failure(retries.get(&key).copied(), now) {
+        Some(backoff) => {
+            retries.insert(key, backoff);
+            true
+        }
+        None => {
+            retries.remove(&key);
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1482,5 +1646,234 @@ mod tests {
             assert_send::<DocumentSession<V>>();
         }
         for_any_view::<Arc<Vec<u8>>>();
+    }
+
+    /// Page 1's geometry is unavailable twice and the first three renders
+    /// lose their host before the engine answers normally.
+    struct FlakyEngine;
+    struct FlakyDoc {
+        geometry_failures: AtomicUsize,
+        render_failures: AtomicUsize,
+    }
+
+    impl PdfEngine for FlakyEngine {
+        fn info(&self) -> EngineInfo {
+            Engine.info()
+        }
+        fn open(
+            &self,
+            _: DocumentSource,
+            _: &OpenOptions,
+        ) -> Result<Box<dyn EngineDocument>, EngineError> {
+            Ok(Box::new(FlakyDoc {
+                geometry_failures: AtomicUsize::new(2),
+                render_failures: AtomicUsize::new(3),
+            }))
+        }
+    }
+
+    fn take_one(counter: &AtomicUsize) -> bool {
+        let mut n = counter.load(Ordering::Acquire);
+        while n > 0 {
+            match counter.compare_exchange(n, n - 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return true,
+                Err(actual) => n = actual,
+            }
+        }
+        false
+    }
+
+    impl EngineDocument for FlakyDoc {
+        fn page_count(&self) -> u32 {
+            4
+        }
+        fn page_info(&self, page: PageIndex) -> Result<PageInfo, EngineError> {
+            if page.get() == 1 && take_one(&self.geometry_failures) {
+                return Err(EngineError::Unavailable("host restarting".into()));
+            }
+            let size = if page.get() == 1 {
+                PageSize::new(792.0, 612.0)
+            } else {
+                PageSize::LETTER
+            };
+            Ok(PageInfo {
+                size,
+                rotation: Rotation::R0,
+            })
+        }
+        fn render(
+            &self,
+            request: &RenderRequest,
+            target: &mut PixmapMut<'_>,
+            _: &CancelToken,
+        ) -> Result<RenderOutcome, EngineError> {
+            if take_one(&self.render_failures) {
+                return Err(EngineError::HostExited(fastpdf_engine_api::HostExit {
+                    reason: fastpdf_engine_api::HostExitReason::Crashed { exit_code: None },
+                    permanent: false,
+                }));
+            }
+            target.fill(request.background);
+            Ok(RenderOutcome::default())
+        }
+    }
+
+    #[test]
+    fn transient_failures_recover_by_themselves_without_errors() {
+        let doc = open_guarded(
+            &FlakyEngine,
+            DocumentSource::from_bytes(SharedBytes::from_vec(vec![0])),
+            &OpenOptions::default(),
+        )
+        .unwrap();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let w = Arc::clone(&wakes);
+        let mut s: DocumentSession<Arc<Pixmap>> = DocumentSession::new(
+            Arc::new(doc),
+            SessionConfig {
+                workers: 1,
+                ..SessionConfig::default()
+            },
+            (900.0, 2400.0),
+            1.0,
+            Arc::new,
+            move || {
+                w.fetch_add(1, Ordering::SeqCst);
+            },
+            |_| {},
+        );
+        let first = s.frame();
+        assert!(first.pages.iter().all(|p| p.error.is_none()));
+        assert!(!s.layout().is_known(PageIndex::new(1)), "estimate kept");
+        assert!(s.stats().pending_retries > 0);
+        // No input from here on: only the session's wake hook drives frames.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut seen = 0;
+        let frame = loop {
+            assert!(
+                Instant::now() < deadline,
+                "did not recover: {:?}",
+                s.stats()
+            );
+            let now = wakes.load(Ordering::SeqCst);
+            if now == seen {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            seen = now;
+            let frame = s.frame();
+            assert!(
+                frame.pages.iter().all(|p| p.error.is_none()),
+                "{:?}",
+                frame.pages
+            );
+            if frame.pending == 0 && s.stats().pending_retries == 0 {
+                break frame;
+            }
+        };
+        assert!(frame.tiles.iter().all(|t| t.exact));
+        assert_eq!(
+            s.layout().page_size(PageIndex::new(1)),
+            Some(PageSize::new(792.0, 612.0))
+        );
+    }
+
+    fn flaky_session() -> DocumentSession<Arc<Pixmap>> {
+        let doc = open_guarded(
+            &FlakyEngine,
+            DocumentSource::from_bytes(SharedBytes::from_vec(vec![0])),
+            &OpenOptions::default(),
+        )
+        .unwrap();
+        DocumentSession::new(
+            Arc::new(doc),
+            SessionConfig {
+                workers: 1,
+                ..SessionConfig::default()
+            },
+            (900.0, 2400.0),
+            1.0,
+            Arc::new,
+            || {},
+            |_| {},
+        )
+    }
+
+    /// A retry that is already due but not needed (its page scrolled away)
+    /// must not keep the retry clock firing: every wake would only repeat
+    /// the same frame, and idle CPU would never return to zero.
+    #[test]
+    fn retries_already_due_do_not_wake_the_ui_again() {
+        let mut s = flaky_session();
+        s.geometry_retry.insert(
+            PageIndex::new(3),
+            Backoff {
+                attempts: 1,
+                next: Instant::now() - Duration::from_secs(1),
+            },
+        );
+        s.schedule_retries();
+        assert!(
+            !s.retry_clock.is_running(),
+            "nothing in the future to wait for"
+        );
+        s.geometry_retry.insert(
+            PageIndex::new(2),
+            Backoff {
+                attempts: 1,
+                next: Instant::now() + Duration::from_secs(5),
+            },
+        );
+        s.schedule_retries();
+        assert!(s.retry_clock.is_running(), "a future retry is scheduled");
+    }
+
+    /// The last failed retry of a page's geometry while listing thumbnails
+    /// is final: later lists neither ask the engine again nor start a new
+    /// round of retries, and the page view shows the error without asking.
+    #[test]
+    fn thumbnail_geometry_failures_stay_final() {
+        let mut s = flaky_session();
+        s.enable_thumbnails(120, 1 << 20, |_| {});
+        // Page 1's geometry fails twice (FlakyDoc); pretend this is the
+        // last allowed attempt.
+        s.geometry_retry.insert(
+            PageIndex::new(1),
+            Backoff {
+                attempts: crate::retry::MAX_ATTEMPTS - 1,
+                next: Instant::now() - Duration::from_millis(1),
+            },
+        );
+        let items = s.thumbnails(0..4, 0);
+        assert!(items[1].failed, "the last attempt failed: final");
+        assert!(s.geometry_failed.contains_key(&PageIndex::new(1)));
+        // FlakyDoc would answer the next request: it must not be asked.
+        let items = s.thumbnails(0..4, 0);
+        assert!(items[1].failed, "still failed, not retried");
+        assert!(!s.geometry_retry.contains_key(&PageIndex::new(1)));
+        let frame = s.frame();
+        let page = frame
+            .pages
+            .iter()
+            .find(|p| p.page == PageIndex::new(1))
+            .expect("page 1 is visible");
+        assert!(page.error.is_some(), "the page view shows the final error");
+        assert!(
+            !s.geometry_retry.contains_key(&PageIndex::new(1)),
+            "no new round"
+        );
+    }
+
+    #[test]
+    fn retries_give_up_after_the_last_attempt() {
+        let mut retries = HashMap::new();
+        let t = Instant::now();
+        let mut kept = 0;
+        while note_failure(&mut retries, 7u32, t) {
+            kept += 1;
+            assert!(kept < 100);
+        }
+        assert_eq!(kept, crate::retry::MAX_ATTEMPTS - 1);
+        assert!(retries.is_empty());
     }
 }

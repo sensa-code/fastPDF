@@ -135,4 +135,33 @@ pub trait EngineDocument: Send + Sync {
     fn memory_usage(&self) -> Option<u64> {
         None
     }
+
+    /// For engines that run the document in a separate process (the render
+    /// host, ADR 0008): that process and its supervision state. `None` for
+    /// in-process engines. Must not block.
+    fn host_status(&self) -> Option<HostStatus> {
+        None
+    }
+}
+
+/// A document's render host (ADR 0008), for diagnostics, the memory budget
+/// (the host's memory is not in FastPDF's own process) and the UI's
+/// document-level notices.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HostStatus {
+    /// Process id of the running host; `None` while none runs.
+    pub pid: Option<u32>,
+    /// Committed private bytes of the host process.
+    pub private_bytes: Option<u64>,
+    /// Hosts started after the first one.
+    pub restarts: u32,
+    /// Host crashes, deadline kills included.
+    pub crashes: u32,
+    pub last_crash: Option<String>,
+    /// Pages that brought hosts down repeatedly and are not rendered any
+    /// more.
+    pub failed_pages: Vec<PageIndex>,
+    /// True once the document stopped restarting hosts (crash storm): it
+    /// renders nothing more until it is reopened.
+    pub restarts_disabled: bool,
 }
