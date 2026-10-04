@@ -3,6 +3,11 @@
 //! * Workers never run on the UI thread.
 //! * The worker count is fixed and small: latency matters more than
 //!   throughput, and a 32-core machine must not render 32 tiles at once.
+//! * For documents rendered in another process
+//!   (`EngineDocument::render_queue_depth` > 1) each worker gets company:
+//!   `workers * depth` threads keep that many requests in flight, so the
+//!   next tile already waits in the render host while a finished one travels
+//!   back. The host still renders only `workers` tiles at a time.
 //! * Every new plan replaces the queue of its lane: queued jobs the view no
 //!   longer needs are discarded, and in-flight ones are cancelled.
 
@@ -36,6 +41,8 @@ pub enum Lane {
 /// Scheduler settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchedulerConfig {
+    /// Tiles rendered at a time. The scheduler runs this many threads per
+    /// render the document wants in flight (`render_queue_depth`).
     pub workers: usize,
     pub pixel_format: PixelFormat,
     pub limits: ResourceLimits,
@@ -191,7 +198,7 @@ impl<K: Copy + Eq + Hash + Send + 'static> RenderScheduler<K> {
         config: SchedulerConfig,
         sink: impl Fn(TileResult<K>) + Send + Sync + 'static,
     ) -> Self {
-        let workers = config.workers.max(1);
+        let workers = config.workers.max(1) * document.render_queue_depth().max(1);
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
@@ -211,6 +218,8 @@ impl<K: Copy + Eq + Hash + Send + 'static> RenderScheduler<K> {
         Self { shared, workers }
     }
 
+    /// Threads of this scheduler: the configured workers times the
+    /// document's render queue depth.
     pub fn worker_count(&self) -> usize {
         self.workers.len()
     }
@@ -554,5 +563,57 @@ mod tests {
         let started = Instant::now();
         drop(s);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// A document rendered in another process: two requests in flight per
+    /// render at a time.
+    struct RemoteLike(SlowDoc);
+
+    impl EngineDocument for RemoteLike {
+        fn page_count(&self) -> u32 {
+            self.0.page_count()
+        }
+        fn page_info(&self, page: PageIndex) -> Result<PageInfo, EngineError> {
+            self.0.page_info(page)
+        }
+        fn render(
+            &self,
+            request: &RenderRequest,
+            target: &mut PixmapMut<'_>,
+            cancel: &CancelToken,
+        ) -> Result<RenderOutcome, EngineError> {
+            self.0.render(request, target, cancel)
+        }
+        fn render_queue_depth(&self) -> usize {
+            2
+        }
+    }
+
+    #[test]
+    fn documents_with_a_render_queue_get_a_thread_per_request_in_flight() {
+        let doc = Arc::new(RemoteLike(SlowDoc {
+            delay: Duration::from_millis(1),
+            renders: AtomicU32::new(0),
+        }));
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let config = SchedulerConfig {
+            workers: 2,
+            ..SchedulerConfig::default()
+        };
+        let s = RenderScheduler::new(doc.clone(), config, move |r| {
+            let _ = tx.lock().unwrap().send(r);
+        });
+        assert_eq!(s.worker_count(), 4);
+        let plan = plan_at(0.0);
+        let n = plan.len();
+        s.submit_plan(plan);
+        for _ in 0..n {
+            assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok());
+        }
+        assert_eq!(doc.0.renders.load(AtomicOrdering::Relaxed) as usize, n);
+        // In-process documents keep one thread per worker.
+        let (s, _rx, _) = scheduler(1, 2);
+        assert_eq!(s.worker_count(), 2);
     }
 }

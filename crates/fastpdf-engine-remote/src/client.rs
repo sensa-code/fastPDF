@@ -202,6 +202,8 @@ pub(crate) struct Connection {
     info: WireEngineInfo,
     memory: Mutex<MemoryProbe>,
     memory_limit: Option<u64>,
+    /// Renders the host runs at a time; later ones wait in its queue.
+    render_threads: u32,
 }
 
 impl std::fmt::Debug for Connection {
@@ -283,6 +285,7 @@ impl Connection {
             build_id: BUILD_ID.to_owned(),
             engine: config.engine.clone(),
             workers: config.host_workers.clamp(1, MAX_WORKERS),
+            render_threads: config.render_threads.clamp(1, MAX_WORKERS),
             slots: slot_spec,
         });
         let frame = encode_command(&init).map_err(|e| startup_error("handshake", e))?;
@@ -343,6 +346,7 @@ impl Connection {
             info,
             memory: Mutex::new(MemoryProbe::default()),
             memory_limit: config.memory_limit,
+            render_threads: config.render_threads.clamp(1, MAX_WORKERS),
         });
         // The reader holds only a weak reference (and its own process
         // handle): when the last owner drops the connection, `Child` kills
@@ -468,15 +472,18 @@ impl Connection {
         })
     }
 
-    /// Registers `request`; `false` if the connection is already closed
-    /// (the request, with its admission and target, is dropped then).
+    /// Registers `request` and returns its deadline; `None` if the
+    /// connection is already closed (the request, with its admission and
+    /// target, is dropped then). Callers send the request while they still
+    /// hold the command pipe, so the host sees requests in the order they
+    /// were registered (render deadlines depend on it).
     fn register(
         &self,
         id: u64,
         request: Request,
         reply_to: Option<SyncSender<Delivery>>,
         timeout: Duration,
-    ) -> bool {
+    ) -> Option<Instant> {
         let Request {
             expect,
             subject,
@@ -487,16 +494,32 @@ impl Connection {
         } = request;
         let mut table = lock(&self.table);
         if table.closed {
-            return false;
+            return None;
         }
         let was_idle = table.entries.is_empty();
+        // The host renders `render_threads` at a time, in order; a render
+        // sent behind others starts only when they are done (each within
+        // its own deadline), so its clock gets one more timeout per round
+        // it may wait.
+        let allowed = if expect == Expect::Rendered {
+            let ahead = table
+                .entries
+                .values()
+                .filter(|p| p.expect == Expect::Rendered)
+                .count() as u32;
+            let rounds = ahead / self.render_threads.max(1);
+            timeout.saturating_mul(1 + rounds)
+        } else {
+            timeout
+        };
+        let deadline = Instant::now() + allowed;
         table.entries.insert(
             id,
             Pending {
                 reply_to,
                 expect,
                 subject,
-                deadline: Instant::now() + timeout,
+                deadline,
                 target,
                 _admission: admission,
                 sink,
@@ -506,7 +529,30 @@ impl Connection {
         if was_idle {
             self.wake.signal();
         }
-        true
+        Some(deadline)
+    }
+
+    /// Registers `request` and sends `frame`, in that order under the
+    /// command pipe's lock. `None` if the connection is closed; a failed
+    /// write ends the host (the reader then resolves the request).
+    fn send(
+        &self,
+        id: u64,
+        request: Request,
+        reply_to: Option<SyncSender<Delivery>>,
+        timeout: Duration,
+        frame: &[u8],
+    ) -> Option<Instant> {
+        let commands = lock(&self.commands);
+        let deadline = self.register(id, request, reply_to, timeout)?;
+        let written = commands.write_all(frame, self.child.process(), WRITE_TIMEOUT);
+        drop(commands);
+        if let Err(e) = written {
+            // Dead or no longer reading: make sure it is gone; the reader
+            // thread then resolves every entry, this one included.
+            self.kill(KillReason::Unresponsive(e.to_string()));
+        }
+        Some(deadline)
     }
 
     /// Sends `request` and waits for its terminal reply.
@@ -525,15 +571,10 @@ impl Connection {
             )))
         })?;
         let (tx, rx) = mpsc::sync_channel(1);
-        if !self.register(id, request, Some(tx), timeout) {
+        let Some(deadline) = self.send(id, request, Some(tx), timeout, &frame) else {
             return Err(CallError::Lost);
-        }
-        if let Err(e) = self.write(&frame) {
-            // Dead or no longer reading: make sure it is gone; the reader
-            // thread then resolves every entry, ours included.
-            self.kill(KillReason::Unresponsive(e.to_string()));
-        }
-        let give_up = Instant::now() + timeout + GIVE_UP_GRACE;
+        };
+        let give_up = deadline + GIVE_UP_GRACE;
         let mut killed = false;
         loop {
             match rx.recv_timeout(POLL) {
@@ -575,7 +616,7 @@ impl Connection {
         let Ok(frame) = encode_command(&request.command) else {
             return false;
         };
-        if !self.register(id, request, None, timeout) {
+        if self.register(id, request, None, timeout).is_none() {
             return false;
         }
         if let Err(e) = self.write(&frame) {

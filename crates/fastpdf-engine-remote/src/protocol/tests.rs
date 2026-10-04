@@ -219,6 +219,7 @@ impl Rng {
                 build_id: self.string(30),
                 engine: self.string(10),
                 workers: 1 + self.below(MAX_WORKERS as usize) as u32,
+                render_threads: 1 + self.below(MAX_WORKERS as usize) as u32,
                 slots: self.chance(2).then(|| {
                     let count = 1 + self.below(MAX_SLOTS as usize) as u32;
                     let slot_bytes = 1 + self.next() % MAX_SLOT_BYTES;
@@ -447,6 +448,7 @@ fn hand_picked_messages_round_trip() {
             build_id: BUILD_ID.into(),
             engine: "hayro".into(),
             workers: 4,
+            render_threads: 2,
             slots: Some(SlotSpec {
                 section: SectionRef {
                     handle: 0x1A4,
@@ -733,6 +735,7 @@ fn invalid_field_values_are_rejected() {
         build_id: "b".into(),
         engine: "e".into(),
         workers: 1,
+        render_threads: 1,
         slots: Some(SlotSpec {
             section: SectionRef { handle: 8, len: 20 },
             count: 2,

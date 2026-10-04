@@ -13,6 +13,11 @@ pub const DEFAULT_MEMORY_LIMIT: u64 = 1536 * 1024 * 1024;
 /// A 512² tile with its gutter (516² × 4 bytes) fits in one slot.
 pub const DEFAULT_SLOT_BYTES: usize = 17 * 64 * 1024;
 
+/// Pages a host renders at a time by default: FastPDF's render scheduler
+/// has two workers (`SchedulerConfig::default_workers`, B-3/B-4), and every
+/// render thread keeps engine caches of its own.
+pub const DEFAULT_RENDER_THREADS: u32 = 2;
+
 // A 512² tile with its 2 px gutter on every side fits in one slot.
 const _: () = assert!(516 * 516 * 4 <= DEFAULT_SLOT_BYTES);
 
@@ -49,8 +54,14 @@ pub struct RemoteConfig {
     pub slots: u32,
     /// Size of one slot; larger renders get a section of their own.
     pub slot_bytes: usize,
-    /// Request worker threads in each host.
+    /// Request worker threads in each host for everything but renders and
+    /// page geometry (opening, text layers, outline, links, metadata).
     pub host_workers: u32,
+    /// Renders a host runs at a time: as many as the caller renders tiles
+    /// at a time in-process, so the engine keeps as many caches as there.
+    /// Requests beyond that wait in the host (the caller keeps
+    /// `render_queue_depth` per render in flight to hide the round trip).
+    pub render_threads: u32,
     /// Keep one started host in reserve, so opening a document or restarting
     /// after a crash does not wait for a process to start.
     pub keep_spare: bool,
@@ -96,6 +107,7 @@ impl RemoteConfig {
             slots: 10,
             slot_bytes: DEFAULT_SLOT_BYTES,
             host_workers: u32::try_from(cpus.clamp(2, 8)).unwrap_or(4),
+            render_threads: DEFAULT_RENDER_THREADS,
             keep_spare: true,
             crash_policy: CrashPolicy::default(),
         }

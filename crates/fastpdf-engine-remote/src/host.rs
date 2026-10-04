@@ -1,12 +1,14 @@
 //! The render host process behind [`run_host`](crate::run_host)
 //! (ADR 0008 §1.2).
 //!
-//! The main thread reads commands and queues them on one of three lanes,
-//! each with its own threads: render work (everything slow), single-page
-//! geometry (`PageInfo`, which FastPDF's UI thread may be waiting for, so it
-//! never queues behind a render) and background geometry batches
-//! (`PageInfos`). Only `Cancel` is handled inline, so cancellation reaches a
-//! busy worker at once. Every request runs inside `catch_unwind` — on top of the
+//! The main thread reads commands and queues them on one of four lanes,
+//! each with its own threads: renders (as many threads as FastPDF renders
+//! tiles at a time, so the engine keeps as many caches as in-process; the
+//! parent keeps more requests in flight, which wait here), other slow work
+//! (opening, text, outline), single-page geometry (`PageInfo`, which
+//! FastPDF's UI thread may be waiting for, so it never queues behind a
+//! render) and background geometry batches (`PageInfos`). Only `Cancel` is
+//! handled inline, so cancellation reaches a busy worker at once. Every request runs inside `catch_unwind` — on top of the
 //! `GuardedDocument` the document is opened with — and ends with exactly one
 //! `Done` reply, so the parent never waits for an answer that cannot come.
 //! The only way a request goes unanswered is the death of the whole process,
@@ -138,6 +140,7 @@ where
         }
     };
     let lanes = [
+        (LaneKind::Render, init.render_threads.max(1)),
         (LaneKind::Work, init.workers.max(1)),
         (LaneKind::Geometry, GEOMETRY_THREADS),
         (LaneKind::Batches, 1),
@@ -250,6 +253,7 @@ where
         document: RwLock::new(None),
         slots,
         cancels: Mutex::new(HashMap::new()),
+        render: Lane::default(),
         work: Lane::default(),
         geometry: Lane::default(),
         batches: Lane::default(),
@@ -260,6 +264,9 @@ where
 /// Which threads serve a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaneKind {
+    /// Tile and page renders, `render_threads` at a time.
+    Render,
+    /// Everything else that is slow: opening, text layers, outline, links.
     Work,
     Geometry,
     Batches,
@@ -268,6 +275,7 @@ enum LaneKind {
 impl LaneKind {
     fn of(command: &Command) -> Self {
         match command {
+            Command::Render(_) => Self::Render,
             Command::PageInfo { .. } => Self::Geometry,
             Command::PageInfos { .. } => Self::Batches,
             _ => Self::Work,
@@ -293,6 +301,7 @@ struct State {
     slots: Option<SlotTable>,
     /// Cancel tokens of queued and running requests.
     cancels: Mutex<HashMap<u64, CancelToken>>,
+    render: Lane,
     work: Lane,
     geometry: Lane,
     batches: Lane,
@@ -335,6 +344,7 @@ fn worker(state: &State, lane: LaneKind) {
 impl State {
     fn lane(&self, kind: LaneKind) -> &Lane {
         match kind {
+            LaneKind::Render => &self.render,
             LaneKind::Work => &self.work,
             LaneKind::Geometry => &self.geometry,
             LaneKind::Batches => &self.batches,
@@ -580,6 +590,7 @@ mod tests {
             build_id: BUILD_ID.into(),
             engine: "none".into(),
             workers: 1,
+            render_threads: 1,
             slots: None,
         });
         channel

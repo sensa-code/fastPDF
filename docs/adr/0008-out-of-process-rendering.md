@@ -1,6 +1,6 @@
 # ADR 0008 — Out-of-Process Rendering（render host process）
 
-- 狀態：Proposed。PR 1–4 已實作（`crates/fastpdf-engine-remote`，`fastpdf --engine hayro-isolated`），但**預設仍是 in-process**：PR 4 驗收中 B-8 的啟動時間比較在 300 頁情境無法確認（見〈PR 4 驗收〉）。實作與本文的差異見〈實作現況〉。
+- 狀態：Accepted（2026-10-05）。PR 1–4 已實作（`crates/fastpdf-engine-remote`）。**Windows 的預設 engine 是 `hayro-isolated`**；`--engine hayro` 在 process 內 render，`fastpdf-bench` 一律在 process 內。PR 5（降低權限）還沒做。實作與本文的差異見〈實作現況〉，驗收見〈PR 4 第二輪〉。
 - 日期：2026-10-04
 - 相關 spec：§12、§18、§24、§25、§29、§33；風險：`docs/PROJECT_AUDIT.md` R1、R10；`docs/audit/hayro.md` R1–R3
 - 原型：scratchpad 的 `oop/proto`（不在 repo 內），以 path dependency 指向 HEAD `956c573` 的 `git archive` 快照，避免受其他 agent 未 commit 的修改影響
@@ -21,7 +21,7 @@ Spec §24 要求「單頁 render failure 不應讓整個 application crash」，
 
 換句話說，已知案例都有對策，**但 guardrail 只能擋已知的形狀**。新的 decoder bug、engine 升級造成的退化、尚未加深度上限的遞迴路徑、unsafe decoder 的記憶體破壞，都還是會讓整個 reader 消失。把 render 移到獨立 process 是 Chromium、Edge PDF、Adobe Reader 的共同做法，也是 R1 中期緩解的選項。本 ADR 以原型量測它的成本。
 
-## Decision（提議）
+## Decision
 
 ### 1. 架構
 
@@ -312,7 +312,7 @@ engine 的快取與文件 bytes 整批移到 host，總量不變；額外成本�
 - **閒置 CPU**：reply reader 原本每 50 ms 醒來檢查 deadline，現在只在有請求在途時才計時。
   - 量測方式：不開 UI 的量測程式，開檔、render 第一頁、等 3 s 後量 10 s 的 CPU cycles（`QueryProcessCycleTime`），交替 2 次。
   - 結果：parent 從 20.6–21.0 降到 0.53–0.63 Mcycles；document host 2.1–2.3（in-process 時同一份 hayro 的背景活動是 2.9–4.2）；待命 host 0。
-- **吞吐量**：目標（cold 與 cache 命中都在 in-process 的 5% 內）**只有部分達成**。
+- **吞吐量（第一輪）**：目標（cold 與 cache 命中都在 in-process 的 5% 內）**只有部分達成**。第二輪以 pipelining 達成，見〈PR 4 第二輪〉。
   - 量測方式：scratch 量測程式。兩邊都從乾淨的 process 開始（in-process 在新的子 process，remote 在新的 host），先 render 第 1 頁（不計時），再以 2 條 thread render 第 2–9 頁，scale 2、512 px tile；cache 命中是同一批 tile 再 render 9 次取中位數。7 對交替，背景 CPU 17–29%，沒有編譯。
   - cold（新內容，修改前／後的中位數）：dense-300p −3.9%／+4.0%，photos −2.4%／−0.9%，都在 5% 內；頁面很簡單的 three-pages −9.0%／−9.6%、gov-letter −13.5%／−13.6%。
   - cache 命中（修改前／後）：three-pages −43%／−36%，photos −39%／−36%，gov-letter −45%／−31%，dense-300p −4%／+1%（雜訊內）。
@@ -326,7 +326,7 @@ engine 的快取與文件 bytes 整批移到 host，總量不變；額外成本�
     - 改傳輸方式：每個 slot 一個完成 event，直接喚醒等待的 thread，或讓 worker 自己讀命令（leader/follower）。
   - 使用者實際看到的新內容 render，額外成本約 0.1 ms／tile。
 
-### PR 4 驗收
+### PR 4 驗收（第一輪）
 
 - **環境**：
   - 硬體與 build：AMD Ryzen 9 9950X、Windows 11 26200、release build（thin LTO）、hayro。
@@ -345,22 +345,67 @@ engine 的快取與文件 bytes 整批移到 host，總量不變；額外成本�
 | parent＋host 總 private | ≤ in-process＋20 MiB | idle 時 A 107.1–109.7 MiB，B 112.2–116.2 MiB，11 對的差距全部在 +4.8 至 +7.0 MiB（B 有 3 個 process：app、文件 host、待命 host）；peak 差 −1.3 至 +7.1 MiB | 通過 |
 | hostile 語料經由 UI | UI process 結束 0 次 | 46 個檔（`fixtures/generated/malformed/` 29 個、hostile 產生器 17 個），每檔開啟、翻頁、最後一頁、放大、縮圖，共 783 步，跑 2 次。預設記憶體上限：host 0 次 crash。`FASTPDF_HOST_MEMORY_MB=48`：host 因記憶體上限結束 6 次，`deep-nesting-content-100000` 與 `form_dag_depth20` 各 3 次後停止重啟（各有 1 頁永久失敗）。兩次腳本都跑完，process 由腳本最後的 Quit 結束（第 2 次記錄到結束碼 0，第 1 次沒有記錄結束碼）；0 次 panic，0 個步驟逾時 | 通過 |
 
-- **決定**：300 頁情境的 B-8 時間比較未能確認，**預設維持 in-process**，isolated 仍以 `--engine hayro-isolated` opt-in，本 ADR 維持 Proposed。
-- **切換預設前**：在安靜的機器上重跑 B-8，3 頁與 300 頁各至少 3 對，用 A＝`--engine hayro`、B＝`--engine hayro-isolated` 交替：
+- **第一輪的決定**：300 頁情境的 B-8 時間比較未能確認，預設維持 in-process。第二輪以負載閘門重新量測後全部通過，見下一節。
 
-  ```powershell
-  ./tools/bench-app/bench-app.ps1 -Preset fastpdf -Args '--engine','hayro-isolated','{pdf}' -Pdf fixtures/generated/large-text/dense-300p-times.pdf -Runs 1
-  ```
+### PR 4 第二輪（2026-10-05）：吞吐量與預設
 
-  - 中位數差 ≤ 5 ms 時，只需要改 `engines::select` 的預設，並更新 `--help` 與 README。
-  - 從目前的資料看，兩種模式的開檔都在視窗出現之前完成，第一頁都在第一次 paint 時就是清晰的；差距主要來自 GPUI 啟動時間受負載影響的變異。
+完整的量測方法與數字見 [`docs/benchmarks/render-host.md`](../benchmarks/render-host.md)。
+
+- **Pipelining**：IPC 的往返沒有消失，改成把它藏在 host 的 render 後面。
+  - `EngineDocument::render_queue_depth`：remote 文件回報 2，其他 engine 維持預設的 1。`GuardedDocument` 轉送時限制在 1–4。
+  - `RenderScheduler` 開 `workers × depth` 條 thread。session 的 worker 仍是 2，所以 remote 時有 4 個請求在途。
+  - host 新增 render lane，執行緒數是 `RemoteConfig::render_threads`。app 設成 session 的 worker 數（2），所以 host 同時 render 的頁數、hayro 的 render context 與快取數量都和 in-process 相同，多出來的請求在 host 排隊。
+  - 開檔、text layer、outline 等其他工作留在原本的 work lane，不排在 render 後面。
+- **排隊中的 render 的 deadline**：
+  - render 註冊時，前面每有一輪 `render_threads` 個 render 在途，deadline 就多一個 timeout。
+  - 註冊與寫入 pipe 在同一個鎖內完成，所以 host 收到請求的順序與註冊順序相同。
+  - 呼叫端自己的放棄時間改為以註冊的 deadline 計算。
+  - 卡住的 render 仍在自己的 deadline 被終止。
+- **吞吐量**（7 對交替，有負載閘門，負載 4–14%；修改前 → 修改後的中位數）：
+
+| 檔案 | cold | cache 命中 |
+|---|---|---|
+| three-pages | −7.3% → −2.4% | −23.9% → +9.0% |
+| dense-300p | −1.4% → −1.4% | −2.5% → −2.0% |
+| photos | −2.0% → −0.8% | −20.1% → +18.0% |
+| gov-letter | −6.5% → +5.3% | −20.7% → +12.8% |
+
+- **剩下的成本**：
+  - 每個 tile 仍有一次 IPC 往返（20–26 µs、110–130 kcycles，要喚醒 4 條 thread）與一次 1 MiB 複製，只是不再擋住 render。
+  - 每個 tile 的總 CPU cycles 比 in-process 多：新內容多 8–31%，cache 命中多 13–59%（修改前是 4–13% 與 5–27%）。增加的部分來自同時執行的工作變多後的快取與記憶體頻寬競爭。
+  - 複製省不掉：GPUI 的 `RenderImage` 只接受 process 自己的 `Vec`，tile cache 又會長期持有 tile，不能借用 slot。
+  - 少 1–2 次喚醒（每個 slot 一個完成 event，或 host worker 自己讀命令）估計只省 3–5% 的 CPU，本輪沒有做。
+- **修正**：只開 handle 時，空檔案讓 host 以 protocol 錯誤結束（結束碼 4）。原因是長度 0 的檔案被當成 section 傳給 host。現在改當成空的來源，回應與 in-process 相同（`Malformed`）。
+- **正確性**：
+  - 84 個 fixture 的第一、中間、最後一頁共 192 頁，兩邊逐位元組比較：372 個 render 相同；2 頁的 geometry 錯誤與 8 個 render 錯誤兩邊相同；190 個 text layer 相同。0 個差異，host 0 次 crash。
+  - 取消、crash 歸責、deadline、slot 回收的整合測試全部通過。
+- **B-8**：
+  - 方法：bench-app 1.1.0、`-ThreadDetail`、dist build。A＝`--engine hayro`，B＝`--engine hayro-isolated`，3 頁與 300 頁各 6 對。
+  - 負載閘門：每次啟動前取樣系統忙碌度，低於 30% 才啟動，實際啟動時是 4.1–15.3%。
+  - 判定：配對差的中位數。
+
+| 項目 | 條件 | 結果 | 判定 |
+|---|---|---|---|
+| 3 頁 `window_visible`／`first_page_exact` | 配對差中位數 ≤ 5 ms | −0.43 ms／−3.04 ms | 通過 |
+| 300 頁 `window_visible`／`first_page_exact` | 同上 | +3.07 ms／−3.49 ms | 通過 |
+| idle CPU（`-ThreadDetail`） | 不變 | 兩種模式的 idle CPU 都來自 GPUI 的主執行緒與 `VSyncProvider`；兩個 host 的所有 thread 都是 0 cycles、0 次喚醒。整個 tree 的配對差中位數：3 頁 −4.15 Mcycles／s、−21.7 次／s；300 頁 +1.27 Mcycles／s、+4.1 次／s（雜訊內） | 通過 |
+| parent＋host 總 private | ≤ in-process＋20 MiB | private bytes +6.40／+6.45 MiB，private working set +3.70／+3.75 MiB（3 頁／300 頁） | 通過 |
+| hostile 語料經由 UI | UI process 結束 0 次 | 預設 engine（isolated）加 `FASTPDF_HOST_MEMORY_MB=48`：46 個檔、783 步跑完，host 因記憶體上限結束 6 次，2 份文件停止重啟，結束碼 0，0 次 panic | 通過 |
+| 吞吐量（第 1 項） | cold 與 cache 命中 ≥ in-process −5% | 最差的中位數：cold −2.4%，cache 命中 −2.0% | 通過 |
+
+- **決定**：全部通過。
+  - Windows 的預設 engine 改為 isolated：沒有 `--engine` 時用 `hayro-isolated`。
+  - `--engine hayro`（或 `FASTPDF_ENGINE=hayro`）在 process 內 render。
+  - `--help` 會印出預設 engine。
+  - `fastpdf-bench` 維持在 process 內。
+  - 其他平台沒有 host 實作，維持在 process 內。
 
 ## Consequences
 
 - UI process 不再因為 engine 的 stack overflow、配置失敗、mmap I/O 錯誤或失控運算而消失，§24、§25 的要求從「盡量 contain」變成由 OS 保證。R1 的「中期緩解」與 R10 都由這個 ADR 承接。
 - 多一個 process 要管理：spawn、握手、重啟、版本一致性、診斷（host 的 log 要轉送到 parent 的 logger）。
-- 每個 tile 多一次 1 MiB 複製與一次 IPC 往返（實際 50–65 µs，要喚醒 4 條 thread）。新內容的 render 每個 tile 多約 0.1 ms：一般頁面在雜訊內，很簡單的頁面約 −9% 至 −14%；hayro cache 命中的 re-render 約 −31% 至 −36%（見〈PR 4〉）。低階機器要在 B-8 補測（R12）。
-- 記憶體總量基本不變，但 private bytes 分成兩個 process，再加上待命 host（B-8：合計比 in-process 多 4.8–7.0 MiB）。memory budget manager 已把 host 的 private 納入 external bytes，overlay 也分開顯示。
+- 每個 tile 多一次 1 MiB 複製與一次 IPC 往返（20–26 µs，要喚醒 4 條 thread）。parent 為每個同時進行的 render 在 host 多排一個請求，所以吞吐量與 in-process 相同（新內容 −2.4% 至 +5.3%、cache 命中 −2.0% 至 +18.0%）。代價是每個 tile 的 CPU cycles 多 8–31%（新內容）與 13–59%（cache 命中），見〈PR 4 第二輪〉。低階機器要在 B-8 補測（R12）。
+- 記憶體總量基本不變，但 private bytes 分成兩個 process，再加上待命 host。B-8 第二輪的合計比 in-process 多：private bytes 6.4 MiB、private working set 3.7 MiB。memory budget manager 已把 host 的 private 納入 external bytes，overlay 也分開顯示。
 - 列印、搜尋、選取透過 `GuardedDocument` 的介面自動走 host，不需要個別修改。
 
 ## Alternatives considered

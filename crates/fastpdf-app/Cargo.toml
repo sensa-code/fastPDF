@@ -23,7 +23,8 @@ engine-synthetic = []
 
 [dependencies]
 fastpdf-engine-api.workspace = true
-# Opt-in out-of-process rendering (`--engine NAME-isolated`, ADR 0008).
+# Out-of-process rendering (ADR 0008): the Windows default (`hayro-isolated`);
+# `--engine hayro` renders in-process.
 fastpdf-engine-remote.workspace = true
 fastpdf-core.workspace = true
 fastpdf-ui.workspace = true

@@ -65,6 +65,9 @@ const KEPT_VERDICTS: usize = 8;
 const START_GRACE: Duration = Duration::from_secs(1);
 /// Delay before a taken spare host is replaced.
 const REFILL_DELAY: Duration = Duration::from_secs(1);
+/// Renders a caller keeps in flight per render at a time
+/// (`EngineDocument::render_queue_depth`).
+const RENDER_QUEUE_DEPTH: usize = 2;
 
 /// A [`PdfEngine`] whose documents live in render host processes.
 ///
@@ -478,7 +481,10 @@ impl DocShared {
         let bytes = match data.origin() {
             // Not `data.as_slice()`: a file source has not been read, and
             // must not be.
-            Some(origin) => DocBytes::File(Arc::clone(origin)),
+            Some(origin) if !origin.is_empty() => DocBytes::File(Arc::clone(origin)),
+            // An empty file: nothing to share; the engine answers as for
+            // any empty source.
+            Some(_) => DocBytes::Empty,
             None => upload(data.as_slice())?.map_or(DocBytes::Empty, DocBytes::Section),
         };
         // The host has its own access to the bytes now.
@@ -1071,6 +1077,13 @@ impl EngineDocument for RemoteDocument {
 
     fn host_status(&self) -> Option<HostStatus> {
         Some(self.shared.host_status())
+    }
+
+    /// Two per render at a time: the next request waits in the host while a
+    /// finished tile travels back, so the host's render threads never idle
+    /// on the round trip (the host renders `render_threads` at a time).
+    fn render_queue_depth(&self) -> usize {
+        RENDER_QUEUE_DEPTH
     }
 }
 

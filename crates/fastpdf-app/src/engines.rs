@@ -1,12 +1,18 @@
 //! Compile-time engine registry (spec §43: `--features engine-hayro`,
 //! `--features engine-zpdf`) with runtime selection (`--engine NAME` or
-//! `FASTPDF_ENGINE=NAME`). Same rules as `fastpdf-bench`. `NAME-isolated`
-//! selects the same engine in a render host process (opt-in, ADR 0008;
-//! `render_host.rs`).
+//! `FASTPDF_ENGINE=NAME`). `NAME-isolated` selects the same engine in a
+//! render host process (ADR 0008; `render_host.rs`). Without a name, the
+//! first compiled-in engine is used, isolated on Windows; an explicit name
+//! without the suffix (`--engine hayro`) renders in-process, as
+//! `fastpdf-bench` always does.
 
 use fastpdf_engine_api::PdfEngine;
 
 use crate::render_host::{self, ISOLATED_SUFFIX};
+
+/// The default engine renders in a render host (ADR 0008, accepted): on
+/// Windows, the only platform with a host implementation.
+const ISOLATED_BY_DEFAULT: bool = cfg!(windows);
 
 /// `hayro-isolated` -> `hayro` (case-insensitive suffix).
 fn strip_isolated(name: &str) -> Option<&str> {
@@ -41,12 +47,23 @@ pub(crate) fn names() -> Vec<String> {
         .collect()
 }
 
+/// Name of the engine used without `--engine`, for `--help`.
+pub(crate) fn default_name() -> Option<String> {
+    let first = all().into_iter().next()?.info().name;
+    Some(if ISOLATED_BY_DEFAULT {
+        format!("{first}{ISOLATED_SUFFIX}")
+    } else {
+        first.to_owned()
+    })
+}
+
 /// The in-process engine named exactly `name`; the render host's factory.
 pub(crate) fn create(name: &str) -> Option<Box<dyn PdfEngine>> {
     all().into_iter().find(|e| e.info().name == name)
 }
 
-/// The engine named `name`, or the first compiled-in engine.
+/// The engine named `name`, or the default: the first compiled-in engine,
+/// in a render host on Windows.
 pub(crate) fn select(name: Option<&str>) -> Result<Box<dyn PdfEngine>, String> {
     if let Some(base) = name.and_then(|n| strip_isolated(n)) {
         return select(Some(base)).map(render_host::isolate);
@@ -58,6 +75,7 @@ pub(crate) fn select(name: Option<&str>) -> Result<Box<dyn PdfEngine>, String> {
         );
     }
     match name {
+        None if ISOLATED_BY_DEFAULT => Ok(render_host::isolate(engines.remove(0))),
         None => Ok(engines.remove(0)),
         Some(name) => {
             let names: Vec<&'static str> = engines.iter().map(|e| e.info().name).collect();
@@ -86,6 +104,22 @@ mod tests {
         assert_eq!(strip_isolated("-isolated"), None);
         assert_eq!(strip_isolated("hayro"), None);
         assert_eq!(strip_isolated("測"), None);
+    }
+
+    #[test]
+    fn the_default_engine_is_isolated_on_windows() {
+        let default = default_name().unwrap_or_default();
+        let first = all().into_iter().next().map(|e| e.info().name);
+        assert_eq!(
+            strip_isolated(&default).is_some(),
+            cfg!(windows),
+            "{default}"
+        );
+        assert_eq!(
+            strip_isolated(&default).or(Some(default.as_str())),
+            first,
+            "the default is the first compiled-in engine"
+        );
     }
 
     #[test]

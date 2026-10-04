@@ -214,7 +214,7 @@ Dependency policy（spec §36）的落實方式：
 
 | # | 風險 | 影響 | 機率 | 對策 |
 |---|---|---|---|---|
-| R1 | **Hostile PDF 造成無法攔截的失敗**：Hayro 的 10,000 層 `/Indexed` 鏈會 stack overflow，`catch_unwind` 無效；1 KB 檔可配置 1–2 GB；form XObject DAG 可讓 interpret 執行 30 秒以上 | 高（crash 或卡死） | 中 | 已做：Hayro adapter 的靜態掃描、有預算的預先解譯與 bomb 預解壓（`LimitExceeded` 取代 crash）。render host process + Job Object 記憶體上限（[ADR 0008](adr/0008-out-of-process-rendering.md) PR 1–4）已實作，以 `--engine hayro-isolated` opt-in：crash、記憶體上限、hang 只會結束 host，頁面先重試、2 次 strike 後才永久失敗，crash storm 時停止重啟並顯示文件層級提示；hostile 語料經由 UI 跑完，UI 0 次結束。預設仍是 in-process：B-8 的 300 頁啟動時間比較在本機負載下無法確認。upstream issue 草稿在 `docs/upstream-issues/` |
+| R1 | **Hostile PDF 造成無法攔截的失敗**：Hayro 的 10,000 層 `/Indexed` 鏈會 stack overflow，`catch_unwind` 無效；1 KB 檔可配置 1–2 GB；form XObject DAG 可讓 interpret 執行 30 秒以上 | 高（crash 或卡死） | 中 | 已做：Hayro adapter 的靜態掃描、有預算的預先解譯與 bomb 預解壓（`LimitExceeded` 取代 crash）。render host process + Job Object 記憶體上限（[ADR 0008](adr/0008-out-of-process-rendering.md) PR 1–4）已實作，**Windows 的預設**（`hayro-isolated`；`--engine hayro` 為 in-process）：crash、記憶體上限、hang 只會結束 host，頁面先重試、2 次 strike 後才永久失敗，crash storm 時停止重啟並顯示文件層級提示；hostile 語料經由 UI 跑完，UI 0 次結束。PR 4 的驗收（B-8 時間、吞吐量、idle CPU、記憶體）全部通過，見 ADR 0008 與 `docs/benchmarks/render-host.md`。upstream issue 草稿在 `docs/upstream-issues/` |
 | R2 | GPU texture 洩漏或碎片化 | 高（VRAM、commit 持續成長） | 中 | 用 main 版 GPUI；tile cache eviction hook 一律 `drop_image`；CI churn 測試 |
 | R3 | GPUI API 變動與 git pin 的維護成本 | 中 | 高 | GPUI 只出現在 `fastpdf-ui`；每 4–8 週評估升級一次；用 probe 與 bench 當升級門檻 |
 | R4 | 依賴授權回歸（例如再度引入 GPL crate） | 高（商業化受阻） | 低 | `license_report.py --check` 放進 CI；升級 GPUI 或 engine 時必跑 |

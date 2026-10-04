@@ -18,6 +18,10 @@ use crate::{
     PdfEngine, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
 };
 
+/// Upper bound for [`EngineDocument::render_queue_depth`]: callers start one
+/// thread per request in flight.
+const MAX_RENDER_QUEUE_DEPTH: usize = 4;
+
 /// Panics after which a document is considered degraded; the reader core
 /// should reopen it rather than keep using possibly inconsistent state.
 const DEGRADED_AFTER_PANICS: u32 = 3;
@@ -196,6 +200,12 @@ impl EngineDocument for GuardedDocument {
 
     fn host_status(&self) -> Option<HostStatus> {
         self.call(|| Ok(self.inner.host_status())).ok().flatten()
+    }
+
+    fn render_queue_depth(&self) -> usize {
+        self.call(|| Ok(self.inner.render_queue_depth()))
+            .unwrap_or(1)
+            .clamp(1, MAX_RENDER_QUEUE_DEPTH)
     }
 }
 

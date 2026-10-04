@@ -9,10 +9,11 @@
 //! with" list and Default apps for `.pdf` files, for the current user only
 //! (`file_types.rs`); `--dry-run` prints the registry changes instead.
 //!
-//! `--engine NAME-isolated` (e.g. `hayro-isolated`) renders through a render
-//! host process instead of in-process (opt-in, ADR 0008); FastPDF starts
-//! itself as that host with `--render-host`, an internal mode that is
-//! dispatched before anything else and never opens a window.
+//! On Windows the default engine renders through a render host process
+//! (ADR 0008): without `--engine`, FastPDF uses `hayro-isolated`, and
+//! `--engine hayro` renders in-process instead. FastPDF starts itself as
+//! the host with `--render-host`, an internal mode that is dispatched before
+//! anything else and never opens a window.
 //!
 //! Environment: `FASTPDF_LOG` (log filter, spec §31), `FASTPDF_ENGINE`
 //! (engine name), `FASTPDF_BENCH=1` (start-up milestones as JSON lines on
@@ -209,8 +210,9 @@ fn reader_main() {
     }
     if args.help {
         println!(
-            "{USAGE}\n\nengines: {}\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE, FASTPDF_SETTINGS_FILE\ndevelopment: FASTPDF_PRINT_TO_FILE, FASTPDF_DEV_SCRIPT, FASTPDF_HOST_MEMORY_MB",
-            engines::names().join(", ")
+            "{USAGE}\n\nengines: {}\ndefault engine: {} (NAME-isolated renders in a separate render host process, ADR 0008; a NAME without the suffix, e.g. --engine hayro, renders in-process)\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE, FASTPDF_SETTINGS_FILE\ndevelopment: FASTPDF_PRINT_TO_FILE, FASTPDF_DEV_SCRIPT, FASTPDF_HOST_MEMORY_MB",
+            engines::names().join(", "),
+            engines::default_name().unwrap_or_else(|| "none".into())
         );
         return;
     }

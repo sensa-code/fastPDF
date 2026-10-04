@@ -142,6 +142,18 @@ pub trait EngineDocument: Send + Sync {
     fn host_status(&self) -> Option<HostStatus> {
         None
     }
+
+    /// Renders a caller should keep in flight for each page it wants
+    /// rendered at a time. 1 (the default) for engines that render on the
+    /// calling thread or a pool of their own. Documents whose renders travel
+    /// to another process (ADR 0008) answer 2: while one reply is on its way
+    /// back, the next request already waits there, so the engine never idles
+    /// on a round trip. The number of pages rendered at once stays the
+    /// engine's business (the render host renders as many as the caller has
+    /// workers, not as many as it has requests in flight).
+    fn render_queue_depth(&self) -> usize {
+        1
+    }
 }
 
 /// A document's render host (ADR 0008), for diagnostics, the memory budget

@@ -23,20 +23,20 @@
 | M6 Memory budget | `MemoryBudgetManager`、overlay 分項、B-5 驗證（大型 PDF 不爆 RAM） | ✅ |
 | M7 UX | sidebar（outline、縮圖）、搜尋、選取／複製、列印、recent files、深色外觀、夜間模式、設定、繁體中文介面、平滑捲動 | V0.1 功能清單完成；檔案關聯目前只有命令列（`--register-file-types`）；安裝程式待做 |
 | 發佈 | 可攜版 zip：icon／版本資訊、第三方授權全文、SHA-256、smoke test | ✅ `tools/package.ps1`、`docs/RELEASE.md`（公開發佈前仍有 4 個 crate 缺授權全文） |
-| Render host | engine 移到獨立 process（ADR 0008）：crash、配置失敗、卡住只會結束 host | 已實作，opt-in：`--engine hayro-isolated`；預設仍是 in-process，PR 4 的驗收完成前不切換 |
+| Render host | engine 移到獨立 process（ADR 0008）：crash、配置失敗、卡住只會結束 host | ✅ Windows 的預設（`hayro-isolated`）；`--engine hayro` 在 process 內 render。吞吐量與啟動時間和 in-process 相同（`docs/benchmarks/render-host.md`） |
 
-## KPI（spec §29，最終版 `21dd4da` 實測）
+## KPI（spec §29；預設 engine 為 isolated，PR 4 第二輪的 dist build 實測）
 
 | 指標 | 目標 | 實測 | |
 |---|---|---|---|
-| 執行檔 | < 30 MB | 16.0 MiB | ✅ |
-| 小檔首頁 | < 200 ms | 中位數 218 ms（最快 205 ms）；第一個 frame 就是清晰的第一頁，下限是 GPUI 啟動（ADR 0009） | ❌ |
-| Idle RAM（private working set） | < 50 MB | 24.7 MB（3 頁文件）；commit 107 MB，大部分是 GPU driver | ✅ |
-| 大型 PDF | 不需完整掃描 | 2000 頁捲到底，private 穩定在 190–220 MiB（B-5） | ✅ |
-| Idle CPU | 接近 0 | 0.2–1.1% 單核，GPUI 的 vsync 迴圈仍每秒喚醒主執行緒約 100 次 | ⚠️ |
+| 執行檔 | < 30 MB | 16.1 MiB | ✅ |
+| 小檔首頁 | < 200 ms | 中位數 201.7 ms（196.4–211.7 ms，in-process 也是 201.7 ms）；第一個 frame 就是清晰的第一頁，下限是 GPUI 啟動（ADR 0009） | ❌ |
+| Idle RAM（private working set） | < 50 MB | 28.3 MB（3 頁文件，含 2 個 render host；in-process 24.7 MB）；commit 113.6 MB，大部分是 GPU driver | ✅ |
+| 大型 PDF | 不需完整掃描 | 2000 頁捲到底，private 穩定在 190–220 MiB（B-5，in-process 量測） | ✅ |
+| Idle CPU | 接近 0 | 0.0–1.25% 單核（中位數 0.62%），全部來自 GPUI 的 vsync 迴圈：主執行緒每秒仍被喚醒約 70 次；render host 的 thread 0 次 | ⚠️ |
 | 網路／telemetry | 0 | 0 | ✅ |
 
-量測機是高階桌機，量測時有背景負載。定義與細節見 `benchmarks/README.md`、`docs/benchmarks/b8-app.md`。
+量測機是高階桌機。B-8 第二輪每次啟動前都等系統忙碌度低於 30%（實際 4–15%）。定義與細節見 `benchmarks/README.md`、`docs/benchmarks/b8-app.md`、`docs/benchmarks/render-host.md`。
 
 ## 需求
 
@@ -63,7 +63,7 @@ crates/
   fastpdf-engine-api/    domain model + PdfEngine trait + GuardedDocument（零依賴）
   fastpdf-engine-hayro/  Hayro adapter
   fastpdf-engine-zpdf/   zpdf adapter（PoC，feature-gated）
-  fastpdf-engine-remote/ render host：engine 在獨立 process 中執行（ADR 0008，opt-in）
+  fastpdf-engine-remote/ render host：engine 在獨立 process 中執行（ADR 0008，Windows 的預設）
   fastpdf-cache/         byte-budget LRU + MemoryBudgetManager
   fastpdf-render/        scale bucket、tile grid、layout、viewport、scheduler、tile cache
   fastpdf-search/        lazy、incremental、可取消的全文搜尋

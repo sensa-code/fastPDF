@@ -56,7 +56,9 @@ use std::process::ExitCode;
 
 use fastpdf_engine_api::{PageIndex, PdfEngine};
 
-pub use config::{CrashPolicy, DEFAULT_MEMORY_LIMIT, DEFAULT_SLOT_BYTES, RemoteConfig};
+pub use config::{
+    CrashPolicy, DEFAULT_MEMORY_LIMIT, DEFAULT_RENDER_THREADS, DEFAULT_SLOT_BYTES, RemoteConfig,
+};
 #[cfg(windows)]
 pub use remote::RemoteEngine;
 #[cfg(not(windows))]

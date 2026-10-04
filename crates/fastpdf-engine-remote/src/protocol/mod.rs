@@ -181,8 +181,10 @@ pub(crate) struct Init {
     pub(crate) build_id: String,
     /// Engine name passed to the application's factory.
     pub(crate) engine: String,
-    /// Worker threads the host runs requests on.
+    /// Worker threads the host runs requests other than renders on.
     pub(crate) workers: u32,
+    /// Renders the host runs at a time.
+    pub(crate) render_threads: u32,
     /// Tile slot section, already duplicated into the host.
     pub(crate) slots: Option<SlotSpec>,
 }
@@ -361,6 +363,7 @@ pub(crate) fn encode_command(cmd: &Command) -> Result<Vec<u8>> {
             put_bounded_str(&mut e, &init.build_id, MAX_BUILD_ID, "build id")?;
             put_bounded_str(&mut e, &init.engine, MAX_NAME, "engine name")?;
             e.u32(init.workers);
+            e.u32(init.render_threads);
             match &init.slots {
                 Some(s) => {
                     e.u8(1);
@@ -475,6 +478,10 @@ pub(crate) fn decode_command(payload: &[u8]) -> Result<Command> {
             if workers == 0 || workers > MAX_WORKERS {
                 return Err(ProtocolError::BadValue("worker count"));
             }
+            let render_threads = d.u32()?;
+            if render_threads == 0 || render_threads > MAX_WORKERS {
+                return Err(ProtocolError::BadValue("render thread count"));
+            }
             let slots = if d.present("slots")? {
                 let section = get_section(&mut d)?;
                 let count = d.u32()?;
@@ -500,6 +507,7 @@ pub(crate) fn decode_command(payload: &[u8]) -> Result<Command> {
                 build_id,
                 engine,
                 workers,
+                render_threads,
                 slots,
             })
         }

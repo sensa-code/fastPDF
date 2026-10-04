@@ -1,10 +1,11 @@
-//! Out-of-process rendering (ADR 0008), opt-in.
+//! Out-of-process rendering (ADR 0008), the default on Windows.
 //!
-//! `fastpdf --engine hayro-isolated` (or `FASTPDF_ENGINE=hayro-isolated`)
-//! renders through a render host: this same executable, started as
-//! `fastpdf --render-host ...`, inside a job object with a memory limit, so
-//! an engine crash, allocation bomb or hang ends the host instead of the
-//! reader. Without the suffix nothing changes: the engine runs in-process.
+//! The default engine and `fastpdf --engine hayro-isolated` (or
+//! `FASTPDF_ENGINE=hayro-isolated`) render through a render host: this same
+//! executable, started as `fastpdf --render-host ...`, inside a job object
+//! with a memory limit, so an engine crash, allocation bomb or hang ends the
+//! host instead of the reader. An engine named without the suffix
+//! (`--engine hayro`) runs in-process.
 //!
 //! The host starts on a background thread while FastPDF itself starts up
 //! (window, GPUI); only opening a document waits for it. Document files are
@@ -60,6 +61,10 @@ pub(crate) fn isolate(engine: Box<dyn PdfEngine>) -> Box<dyn PdfEngine> {
         .and_then(|exe| {
             let mut config = RemoteConfig::new(exe, info.name);
             config.args = vec![HOST_FLAG.into()];
+            // The host renders as many tiles at a time as the session's
+            // scheduler would in-process.
+            let workers = fastpdf_core::SessionConfig::default().workers;
+            config.render_threads = u32::try_from(workers).unwrap_or(1).max(1);
             let limit = MEMORY_LIMIT.load(Ordering::Relaxed);
             if limit > 0 {
                 log::warn!("development: render host memory limit {} MiB", limit >> 20);

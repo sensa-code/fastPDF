@@ -46,6 +46,7 @@ fn config() -> RemoteConfig {
     c.args = vec!["--render-host".into()];
     c.memory_limit = Some(256 << 20);
     c.host_workers = 4;
+    c.render_threads = 4;
     c
 }
 
@@ -322,9 +323,9 @@ fn hung_requests_hit_their_deadline() {
 #[test]
 fn cancellation_reaches_the_engine_in_the_host() {
     let mut c = config();
-    // One worker: if the slow render kept running, the next request would
-    // wait for it (30 s).
-    c.host_workers = 1;
+    // One render thread: if the slow render kept running, the next request
+    // would wait for it (30 s).
+    c.render_threads = 1;
     let engine = engine(c);
     let doc = open(&engine, &Spec::new(3).page(1, Behavior::Slow));
     let pid = stats(&engine).pid;
@@ -417,7 +418,7 @@ fn a_crash_storm_stops_restarts() {
 #[test]
 fn a_crash_among_concurrent_requests_is_pinned_on_the_right_page() {
     let mut c = patient(config());
-    c.host_workers = 8;
+    c.render_threads = 8;
     let mut spec = Spec::new(6);
     for page in [0, 1, 3, 4, 5] {
         spec = spec.page(page, Behavior::Delay);
@@ -656,7 +657,7 @@ fn page_geometry_is_served_from_the_cache_without_a_host() {
 fn page_geometry_skips_busy_render_workers_and_the_gate() {
     let pages = 3000;
     let mut c = patient(config());
-    c.host_workers = 1;
+    c.render_threads = 1;
     c.request_timeout = Some(Duration::from_secs(2));
     // The background batch that contains the last page never finishes in
     // the host, so pages from 2112 on stay unknown; page 2 renders slowly.
@@ -851,12 +852,127 @@ fn file_sources_reach_the_host_as_a_handle_and_are_never_read_here() {
         assert!(!touched.load(Ordering::SeqCst), "FastPDF read the file");
         drop(doc);
     }
+    // An empty file gets the engine's answer for empty bytes, as in-process.
+    let empty = dir.join("empty.pdf");
+    std::fs::write(&empty, b"").unwrap_or_else(|e| panic!("{e}"));
+    let touched = Arc::new(AtomicBool::new(false));
+    let remote = open_guarded(
+        &engine,
+        file_source(&empty, false, &touched),
+        &OpenOptions::default(),
+    )
+    .err();
+    let local = open_guarded(
+        &SyntheticEngine,
+        DocumentSource::from_bytes(SharedBytes::from_vec(Vec::new())),
+        &OpenOptions::default(),
+    )
+    .err();
+    assert!(
+        remote.is_some() && remote == local,
+        "{remote:?} vs {local:?}"
+    );
+    assert_eq!(stats_of_engine(&engine), 0, "no host crashed");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn stats_of_engine(engine: &RemoteEngine) -> u32 {
+    engine.host_stats().iter().map(|s| s.crashes).sum()
 }
 
 fn stats_of(doc: &GuardedDocument) -> fastpdf_engine_api::HostStatus {
     doc.host_status()
         .unwrap_or_else(|| panic!("no host status"))
+}
+
+#[test]
+fn renders_beyond_the_render_threads_wait_in_the_host() {
+    let mut c = config();
+    c.render_threads = 1;
+    let engine = engine(c);
+    let spec = Spec::new(3)
+        .page(0, Behavior::Delay)
+        .page(1, Behavior::Delay);
+    let doc = Arc::new(open(&engine, &spec));
+    // Callers keep two renders in flight per render at a time.
+    assert_eq!(doc.render_queue_depth(), 2);
+    let started = Instant::now();
+    let renders: Vec<_> = [0, 1]
+        .into_iter()
+        .map(|page| {
+            let doc = Arc::clone(&doc);
+            std::thread::spawn(move || render(&doc, page).map(drop))
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(100));
+    // Other work does not queue behind renders.
+    let asked = Instant::now();
+    assert!(doc.metadata().is_ok());
+    let metadata = asked.elapsed();
+    for r in renders {
+        assert!(
+            r.join()
+                .unwrap_or_else(|_| panic!("render thread panicked"))
+                .is_ok()
+        );
+    }
+    let took = started.elapsed();
+    // One render thread: the two 300 ms renders ran one after the other.
+    assert!(
+        took >= Duration::from_millis(590),
+        "renders overlapped: {took:?}"
+    );
+    assert!(
+        metadata < Duration::from_millis(150),
+        "metadata waited for renders: {metadata:?}"
+    );
+    eprintln!("render lane: two 300 ms renders took {took:?}, metadata {metadata:?}");
+}
+
+#[test]
+fn queued_renders_get_time_for_the_renders_ahead_of_them() {
+    // Two 300 ms renders on one render thread with a 500 ms deadline: the
+    // second one finishes 600 ms after it was sent, which is fine because
+    // it waited for the first one.
+    let mut c = config();
+    c.render_threads = 1;
+    c.request_timeout = Some(Duration::from_millis(500));
+    let engine = engine(c);
+    let spec = Spec::new(3)
+        .page(0, Behavior::Delay)
+        .page(1, Behavior::Delay);
+    let doc = Arc::new(open(&engine, &spec));
+    let reference = open(&SyntheticEngine, &Spec::new(3));
+    let renders: Vec<_> = [0, 1]
+        .into_iter()
+        .map(|page| {
+            let doc = Arc::clone(&doc);
+            std::thread::spawn(move || render(&doc, page))
+        })
+        .collect();
+    for (page, r) in renders.into_iter().enumerate() {
+        let result = r
+            .join()
+            .unwrap_or_else(|_| panic!("render thread panicked"));
+        assert_eq!(result, render(&reference, page as u32), "page {page}");
+    }
+    assert_eq!(
+        stats(&engine).crashes,
+        0,
+        "a queued render was taken for a hang"
+    );
+    // A render that hangs alone still hits its own deadline.
+    let hung = open(&engine, &Spec::new(2).page(1, Behavior::Hang));
+    let started = Instant::now();
+    assert_eq!(
+        render(&hung, 1).err(),
+        Some(exited(HostExitReason::Deadline, false))
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[test]
