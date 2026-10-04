@@ -26,8 +26,9 @@ use gpui::{
 
 use crate::actions::{KEY_CONTEXT, all_actions};
 use crate::bench::{BenchEvent, BenchHook};
-use crate::document::{OpenFailure, OpenedDocument, PendingOpen, open_document_blocking};
+use crate::document::{OpenFailure, Opened, open_document_blocking};
 use crate::find::{FindBar, SearchTarget};
+use crate::i18n::{Language, Strings};
 use crate::overlay::DevOverlay;
 use crate::print::PrintPanel;
 use crate::select::{PagePoint, TextSelection};
@@ -35,8 +36,10 @@ use crate::settings::{
     Appearance, DefaultZoom, MIN_WINDOW, Settings, SettingsStore, WindowPlacement,
 };
 use crate::sidebar::Sidebar;
-use crate::textures::{DEFAULT_UPLOAD_BUDGET, TileImage, TileTextures, to_render_image};
-use crate::theme::{ActiveTheme, Theme, UI_FONT};
+use crate::smooth_scroll::SmoothScroll;
+use crate::startup::{SessionParts, Startup, default_window_size};
+use crate::textures::{DEFAULT_UPLOAD_BUDGET, TileImage, TileTextures};
+use crate::theme::{ActiveTheme, Theme};
 use crate::toolbar;
 
 /// Scroll distance of one wheel "line" and of the arrow keys, in logical
@@ -69,6 +72,9 @@ pub struct ReaderOptions {
     /// Where UI settings (appearance, night mode, sidebar, default zoom,
     /// window placement) are kept; `None`: defaults, nothing is written.
     pub settings_file: Option<PathBuf>,
+    /// The Windows UI language (`GetUserDefaultUILanguage`, a LANGID), which
+    /// picks the UI text unless the settings name a language.
+    pub system_ui_language: Option<u16>,
 }
 
 impl std::fmt::Debug for ReaderOptions {
@@ -81,6 +87,7 @@ impl std::fmt::Debug for ReaderOptions {
             .field("print_to_file", &self.print_to_file)
             .field("dev_script", &self.dev_script.is_some())
             .field("settings_file", &self.settings_file)
+            .field("system_ui_language", &self.system_ui_language)
             .finish_non_exhaustive()
     }
 }
@@ -98,26 +105,22 @@ impl ReaderOptions {
             print_to_file: None,
             dev_script: None,
             settings_file: crate::settings::default_location(),
+            system_ui_language: None,
         }
     }
 }
 
-/// Opens the main window; `initial` is a document already being opened.
+/// Opens the main window with what `startup` prepared (settings, the
+/// command-line document, maybe its first page).
 pub fn open_reader_window(
     cx: &mut App,
     options: ReaderOptions,
-    initial: Option<PendingOpen>,
+    startup: Startup,
 ) -> gpui::Result<WindowHandle<ReaderView>> {
     let bench = options.bench.clone();
-    // A few hundred bytes; read before the window exists so it opens where
-    // it was left, in the chosen appearance.
-    let settings = options
-        .settings_file
-        .as_deref()
-        .map(Settings::load)
-        .unwrap_or_default();
-    apply_window_appearance(settings.appearance, cx);
-    let window_bounds = initial_window_bounds(settings.window, cx);
+    // The window opens where it was left, in the chosen appearance.
+    apply_window_appearance(startup.settings.appearance, cx);
+    let window_bounds = initial_window_bounds(startup.settings.window, cx);
     let handle = cx.open_window(
         WindowOptions {
             window_bounds: Some(window_bounds),
@@ -129,7 +132,7 @@ pub fn open_reader_window(
             app_id: Some(APP_TITLE.into()),
             ..Default::default()
         },
-        move |window, cx| cx.new(|cx| ReaderView::new(options, settings, initial, window, cx)),
+        move |window, cx| cx.new(|cx| ReaderView::new(options, startup, window, cx)),
     )?;
     if let Some(hook) = bench {
         hook(BenchEvent::WindowVisible);
@@ -173,7 +176,7 @@ fn initial_window_bounds(saved: Option<WindowPlacement>, cx: &App) -> WindowBoun
         }
         log::info!("the saved window placement is off screen; using the default");
     }
-    WindowBounds::Windowed(Bounds::centered(None, default_window_size(cx), cx))
+    WindowBounds::Windowed(Bounds::centered(None, default_window_size_on(cx), cx))
 }
 
 /// Whether enough of the window's top edge is on one of `displays`.
@@ -198,20 +201,20 @@ fn placement_of(bounds: WindowBounds) -> WindowPlacement {
     }
 }
 
-/// A portrait window that fits the primary display.
-fn default_window_size(cx: &App) -> gpui::Size<Pixels> {
+/// A portrait window that fits the primary display (the same size
+/// `crate::startup` predicts).
+fn default_window_size_on(cx: &App) -> gpui::Size<Pixels> {
     let Some(display) = cx.primary_display() else {
         return size(px(1024.0), px(768.0));
     };
     let screen = display.bounds().size;
-    let height = (f32::from(screen.height) * 0.85).clamp(480.0, 1400.0);
-    let width = (height * 0.9).clamp(640.0, (f32::from(screen.width) * 0.9).max(640.0));
+    let (width, height) = default_window_size(f32::from(screen.width), f32::from(screen.height));
     size(px(width), px(height))
 }
 
 /// Wakes the UI thread from any thread; see the crate docs.
 #[derive(Clone, Debug)]
-pub(crate) struct Waker(mpsc::UnboundedSender<()>);
+pub(crate) struct Waker(pub(crate) mpsc::UnboundedSender<()>);
 
 impl Waker {
     pub(crate) fn wake(&self) {
@@ -231,7 +234,7 @@ pub(crate) struct OpenDoc {
 pub(crate) enum DocState {
     Empty,
     Loading { path: PathBuf },
-    Failed { path: PathBuf, message: String },
+    Failed { path: PathBuf, failure: OpenFailure },
     Open(Box<OpenDoc>),
 }
 
@@ -270,6 +273,12 @@ pub struct ReaderView {
     initial_bounds: WindowBounds,
     /// Saves the placement once the window stops moving (debounce).
     bounds_task: Option<Task<()>>,
+    /// The Windows UI language (the settings may override it).
+    system_language: Language,
+    /// Language the text fields' placeholders were last set in.
+    placeholders: Option<Language>,
+    /// Mouse-wheel notches in flight (`crate::smooth_scroll`).
+    pub(crate) smooth_scroll: SmoothScroll,
     open_task: Option<Task<()>>,
     pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
@@ -289,11 +298,17 @@ impl std::fmt::Debug for ReaderView {
 impl ReaderView {
     fn new(
         options: ReaderOptions,
-        settings: Settings,
-        initial: Option<PendingOpen>,
+        startup: Startup,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
+        let Startup {
+            settings,
+            pending,
+            wake: waker,
+            wake_rx: mut rx,
+            retire,
+        } = startup;
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
 
@@ -307,9 +322,9 @@ impl ReaderView {
         let settings_store = SettingsStore::new(options.settings_file.clone(), &settings);
 
         // Render workers, searches and cache evictions wake the UI through
-        // this channel: a foreground task awaits it and notifies the view.
-        // No polling, no timers (spec §1: idle CPU ~ 0).
-        let (tx, mut rx) = mpsc::unbounded::<()>();
+        // this channel (created before the window, see `crate::startup`): a
+        // foreground task awaits it and notifies the view. No polling, no
+        // timers (spec §1: idle CPU ~ 0).
         let wake_task = cx.spawn(async move |this, cx| {
             while rx.next().await.is_some() {
                 // Coalesce a burst of wake-ups into one update.
@@ -324,8 +339,12 @@ impl ReaderView {
         let memory = MemoryMonitor::new(Arc::new(MemoryBudgetManager::new(options.memory)));
         let texts = Arc::new(TextCache::new(TextCache::DEFAULT_BUDGET));
         memory.manager().register(texts.budgeted());
+        let system_language = options
+            .system_ui_language
+            .map(Language::from_langid)
+            .unwrap_or_default();
         let mut view = Self {
-            textures: TileTextures::new(options.upload_budget),
+            textures: TileTextures::with_retire_queue(options.upload_budget, retire),
             overlay: DevOverlay::new(options.dev_overlay),
             find: FindBar::new(cx),
             print: PrintPanel::new(options.print_to_file.clone(), cx),
@@ -345,13 +364,16 @@ impl ReaderView {
             render_started: None,
             frame_seq: 0,
             first_paint_reported: false,
-            waker: Waker(tx),
+            waker,
             memory,
             settings,
             settings_store,
             settings_open: false,
             initial_bounds,
             bounds_task: None,
+            system_language,
+            placeholders: None,
+            smooth_scroll: SmoothScroll::default(),
             open_task: None,
             dev_script: None,
             _wake_task: wake_task,
@@ -359,10 +381,29 @@ impl ReaderView {
             _bounds: bounds,
         };
         cx.set_global(ActiveTheme(view.theme));
-        if let Some(pending) = initial {
-            let PendingOpen { path, result } = pending;
-            let result = async move { result.await.unwrap_or(Err(OpenFailure::Abandoned)) };
-            view.begin_open(path, result, window, cx);
+        view.apply_language(cx);
+        if let Some(mut pending) = pending {
+            // Usually finished long before the window: adopt it now, so the
+            // very first frame shows the document (and its early tiles).
+            match pending.result.try_recv() {
+                Ok(Some(result)) => {
+                    view.doc = DocState::Loading {
+                        path: pending.path.clone(),
+                    };
+                    view.finish_open(pending.path, result, window, cx);
+                }
+                Ok(None) => {
+                    let result = pending.result;
+                    let result = async move { result.await.unwrap_or(Err(OpenFailure::Abandoned)) };
+                    view.begin_open(pending.path, result, window, cx);
+                }
+                Err(_) => {
+                    view.doc = DocState::Loading {
+                        path: pending.path.clone(),
+                    };
+                    view.finish_open(pending.path, Err(OpenFailure::Abandoned), window, cx);
+                }
+            }
         } else {
             view.load_recent(cx);
         }
@@ -425,16 +466,16 @@ impl ReaderView {
         let path = std::path::absolute(&path).unwrap_or(path);
         let engine = Arc::clone(&self.options.engine);
         let open_path = path.clone();
-        let task = cx
-            .background_executor()
-            .spawn(async move { open_document_blocking(engine.as_ref(), &open_path) });
+        let task = cx.background_executor().spawn(async move {
+            open_document_blocking(engine.as_ref(), &open_path).map(Opened::from)
+        });
         self.begin_open(path, task, window, cx);
     }
 
     fn begin_open(
         &mut self,
         path: PathBuf,
-        result: impl Future<Output = Result<OpenedDocument, OpenFailure>> + 'static,
+        result: impl Future<Output = Result<Opened, OpenFailure>> + 'static,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -454,7 +495,7 @@ impl ReaderView {
     fn finish_open(
         &mut self,
         path: PathBuf,
-        result: Result<OpenedDocument, OpenFailure>,
+        result: Result<Opened, OpenFailure>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -462,46 +503,35 @@ impl ReaderView {
         if !matches!(&self.doc, DocState::Loading { path: p } if *p == path) {
             return;
         }
-        let opened = match result {
+        let Opened {
+            doc: opened,
+            session,
+        } = match result {
             Ok(opened) => opened,
             Err(failure) => {
                 log::warn!("cannot open {}: {failure}", path.display());
-                self.doc = DocState::Failed {
-                    message: failure.to_string(),
-                    path,
-                };
+                self.doc = DocState::Failed { failure, path };
                 window.set_window_title(APP_TITLE);
                 cx.notify();
                 return;
             }
         };
 
-        let (view_size, scale) = self.viewport_estimate(window);
-        let waker = self.waker.clone();
-        let evict_waker = self.waker.clone();
-        let retire = self.textures.retire_queue();
-        let mut session = DocumentSession::new(
-            Arc::clone(&opened.doc),
-            self.options.session.clone(),
-            view_size,
-            scale,
-            to_render_image,
-            move || waker.wake(),
-            // Evicted tiles must leave the GPU atlas too; only the UI thread
-            // may call drop_image, so hand them over.
-            move |evicted| {
-                if retire.retire(evicted.into_iter().map(|(_, image)| image)) {
-                    evict_waker.wake();
-                }
-            },
-        );
-        // Before the first frame, so no tile renders in the wrong colors or
-        // at the wrong zoom.
-        session.set_color_mode(self.color_mode());
-        if self.settings.default_zoom != DefaultZoom::FitWidth {
-            // Fit width is the session's own start.
-            apply_default_zoom(&mut session, self.settings.default_zoom);
-        }
+        let session = match session {
+            // Started while GPUI was starting; the first frame resizes it to
+            // the real document area if the guess was off. Night mode or the
+            // default zoom may have changed while the document was opening:
+            // nothing of it has been shown yet, so apply the current ones.
+            Some(mut session) => {
+                session.set_color_mode(self.color_mode());
+                apply_default_zoom(&mut session, self.settings.default_zoom);
+                session
+            }
+            None => {
+                let (view_size, scale) = self.viewport_estimate(window);
+                self.session_parts().session(&opened, view_size, scale)
+            }
+        };
         self.memory
             .manager()
             .register(session.tile_cache().budgeted());
@@ -542,6 +572,7 @@ impl ReaderView {
         self.find.reset(cx);
         self.selection.reset();
         self.sidebar.reset_document();
+        self.smooth_scroll.stop();
         // A print job keeps the document alive until it stops.
         self.print.cancel_job();
         if let DocState::Open(open) = mem::replace(&mut self.doc, DocState::Empty) {
@@ -914,21 +945,46 @@ impl ReaderView {
         cx: &mut Context<'_, Self>,
     ) {
         let anchor = self.local_position(event.position);
+        let smooth = self.settings.smooth_scrolling
+            && !event.modifiers.control
+            && crate::smooth_scroll::is_wheel_notch(&event.delta);
+        let delta = event.delta.pixel_delta(px(LINE_SCROLL_PX));
+        let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
         let Some(session) = self.session_mut() else {
             return;
         };
-        let delta = event.delta.pixel_delta(px(LINE_SCROLL_PX));
-        let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
         if event.modifiers.control {
             // Wheel away from the user zooms in, around the cursor.
             let factor = 2f32.powf(dy / WHEEL_PX_PER_ZOOM_DOUBLING);
             session.set_zoom(session.zoom().scaled(factor), anchor);
+        } else if smooth {
+            // Animated by the viewport's prepaint (`crate::smooth_scroll`).
+            self.smooth_scroll.add((-dx, -dy), Instant::now());
         } else {
             // GPUI deltas move the content; the session scrolls the view.
             session.scroll_by(-dx, -dy);
         }
         cx.stop_propagation();
         cx.notify();
+    }
+
+    /// A wheel turn of `notches` (positive: down) as a mouse sends it, at
+    /// the Windows default of three lines per notch (dev scripts).
+    pub(crate) fn wheel_notches(
+        &mut self,
+        notches: i32,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let position = self
+            .viewport_bounds
+            .map_or_else(gpui::Point::default, |b| b.center());
+        let event = ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -3.0 * notches as f32)),
+            ..ScrollWheelEvent::default()
+        };
+        self.on_scroll_wheel(&event, window, cx);
     }
 
     pub(crate) fn on_pinch(
@@ -997,6 +1053,43 @@ pub(crate) fn apply_default_zoom(session: &mut DocumentSession<TileImage>, zoom:
 }
 
 impl ReaderView {
+    /// The UI language: the settings' choice, else the Windows UI language.
+    pub(crate) fn language(&self) -> Language {
+        self.settings.language.resolve(self.system_language)
+    }
+
+    pub(crate) fn strings(&self) -> &'static Strings {
+        self.language().strings()
+    }
+
+    /// Text that lives outside the views' render (text field placeholders)
+    /// follows a language change here.
+    pub(crate) fn apply_language(&mut self, cx: &mut Context<'_, Self>) {
+        let language = self.language();
+        if self.placeholders == Some(language) {
+            return;
+        }
+        self.placeholders = Some(language);
+        let strings = language.strings();
+        self.find.input.update(cx, |input, cx| {
+            input.set_placeholder(strings.find_placeholder, cx)
+        });
+        self.print.range.update(cx, |input, cx| {
+            input.set_placeholder(strings.range_placeholder, cx)
+        });
+    }
+
+    /// Everything a new session needs besides the document.
+    fn session_parts(&self) -> SessionParts {
+        SessionParts {
+            config: self.options.session.clone(),
+            color: self.color_mode(),
+            zoom: self.settings.default_zoom,
+            wake: self.waker.clone(),
+            retire: self.textures.retire_queue(),
+        }
+    }
+
     /// Page colors for the night mode setting.
     pub(crate) fn color_mode(&self) -> ColorMode {
         if self.settings.night_mode {
@@ -1085,6 +1178,7 @@ impl Render for ReaderView {
             self.theme = theme;
             cx.set_global(ActiveTheme(theme));
         }
+        self.apply_language(cx);
         let view = cx.entity();
 
         let root = div()
@@ -1094,7 +1188,7 @@ impl Render for ReaderView {
             .size_full()
             .flex()
             .flex_col()
-            .font_family(UI_FONT)
+            .font_family(self.language().ui_font())
             .text_color(theme.text)
             .bg(theme.canvas_bg)
             .child(toolbar::render(self, cx))
@@ -1169,21 +1263,16 @@ impl ReaderView {
     /// progress, errors.
     fn placeholder(&self, cx: &mut Context<'_, Self>) -> Option<impl IntoElement + use<>> {
         let theme = self.theme;
+        let strings = self.strings();
         let (title, detail, is_error): (String, String, bool) = match &self.doc {
             DocState::Open(_) => return None,
-            DocState::Empty => (
-                APP_TITLE.into(),
-                "Open a PDF with Ctrl+O, or drop one onto this window.".into(),
-                false,
-            ),
-            DocState::Loading { path } => (
-                format!("Opening {}...", display_name(path)),
-                String::new(),
-                false,
-            ),
-            DocState::Failed { path, message } => (
-                format!("Cannot open {}", display_name(path)),
-                message.clone(),
+            DocState::Empty => (APP_TITLE.into(), strings.empty_hint.into(), false),
+            DocState::Loading { path } => {
+                (strings.opening(&display_name(path)), String::new(), false)
+            }
+            DocState::Failed { path, failure } => (
+                strings.cannot_open(&display_name(path)),
+                strings.open_failure(failure),
                 true,
             ),
         };
@@ -1273,7 +1362,7 @@ impl ReaderView {
                         .px_3()
                         .text_size(px(13.0))
                         .text_color(theme.text_muted)
-                        .child("Recent"),
+                        .child(self.strings().recent),
                 )
                 .children(rows),
         )

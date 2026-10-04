@@ -157,9 +157,16 @@ impl std::fmt::Debug for TileTextures {
 }
 
 impl TileTextures {
+    #[cfg(test)]
     pub(crate) fn new(upload_budget: usize) -> Self {
+        Self::with_retire_queue(upload_budget, RetireQueue::default())
+    }
+
+    /// Uses `retire`, a queue sessions created before this window (startup)
+    /// already evict into.
+    pub(crate) fn with_retire_queue(upload_budget: usize, retire: RetireQueue) -> Self {
         Self {
-            retire: RetireQueue::default(),
+            retire,
             resident: HashMap::new(),
             resident_bytes: 0,
             upload_budget: upload_budget.max(1),

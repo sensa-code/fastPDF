@@ -60,6 +60,12 @@ impl ReaderView {
         let height = f32::from(bounds.size.height);
         let scale = window.scale_factor();
         let retire = self.textures.retire_queue();
+        // Wheel notches in flight: this frame's share of the motion, and
+        // one more frame while the animation lasts (never when idle).
+        let scroll_step = self.smooth_scroll.step(Instant::now());
+        if self.smooth_scroll.is_active() {
+            window.request_animation_frame();
+        }
         let textures = &mut self.textures;
         let DocState::Open(open) = &mut self.doc else {
             return None;
@@ -68,6 +74,14 @@ impl ReaderView {
             return None; // minimized or collapsed: nothing to plan
         }
         let session = &mut open.session;
+        if let Some((dx, dy)) = scroll_step {
+            let page = session.current_page();
+            session.scroll_by(dx, dy);
+            // The toolbar's page number was rendered before this step.
+            if session.current_page() != page {
+                window.request_animation_frame();
+            }
+        }
         let vp = *session.viewport();
         if vp.width != width || vp.height != height || vp.device_scale != scale {
             let before = (session.zoom(), session.current_page());
@@ -115,6 +129,7 @@ impl ReaderView {
         let paper = crate::theme::paper(self.options.session.paper, mode);
         let marks = PageHighlights::for_mode(mode);
         let theme = self.theme;
+        let strings = self.strings();
         let mut pending = 0;
         let mut deferred = 0;
         let mut shows_pages = false;
@@ -148,8 +163,7 @@ impl ReaderView {
                     if let Some(error) = &page.error {
                         let rect = view_bounds(origin, page.rect);
                         paint_page_error(
-                            page.page.display_number(),
-                            error,
+                            &strings.page_error(page.page.display_number(), error),
                             rect,
                             theme.error_text,
                             window,
@@ -233,14 +247,13 @@ pub(crate) fn track_selection_drag(view: Entity<ReaderView>, window: &mut Window
 }
 
 fn paint_page_error(
-    page_number: u32,
-    error: &str,
+    message: &str,
     page: Bounds<Pixels>,
     color: Rgba,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let mut text: String = format!("Page {page_number} could not be rendered: {error}")
+    let mut text: String = message
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .take(MAX_ERROR_CHARS)

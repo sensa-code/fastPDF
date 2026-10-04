@@ -1470,4 +1470,17 @@ mod tests {
         let frame = settle(&mut s);
         assert_eq!(frame.pending, 0);
     }
+
+    /// The UI builds the command-line document's first session on its open
+    /// thread while the toolkit starts (`fastpdf_ui` start-up) and moves it
+    /// to the UI thread afterwards, so a session must be `Send` for every
+    /// view type the sessions accept, not just the one the UI uses.
+    #[test]
+    fn sessions_can_move_between_threads() {
+        fn assert_send<T: Send>() {}
+        fn for_any_view<V: Clone + Send + 'static>() {
+            assert_send::<DocumentSession<V>>();
+        }
+        for_any_view::<Arc<Vec<u8>>>();
+    }
 }

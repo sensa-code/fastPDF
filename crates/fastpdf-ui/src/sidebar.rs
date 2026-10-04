@@ -25,7 +25,6 @@ use gpui::{
 
 use crate::reader::{DocState, ReaderView};
 use crate::textures::TileImage;
-use crate::theme::UI_FONT;
 use crate::toolbar::styled_button;
 
 /// Sidebar width in logical pixels.
@@ -191,12 +190,10 @@ pub(crate) fn flatten_outline(items: &[OutlineItem]) -> Vec<OutlineRow> {
                 .map(|c| if c.is_control() { ' ' } else { c })
                 .collect();
             let title = title.trim();
+            // Empty titles stay empty; they are shown as "(untitled)" in
+            // the UI language.
             out.push(OutlineRow {
-                title: if title.is_empty() {
-                    "(untitled)".into()
-                } else {
-                    SharedString::from(title.to_string())
-                },
+                title: SharedString::from(title.to_string()),
                 depth,
                 destination: item.destination.clone(),
             });
@@ -335,6 +332,7 @@ impl ReaderView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement + use<> {
         let theme = self.theme;
+        let strings = self.strings();
         let tab = self.sidebar.tab;
         let tabs = div()
             .flex()
@@ -348,7 +346,7 @@ impl ReaderView {
             .child(
                 styled_button(
                     "tab-outline",
-                    "Outline",
+                    strings.outline,
                     true,
                     tab == SidebarTab::Outline,
                     &theme,
@@ -358,10 +356,16 @@ impl ReaderView {
                 })),
             )
             .child(
-                styled_button("tab-pages", "Pages", true, tab == SidebarTab::Pages, &theme)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.set_sidebar_tab(SidebarTab::Pages, window, cx);
-                    })),
+                styled_button(
+                    "tab-pages",
+                    strings.pages,
+                    true,
+                    tab == SidebarTab::Pages,
+                    &theme,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.set_sidebar_tab(SidebarTab::Pages, window, cx);
+                })),
             );
         let body = match tab {
             SidebarTab::Outline => self.render_outline(view).into_any_element(),
@@ -383,6 +387,7 @@ impl ReaderView {
 
     fn render_outline(&self, view: Entity<Self>) -> gpui::AnyElement {
         let theme = self.theme;
+        let strings = self.strings();
         let message = |text: String| {
             div()
                 .p_3()
@@ -392,22 +397,28 @@ impl ReaderView {
                 .into_any_element()
         };
         if self.session().is_none() {
-            return message("No document".into());
+            return message(strings.no_document.into());
         }
         let rows = match &self.sidebar.outline {
             OutlineState::Ready(rows) => Rc::clone(rows),
             OutlineState::NotLoaded | OutlineState::Loading(_) => {
-                return message("Loading\u{2026}".into());
+                return message(strings.loading.into());
             }
-            OutlineState::Empty => return message("This document has no outline.".into()),
-            OutlineState::Failed(e) => return message(format!("Outline unavailable: {e}")),
+            OutlineState::Empty => return message(strings.no_outline.into()),
+            OutlineState::Failed(e) => return message(strings.outline_unavailable(e)),
         };
+        let untitled = SharedString::from(strings.untitled);
         let count = rows.len();
         uniform_list("outline", count, move |range, _window, _cx| {
             range
                 .filter_map(|ix| {
                     let row = rows.get(ix)?;
                     let view = view.clone();
+                    let title = if row.title.is_empty() {
+                        untitled.clone()
+                    } else {
+                        row.title.clone()
+                    };
                     let has_target = row.destination.is_some();
                     Some(
                         div()
@@ -429,7 +440,7 @@ impl ReaderView {
                                         view.update(cx, |this, cx| this.activate_outline(ix, cx));
                                     })
                             })
-                            .child(row.title.clone()),
+                            .child(title),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -555,7 +566,8 @@ impl ReaderView {
         let paper = crate::theme::paper(self.options.session.paper, mode);
         let list = self.sidebar.thumbs.clone();
         let box_height = list.row_height - ROW_PAD - LABEL_HEIGHT - ROW_PAD / 2.0;
-        let label_font = font(UI_FONT);
+        let label_font = font(self.language().ui_font());
+        let strings = self.strings();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for item in &frame.items {
                 let row = item.page.get() as f32;
@@ -580,7 +592,7 @@ impl ReaderView {
                     self.textures.paint(image, rect, None, window);
                 }
                 let label = if item.failed {
-                    format!("{} (error)", item.page.display_number())
+                    strings.thumbnail_failed(item.page.display_number())
                 } else {
                     item.page.display_number().to_string()
                 };
@@ -655,12 +667,7 @@ mod tests {
             rows.iter().map(|r| (r.title.as_ref(), r.depth)).collect();
         assert_eq!(
             summary,
-            vec![
-                ("第一章", 0),
-                ("1.1", 1),
-                ("(untitled)", 1),
-                ("Chapter 2", 0)
-            ]
+            vec![("第一章", 0), ("1.1", 1), ("", 1), ("Chapter 2", 0)]
         );
         assert_eq!(rows[3].destination.as_ref().map(|d| d.page.get()), Some(5));
     }

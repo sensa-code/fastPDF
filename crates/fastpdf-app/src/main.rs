@@ -19,10 +19,12 @@
 //! "Microsoft Print to PDF" queue) and `FASTPDF_DEV_SCRIPT` (steps that
 //! drive the reader without synthesized input; see `fastpdf_ui` devscript).
 //!
-//! Start-up order (spec §10): the command-line document starts opening on a
-//! background thread first thing in `main`, so engine work overlaps GPUI's
-//! platform initialization; the window appears as soon as GPUI is up and
-//! shows the document when the open finishes. Nothing waits on the engine.
+//! Start-up order (spec §10, §29): the command-line document starts opening
+//! on a background thread first thing in `main`, and when the window's size
+//! can be predicted (saved placement, or the default window on the primary
+//! monitor) its first page starts rendering there too, so engine work
+//! overlaps GPUI's platform initialization and the first frame can show
+//! exact tiles. Nothing waits on the engine.
 
 // Release builds are GUI-subsystem executables (no console window).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -38,7 +40,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fastpdf_engine_api::PdfEngine;
-use fastpdf_ui::{PendingOpen, ReaderOptions};
+use fastpdf_ui::{ReaderOptions, Startup};
 
 const USAGE: &str = "usage: fastpdf [--engine NAME] [file.pdf]";
 
@@ -169,15 +171,8 @@ fn main() {
     };
     log::info!("engine: {}", engine.info().name);
 
-    // Overlaps the engine's open with GPUI start-up (see module docs).
-    let pending = args.file.map(|path| {
-        PendingOpen::spawn(
-            Arc::clone(&engine),
-            std::path::absolute(&path).unwrap_or(path),
-        )
-    });
-
     let mut options = ReaderOptions::new(engine);
+    options.system_ui_language = platform::ui_language();
     options.dev_overlay = env.dev_overlay;
     options.bench = env.bench.then(|| clock.hook());
     if let Some(recent) = env.recent_file {
@@ -202,9 +197,16 @@ fn main() {
         );
     }
 
+    // Overlaps the engine's open, and page 1, with GPUI start-up (see the
+    // module docs).
+    let file = args
+        .file
+        .map(|path| std::path::absolute(&path).unwrap_or(path));
+    let startup = Startup::begin(&options, file, platform::primary_screen());
+
     gpui_platform::application().run(move |cx| {
         fastpdf_ui::bind_keys(cx);
-        match fastpdf_ui::open_reader_window(cx, options, pending) {
+        match fastpdf_ui::open_reader_window(cx, options, startup) {
             Ok(_) => cx.activate(true),
             Err(e) => {
                 log::error!("cannot open the main window: {e:#}");
@@ -226,6 +228,69 @@ fn install_panic_hook() {
             log::error!("{backtrace}");
         }
     }));
+}
+
+/// What the UI needs to know about the system before GPUI starts.
+mod platform {
+    use fastpdf_ui::ScreenGuess;
+
+    /// The Windows UI language (a LANGID), which picks the UI text.
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    pub(crate) fn ui_language() -> Option<u16> {
+        use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
+        // SAFETY: no arguments, no pointers.
+        let id = unsafe { GetUserDefaultUILanguage() };
+        (id != 0).then_some(id)
+    }
+
+    /// The primary monitor as GPUI will see it — its size in physical
+    /// pixels and its effective DPI — so the default window, and with it
+    /// page 1's tiles, can be predicted. The process is per-monitor DPI
+    /// aware from its manifest, so these are real pixels.
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    pub(crate) fn primary_screen() -> Option<ScreenGuess> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
+        };
+        use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+
+        // SAFETY: plain Win32 calls; the out-pointers are to locals of the
+        // right type, and `cbSize` is set as GetMonitorInfoW requires.
+        unsafe {
+            let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+            if monitor.is_null() {
+                return None;
+            }
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(monitor, &mut info) == 0 {
+                return None;
+            }
+            let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
+            if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) != 0 {
+                return None;
+            }
+            let r = info.rcMonitor;
+            Some(ScreenGuess {
+                width_px: u32::try_from(r.right - r.left).ok()?,
+                height_px: u32::try_from(r.bottom - r.top).ok()?,
+                scale: dpi_x as f32 / 96.0,
+            })
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn ui_language() -> Option<u16> {
+        None
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn primary_screen() -> Option<ScreenGuess> {
+        None
+    }
 }
 
 mod console {

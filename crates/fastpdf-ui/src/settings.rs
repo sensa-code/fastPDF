@@ -14,6 +14,8 @@
 //! sidebar_open = true
 //! sidebar_tab = "pages"
 //! default_zoom = "fit-page"
+//! language = "zh-TW"
+//! smooth_scrolling = true
 //! window = [120, 80, 900, 1100]
 //! window_maximized = false
 //! ```
@@ -24,6 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use gpui::BackgroundExecutor;
 
+use crate::i18n::Language;
 use crate::sidebar::SidebarTab;
 
 /// Name of the file in the per-user FastPDF directory.
@@ -56,14 +59,6 @@ impl Appearance {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::System => "System",
-            Self::Light => "Light",
-            Self::Dark => "Dark",
-        }
-    }
-
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
@@ -88,14 +83,6 @@ impl DefaultZoom {
             Self::FitWidth => "fit-width",
             Self::FitPage => "fit-page",
             Self::ActualSize => "actual-size",
-        }
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::FitWidth => "Fit width",
-            Self::FitPage => "Fit page",
-            Self::ActualSize => "Actual size",
         }
     }
 
@@ -144,7 +131,40 @@ impl WindowPlacement {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+/// UI language: the Windows UI language, or a fixed one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum LanguageChoice {
+    #[default]
+    System,
+    Fixed(Language),
+}
+
+impl LanguageChoice {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Fixed(language) => language.tag(),
+        }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        if name.trim().eq_ignore_ascii_case("system") {
+            Some(Self::System)
+        } else {
+            Language::from_tag(name).map(Self::Fixed)
+        }
+    }
+
+    /// The language to show, given the Windows UI language.
+    pub(crate) fn resolve(self, system: Language) -> Language {
+        match self {
+            Self::System => system,
+            Self::Fixed(language) => language,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Settings {
     pub appearance: Appearance,
     /// Pages drawn inverted (spec §33 night mode).
@@ -152,7 +172,25 @@ pub(crate) struct Settings {
     pub sidebar_open: bool,
     pub sidebar_tab: SidebarTab,
     pub default_zoom: DefaultZoom,
+    pub language: LanguageChoice,
+    /// Mouse-wheel notches scroll with a short ease-out animation.
+    pub smooth_scrolling: bool,
     pub window: Option<WindowPlacement>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            appearance: Appearance::default(),
+            night_mode: false,
+            sidebar_open: false,
+            sidebar_tab: SidebarTab::default(),
+            default_zoom: DefaultZoom::default(),
+            language: LanguageChoice::default(),
+            smooth_scrolling: true,
+            window: None,
+        }
+    }
 }
 
 /// One parsed right-hand side.
@@ -242,13 +280,20 @@ impl Settings {
                     window = Some([n[0], n[1], n[2], n[3]]);
                     true
                 }
+                ("language", Value::Text(name)) => LanguageChoice::from_name(name)
+                    .map(|l| settings.language = l)
+                    .is_some(),
+                ("smooth_scrolling", Value::Bool(on)) => {
+                    settings.smooth_scrolling = on;
+                    true
+                }
                 ("window_maximized", Value::Bool(on)) => {
                     maximized = on;
                     true
                 }
                 (
                     "appearance" | "night_mode" | "sidebar_open" | "sidebar_tab" | "default_zoom"
-                    | "window" | "window_maximized",
+                    | "language" | "smooth_scrolling" | "window" | "window_maximized",
                     _,
                 ) => false,
                 _ => {
@@ -282,7 +327,8 @@ impl Settings {
         let mut out = String::from(
             "# FastPDF settings, written by FastPDF. Unknown keys and bad values are ignored.\n\
              # appearance: \"system\", \"light\" or \"dark\"\n\
-             # default_zoom: \"fit-width\", \"fit-page\" or \"actual-size\"\n",
+             # default_zoom: \"fit-width\", \"fit-page\" or \"actual-size\"\n\
+             # language: \"system\", \"en\" or \"zh-TW\"\n",
         );
         let mut line = |key: &str, value: String| {
             out.push_str(key);
@@ -295,6 +341,8 @@ impl Settings {
         line("sidebar_open", self.sidebar_open.to_string());
         line("sidebar_tab", format!("\"{}\"", tab_name(self.sidebar_tab)));
         line("default_zoom", format!("\"{}\"", self.default_zoom.name()));
+        line("language", format!("\"{}\"", self.language.name()));
+        line("smooth_scrolling", self.smooth_scrolling.to_string());
         if let Some(w) = self.window.filter(WindowPlacement::is_plausible) {
             line(
                 "window",
@@ -441,6 +489,8 @@ mod tests {
             sidebar_open: true,
             sidebar_tab: SidebarTab::Pages,
             default_zoom: DefaultZoom::FitPage,
+            language: LanguageChoice::Fixed(Language::TraditionalChinese),
+            smooth_scrolling: false,
             window: Some(WindowPlacement {
                 x: -1200.5,
                 y: 40.0,
@@ -479,9 +529,16 @@ mod tests {
                     night_mode=true\r\n\
                     \r\n\
                     default_zoom = \"ACTUAL-SIZE\" # comment\r\n\
+                    language = zh-hant\r\n\
+                    smooth_scrolling = false\r\n\
                     window = [ 10 , 20, 800, 600 ]\r\n";
         let (s, problems) = Settings::parse(text);
         assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            s.language,
+            LanguageChoice::Fixed(Language::TraditionalChinese)
+        );
+        assert!(!s.smooth_scrolling);
         assert_eq!(s.appearance, Appearance::Dark);
         assert!(s.night_mode);
         assert_eq!(s.default_zoom, DefaultZoom::ActualSize);
@@ -585,6 +642,30 @@ mod tests {
         write_ordered(&written, &path, &Settings::default().to_text(), 1);
         assert_eq!(Settings::load(&path), newer);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn language_choice_resolves_against_the_system() {
+        assert_eq!(Settings::default().language, LanguageChoice::System);
+        assert!(Settings::default().smooth_scrolling, "on unless turned off");
+        let zh = Language::TraditionalChinese;
+        assert_eq!(LanguageChoice::System.resolve(zh), zh);
+        assert_eq!(
+            LanguageChoice::Fixed(Language::English).resolve(zh),
+            Language::English
+        );
+        assert_eq!(
+            LanguageChoice::from_name("SYSTEM"),
+            Some(LanguageChoice::System)
+        );
+        assert_eq!(
+            LanguageChoice::from_name("zh-TW"),
+            Some(LanguageChoice::Fixed(zh))
+        );
+        assert_eq!(LanguageChoice::from_name("klingon"), None);
+        let (s, problems) = Settings::parse("language = \"fr\"\n");
+        assert_eq!(s.language, LanguageChoice::System);
+        assert_eq!(problems.len(), 1);
     }
 
     #[test]

@@ -15,9 +15,8 @@ use gpui::{App, Global, Rgba, WindowAppearance};
 
 use crate::settings::Appearance;
 
-/// UI font: the Windows 11 system font; DirectWrite falls back for CJK.
-pub(crate) const UI_FONT: &str = "Segoe UI";
-/// Fixed-width font for the development overlay.
+/// Fixed-width font for the development overlay. (The UI font depends on
+/// the language: `crate::i18n::Language::ui_font`.)
 pub(crate) const MONO_FONT: &str = "Consolas";
 
 /// Chrome colors.

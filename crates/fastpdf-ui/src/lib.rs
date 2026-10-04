@@ -29,6 +29,12 @@
 //! * Print (Ctrl+P) opens a small panel; jobs run on their own thread
 //!   through `fastpdf_print` (Win32 GDI, banded) and report progress
 //!   through the same wake-up channel.
+//! * Start-up (`startup.rs`): the command-line document opens, and its
+//!   first page renders, on a thread while GPUI starts, so the first frame
+//!   can show exact tiles.
+//! * Text is English or Traditional Chinese (`i18n.rs`), after the Windows
+//!   UI language unless the settings choose; mouse-wheel notches scroll
+//!   with a short ease-out (`smooth_scroll.rs`).
 //! * Chrome follows the Windows light/dark app mode unless the user picks
 //!   one; night mode inverts the pages (`ColorMode::Inverted`). Both, the
 //!   sidebar, the default zoom and the window placement persist in a small
@@ -39,6 +45,7 @@ mod bench;
 mod devscript;
 mod document;
 mod find;
+mod i18n;
 mod overlay;
 mod print;
 mod reader;
@@ -46,6 +53,8 @@ mod select;
 mod settings;
 mod settings_panel;
 mod sidebar;
+mod smooth_scroll;
+mod startup;
 mod text_input;
 mod textures;
 mod theme;
@@ -56,4 +65,5 @@ pub use actions::{KEY_CONTEXT, bind_keys};
 pub use bench::{BenchEvent, BenchHook};
 pub use document::{OpenFailure, OpenedDocument, PendingOpen, open_document_blocking};
 pub use reader::{ReaderOptions, ReaderView, open_reader_window};
+pub use startup::{ScreenGuess, Startup};
 pub use textures::DEFAULT_UPLOAD_BUDGET;

@@ -5,12 +5,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use fastpdf_core::DocumentSession;
 use fastpdf_core::loader::{self, LoadError, LoadStrategy};
 use fastpdf_engine_api::{
     DocumentSource, EngineDocument, EngineError, GuardedDocument, OpenOptions, PageIndex,
     PdfEngine, open_guarded,
 };
 use futures::channel::oneshot;
+
+use crate::startup::{SessionParts, ViewGuess};
+use crate::textures::TileImage;
 
 /// A document that is ready for a session.
 #[derive(Debug)]
@@ -90,24 +94,74 @@ fn ms(d: std::time::Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
+/// An opened document, with its session when one was started early
+/// (`crate::startup`).
+pub(crate) struct Opened {
+    pub doc: OpenedDocument,
+    pub session: Option<DocumentSession<TileImage>>,
+}
+
+impl fmt::Debug for Opened {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Opened")
+            .field("doc", &self.doc)
+            .field("early_session", &self.session.is_some())
+            .finish()
+    }
+}
+
+impl From<OpenedDocument> for Opened {
+    fn from(doc: OpenedDocument) -> Self {
+        Self { doc, session: None }
+    }
+}
+
 /// An open that started before the window existed (the command-line file):
 /// it runs on its own thread so engine work overlaps GPUI's start-up, and the
 /// view picks the result up once it can show it.
 #[derive(Debug)]
 pub struct PendingOpen {
     pub(crate) path: PathBuf,
-    pub(crate) result: oneshot::Receiver<Result<OpenedDocument, OpenFailure>>,
+    pub(crate) result: oneshot::Receiver<Result<Opened, OpenFailure>>,
 }
 
 impl PendingOpen {
     /// Starts opening `path` on a new thread.
     pub fn spawn(engine: Arc<dyn PdfEngine>, path: PathBuf) -> Self {
+        Self::spawn_with(engine, path, None)
+    }
+
+    /// Starts opening `path` on a new thread; with `early`, the thread also
+    /// creates the document's session for the predicted view and asks it
+    /// for a frame, so page 1 renders while GPUI starts.
+    pub(crate) fn spawn_with(
+        engine: Arc<dyn PdfEngine>,
+        path: PathBuf,
+        early: Option<(SessionParts, ViewGuess)>,
+    ) -> Self {
         let (tx, rx) = oneshot::channel();
         let thread_path = path.clone();
         let spawned = std::thread::Builder::new()
             .name("fastpdf-open".into())
             .spawn(move || {
-                let _ = tx.send(open_document_blocking(engine.as_ref(), &thread_path));
+                let result = open_document_blocking(engine.as_ref(), &thread_path).map(|doc| {
+                    let session = early.map(|(parts, view)| {
+                        let mut session = parts.session(&doc, (view.width, view.height), view.scale);
+                        // Plans and schedules the visible tiles (P0) and
+                        // their neighbors; workers start right away.
+                        let frame = session.frame();
+                        log::info!(
+                            "page 1 rendering before the window exists: {} tiles queued for a {:.0}x{:.0} view at scale {}",
+                            frame.pending,
+                            view.width,
+                            view.height,
+                            view.scale
+                        );
+                        session
+                    });
+                    Opened { doc, session }
+                });
+                let _ = tx.send(result);
             });
         if let Err(e) = spawned {
             // The receiver reports `Abandoned` because the sender was dropped.

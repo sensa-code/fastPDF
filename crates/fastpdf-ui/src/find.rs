@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
+use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_engine_api::{
     DocumentId, EngineDocument, EngineError, GuardedDocument, PageIndex, PageRect,
 };
@@ -15,9 +16,10 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, div, px,
 };
 
+use crate::i18n::Strings;
 use crate::reader::ReaderView;
 use crate::text_input::{TextChanged, TextInput};
-use crate::toolbar::styled_button;
+use crate::toolbar::{styled_button, tooltip};
 
 /// Width of the status text, enough for "12345 found so far… (1234/2000 pages)".
 const STATUS_WIDTH: f32 = 230.0;
@@ -145,7 +147,8 @@ impl std::fmt::Debug for FindBar {
 
 impl FindBar {
     pub(crate) fn new(cx: &mut Context<'_, ReaderView>) -> Self {
-        let input = cx.new(|cx| TextInput::new("Find in document", cx));
+        // The placeholder follows the UI language (`ReaderView::apply_language`).
+        let input = cx.new(|cx| TextInput::new("", cx));
         let subscription = cx.subscribe(
             &input,
             |view: &mut ReaderView, _, event: &TextChanged, cx| {
@@ -250,8 +253,8 @@ impl FindBar {
     }
 
     /// The status shown next to the field.
-    pub(crate) fn status(&self) -> String {
-        status_text(&self.query, &self.hits, self.progress)
+    pub(crate) fn status(&self, strings: &Strings) -> String {
+        status_text(&self.query, &self.hits, self.progress, strings)
     }
 }
 
@@ -259,7 +262,12 @@ impl ReaderView {
     /// The find bar, floating over the top-right corner of the document.
     pub(crate) fn render_find_bar(&self, cx: &mut Context<'_, Self>) -> impl IntoElement + use<> {
         let theme = self.theme;
+        let strings = self.strings();
+        let font = self.language().ui_font();
         let has_hits = self.find.hits.len() > 0;
+        let next_keys = fastpdf_core::keymap::keystrokes_for(ReaderCommand::FindNext).next();
+        let previous_keys =
+            fastpdf_core::keymap::keystrokes_for(ReaderCommand::FindPrevious).next();
         div()
             .id("find-bar")
             .absolute()
@@ -298,50 +306,63 @@ impl ReaderView {
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(self.find.status()),
+                    .child(self.find.status(strings)),
             )
             .child(
-                styled_button("find-prev", "\u{2191}", has_hits, false, &theme).on_click(
-                    cx.listener(|this, _: &ClickEvent, window, cx| {
+                styled_button("find-prev", "\u{2191}", has_hits, false, &theme)
+                    .tooltip(tooltip(
+                        strings
+                            .with_shortcut(strings.tip_previous_match, previous_keys)
+                            .into(),
+                        theme,
+                        font,
+                    ))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.find_step(false, window, cx);
-                    }),
-                ),
+                    })),
             )
             .child(
-                styled_button("find-next", "\u{2193}", has_hits, false, &theme).on_click(
-                    cx.listener(|this, _: &ClickEvent, window, cx| {
+                styled_button("find-next", "\u{2193}", has_hits, false, &theme)
+                    .tooltip(tooltip(
+                        strings
+                            .with_shortcut(strings.tip_next_match, next_keys)
+                            .into(),
+                        theme,
+                        font,
+                    ))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.find_step(true, window, cx);
-                    }),
-                ),
+                    })),
             )
             .child(
-                styled_button("find-close", "\u{2715}", true, false, &theme).on_click(cx.listener(
-                    |this, _: &ClickEvent, window, cx| {
+                styled_button("find-close", "\u{2715}", true, false, &theme)
+                    .tooltip(tooltip(
+                        strings.with_shortcut(strings.close, Some("escape")).into(),
+                        theme,
+                        font,
+                    ))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.close_find(window, cx);
-                    },
-                )),
+                    })),
             )
     }
 }
 
-fn status_text(query: &str, hits: &HitList, p: Progress) -> String {
+fn status_text(query: &str, hits: &HitList, p: Progress, strings: &Strings) -> String {
     if query.is_empty() {
         return String::new();
     }
     if p.unsupported {
-        return "Search is not available".into();
+        return strings.search_unavailable.into();
     }
     let n = hits.len();
     if !p.finished {
-        return format!(
-            "{n} found so far\u{2026} ({}/{} pages)",
-            p.pages_done, p.page_count
-        );
+        return strings.found_so_far(n, p.pages_done, p.page_count);
     }
     match (n, hits.active_index()) {
-        (0, _) => "No results".into(),
-        (n, Some(i)) => format!("{} of {n}", i + 1),
-        (n, None) => format!("{n} results"),
+        (0, _) => strings.no_results.into(),
+        (n, Some(i)) => strings.hit_position(i + 1, n),
+        (n, None) => strings.result_count(n),
     }
 }
 
@@ -423,18 +444,25 @@ mod tests {
             page_count: 300,
             ..Progress::default()
         };
-        assert_eq!(status_text("", &list, p), "");
+        let en = crate::i18n::Language::English.strings();
+        let zh = crate::i18n::Language::TraditionalChinese.strings();
+        assert_eq!(status_text("", &list, p, en), "");
         list.insert(vec![hit(0, 0), hit(1, 0), hit(2, 0)]);
         assert_eq!(
-            status_text("x", &list, p),
+            status_text("x", &list, p, en),
             "3 found so far\u{2026} (12/300 pages)"
         );
+        assert_eq!(
+            status_text("x", &list, p, zh),
+            "已找到 3 筆\u{2026}（12／300 頁）"
+        );
         p.finished = true;
-        assert_eq!(status_text("x", &list, p), "3 results");
+        assert_eq!(status_text("x", &list, p, en), "3 results");
         list.step(true);
-        assert_eq!(status_text("x", &list, p), "1 of 3");
-        assert_eq!(status_text("x", &HitList::default(), p), "No results");
+        assert_eq!(status_text("x", &list, p, en), "1 of 3");
+        assert_eq!(status_text("x", &list, p, zh), "第 1／3 筆");
+        assert_eq!(status_text("x", &HitList::default(), p, en), "No results");
         p.unsupported = true;
-        assert!(status_text("x", &list, p).contains("not available"));
+        assert!(status_text("x", &list, p, en).contains("not available"));
     }
 }

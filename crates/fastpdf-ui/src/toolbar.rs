@@ -1,12 +1,15 @@
 //! The single toolbar row (spec §20: minimal chrome). Buttons dispatch the
-//! same [`ReaderCommand`]s as the keymap.
+//! same [`ReaderCommand`]s as the keymap; their tooltips name the command
+//! and its shortcut from the central keymap, in the UI language.
 
-use fastpdf_core::keymap::ReaderCommand;
+use fastpdf_core::keymap::{ReaderCommand, keystrokes_for};
 use gpui::{
-    ClickEvent, Context, Div, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, div, px,
+    AnyView, App, AppContext, ClickEvent, Context, Div, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div,
+    px,
 };
 
+use crate::i18n::Strings;
 use crate::reader::ReaderView;
 use crate::theme::Theme;
 
@@ -18,6 +21,8 @@ pub(crate) fn render(
     cx: &mut Context<'_, ReaderView>,
 ) -> impl IntoElement + use<> {
     let theme = view.theme;
+    let strings = view.strings();
+    let font = view.language().ui_font();
     let session = view.session();
     let has_doc = session.is_some();
     let (page_text, zoom_text) = match (view.page_indicator(), session) {
@@ -30,6 +35,11 @@ pub(crate) fn render(
     let title = match &view.doc {
         crate::reader::DocState::Open(open) => open.name.clone(),
         _ => SharedString::default(),
+    };
+    let tools = Tools {
+        theme,
+        strings,
+        font,
     };
 
     use ReaderCommand as C;
@@ -45,78 +55,103 @@ pub(crate) fn render(
         .border_b_1()
         .border_color(theme.toolbar_border)
         .text_size(px(14.0))
-        .child(toggle(
+        .child(tools.toggle(
             "sidebar",
-            "Sidebar",
+            strings.sidebar,
+            strings.tip_sidebar,
             C::ToggleSidebar,
             view.sidebar.open,
-            &theme,
             cx,
         ))
-        .child(button("open", "Open", C::OpenFile, true, &theme, cx))
+        .child(tools.button(
+            "open",
+            strings.open,
+            strings.tip_open,
+            C::OpenFile,
+            true,
+            cx,
+        ))
         .child(separator(&theme))
-        .child(button(
+        .child(tools.button(
             "prev",
             "\u{2039}",
+            strings.tip_previous_page,
             C::PreviousPage,
             has_doc,
-            &theme,
             cx,
         ))
         .child(label(page_text, 76.0))
-        .child(button("next", "\u{203a}", C::NextPage, has_doc, &theme, cx))
+        .child(tools.button(
+            "next",
+            "\u{203a}",
+            strings.tip_next_page,
+            C::NextPage,
+            has_doc,
+            cx,
+        ))
         .child(separator(&theme))
-        .child(button(
+        .child(tools.button(
             "zoom-out",
             "\u{2212}",
+            strings.tip_zoom_out,
             C::ZoomOut,
             has_doc,
-            &theme,
             cx,
         ))
         .child(label(zoom_text, 52.0))
-        .child(button("zoom-in", "+", C::ZoomIn, has_doc, &theme, cx))
-        .child(button(
+        .child(tools.button("zoom-in", "+", strings.tip_zoom_in, C::ZoomIn, has_doc, cx))
+        .child(tools.button(
             "fit-width",
-            "Fit width",
+            strings.fit_width,
+            strings.tip_fit_width,
             C::FitWidth,
             has_doc,
-            &theme,
             cx,
         ))
-        .child(button(
+        .child(tools.button(
             "fit-page",
-            "Fit page",
+            strings.fit_page,
+            strings.tip_fit_page,
             C::FitPage,
             has_doc,
-            &theme,
             cx,
         ))
         .child(separator(&theme))
-        .child(button(
+        .child(tools.button(
             "rotate-ccw",
             "\u{21ba}",
+            strings.tip_rotate_left,
             C::RotateCounterClockwise,
             has_doc,
-            &theme,
             cx,
         ))
-        .child(button(
+        .child(tools.button(
             "rotate-cw",
             "\u{21bb}",
+            strings.tip_rotate_right,
             C::RotateClockwise,
             has_doc,
-            &theme,
             cx,
         ))
         .child(separator(&theme))
-        .child(toggle("find", "Find", C::Find, view.find.open, &theme, cx))
-        // Night mode (inverted pages); a setting, so it works without a
+        .child(tools.toggle(
+            "find",
+            strings.find,
+            strings.tip_find,
+            C::Find,
+            view.find.open,
+            cx,
+        ))
+        // Night mode (inverted pages) is a setting, so it works without a
         // document too.
-        .child(
-            styled_button("night", "Night", true, view.settings.night_mode, &theme)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_night_mode(cx))),
-        )
+        .child(tools.toggle(
+            "night",
+            strings.night,
+            strings.tip_night,
+            C::ToggleNightMode,
+            view.settings.night_mode,
+            cx,
+        ))
         .child(div().flex_1())
         .child(
             div()
@@ -131,6 +166,7 @@ pub(crate) fn render(
         .child(
             styled_button("settings", "\u{2699}", true, view.settings_open, &theme)
                 .text_size(px(16.0))
+                .tooltip(tooltip(strings.tip_settings.into(), theme, font))
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.toggle_settings_panel(cx);
                 })),
@@ -192,36 +228,96 @@ pub(crate) fn styled_button(
         .active(move |style| style.bg(active))
 }
 
-/// A toolbar button that runs `command`, like its keyboard shortcut.
-fn button(
-    id: &'static str,
-    label: &'static str,
-    command: ReaderCommand,
-    enabled: bool,
-    theme: &Theme,
-    cx: &mut Context<'_, ReaderView>,
-) -> Stateful<Div> {
-    let base = styled_button(id, label, enabled, false, theme);
-    if !enabled {
-        return base;
-    }
-    base.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-        this.run_command(command, window, cx);
-    }))
+/// What every toolbar button needs to look and read right.
+#[derive(Clone, Copy)]
+struct Tools {
+    theme: Theme,
+    strings: &'static Strings,
+    font: &'static str,
 }
 
-/// A button showing whether its panel (sidebar, find bar) is open.
-fn toggle(
-    id: &'static str,
-    label: &'static str,
-    command: ReaderCommand,
-    on: bool,
-    theme: &Theme,
-    cx: &mut Context<'_, ReaderView>,
-) -> Stateful<Div> {
-    styled_button(id, label, true, on, theme).on_click(cx.listener(
-        move |this, _: &ClickEvent, window, cx| {
+impl Tools {
+    /// The tooltip for a command: what it does and its first shortcut.
+    fn tip(&self, tip: &str, command: ReaderCommand) -> SharedString {
+        self.strings
+            .with_shortcut(tip, keystrokes_for(command).next())
+            .into()
+    }
+
+    /// A button that runs `command`, like its keyboard shortcut.
+    fn button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        tip: &'static str,
+        command: ReaderCommand,
+        enabled: bool,
+        cx: &mut Context<'_, ReaderView>,
+    ) -> Stateful<Div> {
+        let base = styled_button(id, label, enabled, false, &self.theme).tooltip(tooltip(
+            self.tip(tip, command),
+            self.theme,
+            self.font,
+        ));
+        if !enabled {
+            return base;
+        }
+        base.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
             this.run_command(command, window, cx);
-        },
-    ))
+        }))
+    }
+
+    /// A button showing whether its panel or mode (sidebar, find bar, night
+    /// mode) is on.
+    fn toggle(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        tip: &'static str,
+        command: ReaderCommand,
+        on: bool,
+        cx: &mut Context<'_, ReaderView>,
+    ) -> Stateful<Div> {
+        styled_button(id, label, true, on, &self.theme)
+            .tooltip(tooltip(self.tip(tip, command), self.theme, self.font))
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.run_command(command, window, cx);
+            }))
+    }
+}
+
+/// A one-line tooltip in the theme's colors and the UI language's font.
+pub(crate) struct Tooltip {
+    text: SharedString,
+    theme: Theme,
+    font: &'static str,
+}
+
+impl Render for Tooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
+        div()
+            .font_family(self.font)
+            .text_size(px(12.0))
+            .px_2()
+            .py_1()
+            .rounded(px(4.0))
+            .bg(self.theme.toolbar_bg)
+            .border_1()
+            .border_color(self.theme.toolbar_border)
+            .text_color(self.theme.text)
+            .whitespace_nowrap()
+            .child(self.text.clone())
+    }
+}
+
+/// A tooltip builder for [`StatefulInteractiveElement::tooltip`].
+pub(crate) fn tooltip(
+    text: SharedString,
+    theme: Theme,
+    font: &'static str,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    move |_, cx| {
+        let text = text.clone();
+        cx.new(|_| Tooltip { text, theme, font }).into()
+    }
 }

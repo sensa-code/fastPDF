@@ -20,6 +20,7 @@ use gpui::{
     px, relative,
 };
 
+use crate::i18n::Strings;
 use crate::reader::ReaderView;
 use crate::text_input::{TextChanged, TextInput};
 use crate::theme::Theme;
@@ -66,14 +67,69 @@ pub(crate) struct RunningJob {
     cancelling: bool,
 }
 
-/// How the last job ended.
+/// How the last job ended; worded when shown, in the UI language.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Outcome {
-    Done(String),
-    /// Printed, but these pages failed to render and came out blank.
-    Partial(String),
+    /// `sheets` went to `printer` (or, in development, into `file`).
+    Done {
+        sheets: u32,
+        printer: String,
+        file: Option<PathBuf>,
+    },
+    /// Printed, but `pages` (one-based, sorted, unique) failed to render
+    /// and came out blank.
+    Partial {
+        sheets: u32,
+        printer: String,
+        file: Option<PathBuf>,
+        pages: Vec<u32>,
+    },
+    /// The job stopped; the reason from `fastpdf_print`.
     Failed(String),
     Cancelled,
+}
+
+impl Outcome {
+    pub(crate) fn text(&self, strings: &Strings) -> String {
+        match self {
+            Self::Done {
+                sheets,
+                printer,
+                file,
+            } => strings.print_done(*sheets, &strings.print_target(printer, file.as_deref())),
+            Self::Partial {
+                sheets,
+                printer,
+                file,
+                pages,
+            } => strings.print_partial(
+                *sheets,
+                &strings.print_target(printer, file.as_deref()),
+                pages,
+                LISTED_FAILURES,
+            ),
+            Self::Failed(reason) => strings.print_failed(reason),
+            Self::Cancelled => strings.print_cancelled.into(),
+        }
+    }
+}
+
+/// A setting that keeps the job from starting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Problem {
+    NoDocument,
+    NoPrinter,
+    InvalidRange,
+}
+
+impl Problem {
+    pub(crate) fn text(self, strings: &Strings) -> &'static str {
+        match self {
+            Self::NoDocument => strings.open_a_document_to_print,
+            Self::NoPrinter => strings.no_printer_available,
+            Self::InvalidRange => strings.invalid_page_range,
+        }
+    }
 }
 
 /// The print panel and its job.
@@ -91,7 +147,7 @@ pub(crate) struct PrintPanel {
     pub job: Option<RunningJob>,
     pub outcome: Option<Outcome>,
     /// A setting that keeps the job from starting (shown in the panel).
-    pub problem: Option<String>,
+    pub problem: Option<Problem>,
     /// Development override: every job writes into this file.
     pub to_file: Option<PathBuf>,
     _range_changes: Subscription,
@@ -112,7 +168,8 @@ impl std::fmt::Debug for PrintPanel {
 
 impl PrintPanel {
     pub(crate) fn new(to_file: Option<PathBuf>, cx: &mut Context<'_, ReaderView>) -> Self {
-        let range = cx.new(|cx| TextInput::with_context("e.g. 1-3, 5", RANGE_FIELD_CONTEXT, cx));
+        // The placeholder follows the UI language (`ReaderView::apply_language`).
+        let range = cx.new(|cx| TextInput::with_context("", RANGE_FIELD_CONTEXT, cx));
         // Typing a range selects "Custom" and clears an old range error.
         let subscription = cx.subscribe(&range, |view: &mut ReaderView, _, _: &TextChanged, cx| {
             view.print.pages = PageChoice::Custom;
@@ -172,14 +229,16 @@ impl PrintPanel {
     }
 
     /// The pages to print, or why they cannot be printed.
-    fn page_range(&self, current: PageIndex, text: &str) -> Result<PageRange, String> {
-        match self.pages {
-            PageChoice::All => Ok(PageRange::All),
-            PageChoice::Current => {
-                PageRange::parse(&current.display_number().to_string()).map_err(|e| e.to_string())
-            }
-            PageChoice::Custom => PageRange::parse(text).map_err(|e| e.to_string()),
-        }
+    fn page_range(&self, current: PageIndex, text: &str) -> Result<PageRange, Problem> {
+        let parsed = match self.pages {
+            PageChoice::All => return Ok(PageRange::All),
+            PageChoice::Current => PageRange::parse(&current.display_number().to_string()),
+            PageChoice::Custom => PageRange::parse(text),
+        };
+        parsed.map_err(|e| {
+            log::debug!("page range {text:?}: {e}");
+            Problem::InvalidRange
+        })
     }
 }
 
@@ -192,18 +251,16 @@ fn outcome(
     let report = match result {
         Ok(report) => report,
         Err(PrintError::Cancelled) => return Outcome::Cancelled,
-        Err(e) => return Outcome::Failed(format!("Printing failed: {e}")),
+        Err(e) => return Outcome::Failed(e.to_string()),
     };
-    let sheets = match report.sheets {
-        1 => "1 sheet".to_string(),
-        n => format!("{n} sheets"),
-    };
-    let target = match to_file {
-        Some(path) => format!("{printer} (into {})", path.display()),
-        None => printer.to_string(),
-    };
+    let printer = printer.to_string();
+    let file = to_file.cloned();
     if report.failed_pages.is_empty() {
-        return Outcome::Done(format!("Sent {sheets} to {target}."));
+        return Outcome::Done {
+            sheets: report.sheets,
+            printer,
+            file,
+        };
     }
     let mut pages: Vec<u32> = report
         .failed_pages
@@ -212,18 +269,12 @@ fn outcome(
         .collect();
     pages.sort_unstable();
     pages.dedup();
-    let mut listed = pages
-        .iter()
-        .take(LISTED_FAILURES)
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    if pages.len() > LISTED_FAILURES {
-        listed.push_str(&format!(" and {} more", pages.len() - LISTED_FAILURES));
+    Outcome::Partial {
+        sheets: report.sheets,
+        printer,
+        file,
+        pages,
     }
-    Outcome::Partial(format!(
-        "Sent {sheets} to {target}. Could not render (printed blank): page {listed}."
-    ))
 }
 
 impl ReaderView {
@@ -293,22 +344,22 @@ impl ReaderView {
             return;
         }
         let Some(session) = self.session() else {
-            self.print.problem = Some("Open a document to print.".into());
+            self.print.problem = Some(Problem::NoDocument);
             cx.notify();
             return;
         };
         let doc = std::sync::Arc::clone(session.document());
         let current = session.current_page();
         let Some(printer) = self.print.selected.clone() else {
-            self.print.problem = Some("No printer is available.".into());
+            self.print.problem = Some(Problem::NoPrinter);
             cx.notify();
             return;
         };
         let text = self.print.range.read(cx).text().to_string();
         let page_range = match self.print.page_range(current, &text) {
             Ok(range) => range,
-            Err(message) => {
-                self.print.problem = Some(message);
+            Err(problem) => {
+                self.print.problem = Some(problem);
                 cx.notify();
                 return;
             }
@@ -380,7 +431,7 @@ impl ReaderView {
             }
             Err(e) => {
                 self.print.outcome = Some(Outcome::Failed(format!(
-                    "Printing failed: cannot start the print thread ({e})"
+                    "cannot start the print thread ({e})"
                 )));
             }
         }
@@ -393,6 +444,7 @@ impl ReaderView {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement + use<> {
         let theme = self.theme;
+        let strings = self.strings();
         let panel = &self.print;
         let printing = panel.printing();
         let editable = !printing;
@@ -401,16 +453,16 @@ impl ReaderView {
 
         let printer_label = match (&panel.printers, &panel.selected) {
             (_, Some(name)) => name.clone(),
-            (Printers::Ready(list), None) if list.is_empty() => "No printers installed".into(),
-            _ => "Looking for printers\u{2026}".into(),
+            (Printers::Ready(list), None) if list.is_empty() => strings.no_printers.into(),
+            _ => strings.looking_for_printers.into(),
         };
         let mut body = div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().text_size(px(15.0)).child("Print"))
+            .child(div().text_size(px(15.0)).child(strings.print))
             .child(
-                row("Printer").child(
+                row(strings.printer).child(
                     styled_button(
                         "print-printer",
                         format!("{printer_label}  \u{25be}"),
@@ -436,15 +488,22 @@ impl ReaderView {
         }
         body = body
             .child(
-                row("Pages")
-                    .child(self.page_choice("print-all", "All", PageChoice::All, cx))
+                row(strings.pages)
+                    .child(self.page_choice("print-all", strings.all_pages, PageChoice::All, cx))
                     .child(self.page_choice(
                         "print-current",
-                        &current.map_or("Current".into(), |n| format!("Current ({n})")),
+                        &current.map_or(strings.current_page.into(), |n| {
+                            strings.current_page_number(n)
+                        }),
                         PageChoice::Current,
                         cx,
                     ))
-                    .child(self.page_choice("print-custom", "Custom", PageChoice::Custom, cx))
+                    .child(self.page_choice(
+                        "print-custom",
+                        strings.custom_pages,
+                        PageChoice::Custom,
+                        cx,
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -463,7 +522,7 @@ impl ReaderView {
                     ),
             )
             .child(
-                row("Copies")
+                row(strings.copies)
                     .child(
                         styled_button(
                             "print-fewer",
@@ -507,19 +566,29 @@ impl ReaderView {
                     ),
             )
             .child(
-                row("Size")
-                    .child(self.fit_choice("print-fit", "Shrink to fit", FitMode::ShrinkToFit, cx))
-                    .child(self.fit_choice("print-actual", "Actual size", FitMode::ActualSize, cx)),
+                row(strings.size)
+                    .child(self.fit_choice(
+                        "print-fit",
+                        strings.shrink_to_fit,
+                        FitMode::ShrinkToFit,
+                        cx,
+                    ))
+                    .child(self.fit_choice(
+                        "print-actual",
+                        strings.actual_size,
+                        FitMode::ActualSize,
+                        cx,
+                    )),
             );
         if let Some(path) = &panel.to_file {
             body = body.child(
                 div()
                     .text_size(px(12.0))
                     .text_color(theme.text_muted)
-                    .child(format!("Development: output goes into {}", path.display())),
+                    .child(strings.dev_print_output(path)),
             );
         }
-        body = body.child(self.render_print_status(&theme));
+        body = body.child(self.render_print_status(&theme, strings));
         let can_print = has_doc && panel.selected.is_some() && !printing;
         body = body.child(
             div()
@@ -528,7 +597,7 @@ impl ReaderView {
                 .justify_end()
                 .gap_1()
                 .child(
-                    styled_button("print-start", "Print", can_print, false, &theme)
+                    styled_button("print-start", strings.print, can_print, false, &theme)
                         .when(can_print, |b| b.bg(theme.button_active))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.start_print(cx);
@@ -537,7 +606,11 @@ impl ReaderView {
                 .child(
                     styled_button(
                         "print-cancel",
-                        if printing { "Cancel printing" } else { "Close" },
+                        if printing {
+                            strings.cancel_printing
+                        } else {
+                            strings.close
+                        },
                         true,
                         false,
                         &theme,
@@ -579,11 +652,12 @@ impl ReaderView {
 
     fn render_printer_list(&self, list: &[PrinterInfo], cx: &mut Context<'_, Self>) -> Div {
         let theme = self.theme;
+        let strings = self.strings();
         let rows = list.iter().enumerate().map(|(i, printer)| {
             let name = printer.name.clone();
             let mut label = printer.name.clone();
             if printer.is_default {
-                label.push_str("  (default)");
+                label.push_str(strings.default_printer);
             }
             let selected = self.print.selected.as_deref() == Some(printer.name.as_str());
             styled_button(format!("print-printer-{i}"), label, true, selected, &theme)
@@ -609,7 +683,7 @@ impl ReaderView {
                     div()
                         .p_1()
                         .text_color(theme.text_muted)
-                        .child("No printers installed"),
+                        .child(strings.no_printers),
                 )
             })
     }
@@ -665,25 +739,20 @@ impl ReaderView {
     }
 
     /// Progress of the running job, or the result of the last one.
-    fn render_print_status(&self, theme: &Theme) -> Div {
+    fn render_print_status(&self, theme: &Theme, strings: &Strings) -> Div {
         let panel = &self.print;
         let line = |text: String, color| div().min_h(px(18.0)).text_color(color).child(text);
         if let Some(job) = &panel.job {
             let (text, fraction) = match job.progress {
                 _ if job.cancelling => (
-                    "Cancelling\u{2026}".to_string(),
+                    strings.cancelling.to_string(),
                     progress_fraction(job.progress),
                 ),
                 Some(p) => (
-                    format!(
-                        "Printing page {} (sheet {} of {})\u{2026}",
-                        p.page.display_number(),
-                        p.sheet,
-                        p.sheets
-                    ),
+                    strings.printing_page(p.page.display_number(), p.sheet, p.sheets),
                     progress_fraction(Some(p)),
                 ),
-                None => ("Starting the print job\u{2026}".to_string(), 0.0),
+                None => (strings.starting_print.to_string(), 0.0),
             };
             return div()
                 .flex()
@@ -705,15 +774,15 @@ impl ReaderView {
                         ),
                 );
         }
-        if let Some(problem) = &panel.problem {
-            return line(problem.clone(), theme.error_text);
+        if let Some(problem) = panel.problem {
+            return line(problem.text(strings).into(), theme.error_text);
         }
         match &panel.outcome {
-            Some(Outcome::Done(text)) => line(text.clone(), theme.text),
-            Some(Outcome::Partial(text) | Outcome::Failed(text)) => {
-                line(text.clone(), theme.error_text)
+            Some(outcome @ Outcome::Done { .. }) => line(outcome.text(strings), theme.text),
+            Some(outcome @ (Outcome::Partial { .. } | Outcome::Failed(_))) => {
+                line(outcome.text(strings), theme.error_text)
             }
-            Some(Outcome::Cancelled) => line("Printing cancelled.".into(), theme.text_muted),
+            Some(outcome @ Outcome::Cancelled) => line(outcome.text(strings), theme.text_muted),
             None => line(String::new(), theme.text_muted),
         }
     }
@@ -723,6 +792,7 @@ impl ReaderView {
 const LABEL_WIDTH: f32 = 64.0;
 
 fn row(label: &'static str) -> Div {
+    // Wide enough for the longest label in either language.
     div()
         .flex()
         .flex_row()
@@ -784,21 +854,18 @@ mod tests {
 
     #[test]
     fn outcomes_name_the_failed_pages_once() {
-        assert_eq!(
-            outcome("P", None, Ok(report(3, &[]))),
-            Outcome::Done("Sent 3 sheets to P.".into())
-        );
+        let en = crate::i18n::Language::English.strings();
+        let zh = crate::i18n::Language::TraditionalChinese.strings();
+        let done = outcome("P", None, Ok(report(3, &[])));
+        assert_eq!(done.text(en), "Sent 3 sheets to P.");
+        assert_eq!(done.text(zh), "已將 3 張送至 P。");
         let partial = outcome("P", None, Ok(report(6, &[7, 2, 7])));
         assert_eq!(
-            partial,
-            Outcome::Partial(
-                "Sent 6 sheets to P. Could not render (printed blank): page 2, 7.".into()
-            )
+            partial.text(en),
+            "Sent 6 sheets to P. Could not render (printed blank): page 2, 7."
         );
         let many: Vec<u32> = (1..=20).collect();
-        let Outcome::Partial(text) = outcome("P", None, Ok(report(20, &many))) else {
-            panic!("partial expected");
-        };
+        let text = outcome("P", None, Ok(report(20, &many))).text(en);
         assert!(text.ends_with("11, 12 and 8 more."), "{text}");
         assert_eq!(
             outcome("P", None, Err(PrintError::Cancelled)),
@@ -810,9 +877,10 @@ mod tests {
         ));
         let to_file = PathBuf::from(r"C:\out\x.pdf");
         assert_eq!(
-            outcome("P", Some(&to_file), Ok(report(1, &[]))),
-            Outcome::Done(r"Sent 1 sheet to P (into C:\out\x.pdf).".into())
+            outcome("P", Some(&to_file), Ok(report(1, &[]))).text(en),
+            r"Sent 1 sheet to P (into C:\out\x.pdf)."
         );
+        assert_eq!(Problem::InvalidRange.text(en), en.invalid_page_range);
     }
 
     #[test]

@@ -138,6 +138,16 @@ impl TextInput {
         &self.focus
     }
 
+    /// The hint shown while the field is empty (it follows the UI language).
+    pub(crate) fn set_placeholder(
+        &mut self,
+        placeholder: impl Into<SharedString>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.placeholder = placeholder.into();
+        cx.notify();
+    }
+
     pub(crate) fn text(&self) -> &str {
         &self.text
     }

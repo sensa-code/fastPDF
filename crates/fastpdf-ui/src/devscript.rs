@@ -32,6 +32,9 @@
 //! | `sidebar=off`, `=outline`, `=pages` | closes the sidebar or shows a tab |
 //! | `default-zoom=fit-width`, `=fit-page`, `=actual-size` | sets the default zoom |
 //! | `settings` | shows (or hides) the settings panel |
+//! | `language=system`, `=en`, `=zh-TW` | sets the UI language setting |
+//! | `smooth=on`, `=off` | turns smooth wheel scrolling on or off |
+//! | `wheel=NOTCHES` | a mouse-wheel turn (negative: up), as the wheel sends it |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
@@ -45,7 +48,7 @@ use gpui::{Context, Window};
 
 use crate::print::PageChoice;
 use crate::reader::{DocState, ReaderView};
-use crate::settings::{Appearance, DefaultZoom, tab_from_name};
+use crate::settings::{Appearance, DefaultZoom, LanguageChoice, tab_from_name};
 use crate::sidebar::SidebarTab;
 
 /// How often a waiting step checks its condition.
@@ -81,6 +84,10 @@ pub(crate) enum Step {
     Sidebar(Option<SidebarTab>),
     DefaultZoom(DefaultZoom),
     SettingsPanel,
+    Language(LanguageChoice),
+    Smooth(bool),
+    /// Wheel notches over the document (positive: down).
+    Wheel(i32),
 }
 
 /// What a step reports after one poll.
@@ -134,6 +141,10 @@ fn parse_step(step: &str) -> Option<Step> {
         ("sidebar", Some(tab)) => Step::Sidebar(Some(tab_from_name(tab)?)),
         ("default-zoom", Some(name)) => Step::DefaultZoom(DefaultZoom::from_name(name)?),
         ("settings", None) => Step::SettingsPanel,
+        ("language", Some(name)) => Step::Language(LanguageChoice::from_name(name)?),
+        ("smooth", Some("on")) => Step::Smooth(true),
+        ("smooth", Some("off")) => Step::Smooth(false),
+        ("wheel", Some(n)) => Step::Wheel(n.parse().ok().filter(|n: &i32| *n != 0)?),
         _ => return None,
     })
 }
@@ -246,7 +257,7 @@ impl ReaderView {
             }
             Step::WaitOpen => match &self.doc {
                 DocState::Open(_) => Done,
-                DocState::Failed { message, .. } => Abort(message.clone()),
+                DocState::Failed { failure, .. } => Abort(failure.to_string()),
                 _ => Pending,
             },
             Step::Wait(duration) => {
@@ -344,9 +355,11 @@ impl ReaderView {
                 if self.print.printing() {
                     Done
                 } else {
-                    Abort(self.print.problem.clone().unwrap_or_else(|| {
-                        format!("print did not start: {:?}", self.print.outcome)
-                    }))
+                    let english = crate::i18n::Language::English.strings();
+                    Abort(match self.print.problem {
+                        Some(problem) => problem.text(english).to_string(),
+                        None => format!("print did not start: {:?}", self.print.outcome),
+                    })
                 }
             }
             Step::WaitPrint => {
@@ -412,6 +425,18 @@ impl ReaderView {
                 self.toggle_settings_panel(cx);
                 Done
             }
+            Step::Language(choice) => {
+                self.set_language(*choice, cx);
+                Done
+            }
+            Step::Smooth(on) => {
+                self.set_smooth_scrolling(*on, cx);
+                Done
+            }
+            Step::Wheel(notches) => {
+                self.wheel_notches(*notches, window, cx);
+                Done
+            }
         }
     }
 }
@@ -463,11 +488,23 @@ mod tests {
                 Step::SettingsPanel,
             ]
         );
+        assert_eq!(
+            parse("language=zh-TW; smooth=off; wheel=-3").unwrap(),
+            vec![
+                Step::Language(LanguageChoice::Fixed(
+                    crate::i18n::Language::TraditionalChinese
+                )),
+                Step::Smooth(false),
+                Step::Wheel(-3),
+            ]
+        );
         for bad in [
             "appearance=sepia",
             "night=maybe",
             "sidebar=left",
             "default-zoom=200",
+            "language=fr",
+            "wheel=0",
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
