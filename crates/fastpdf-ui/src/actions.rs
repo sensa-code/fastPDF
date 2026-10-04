@@ -98,23 +98,20 @@ fn binding(keystroke: &str, action: Box<dyn Action>, context: &str) -> Option<Ke
     .ok()
 }
 
-/// Reader commands that the find field answers to as well (search-box
-/// convention). The reader keymap itself stays in `DEFAULT_BINDINGS`.
-const FIND_FIELD_COMMANDS: &[(&str, ReaderCommand)] = &[
-    ("enter", ReaderCommand::FindNext),
-    ("shift-enter", ReaderCommand::FindPrevious),
-];
-
-/// Registers every binding of the default keymap with GPUI, plus the text
+/// Registers every binding of the default keymap with GPUI — each in its
+/// own context (the reader view, or e.g. the find bar) — plus the text
 /// field's editing keys (`crate::text_input`).
 pub fn bind_keys(cx: &mut App) {
     let mut bindings: Vec<KeyBinding> = DEFAULT_BINDINGS
         .iter()
-        .filter_map(|b| binding(b.keystroke, action_for(b.command), KEY_CONTEXT))
+        .filter_map(|b| {
+            binding(
+                b.keystroke,
+                action_for(b.command),
+                b.context.unwrap_or(KEY_CONTEXT),
+            )
+        })
         .collect();
-    bindings.extend(FIND_FIELD_COMMANDS.iter().filter_map(|(keys, command)| {
-        binding(keys, action_for(*command), crate::text_input::INPUT_CONTEXT)
-    }));
     bindings.extend(
         crate::text_input::bindings()
             .into_iter()
@@ -186,14 +183,14 @@ mod tests {
     fn every_binding_parses() {
         for b in DEFAULT_BINDINGS {
             assert!(
-                binding(b.keystroke, action_for(b.command), KEY_CONTEXT).is_some(),
+                binding(
+                    b.keystroke,
+                    action_for(b.command),
+                    b.context.unwrap_or(KEY_CONTEXT)
+                )
+                .is_some(),
                 "{} does not parse",
                 b.keystroke
-            );
-        }
-        for (keys, command) in FIND_FIELD_COMMANDS {
-            assert!(
-                binding(keys, action_for(*command), crate::text_input::INPUT_CONTEXT).is_some()
             );
         }
         for (keys, action) in crate::text_input::bindings() {

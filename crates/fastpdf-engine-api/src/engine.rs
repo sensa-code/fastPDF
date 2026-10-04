@@ -128,4 +128,11 @@ pub trait EngineDocument: Send + Sync {
     fn trim_memory(&self, pressure: MemoryPressure) {
         let _ = pressure;
     }
+
+    /// Approximate bytes held by the engine's own caches for this document
+    /// (decoded streams, fonts, images, render blocks), for the memory
+    /// overlay and the budget manager. `None` when the engine cannot tell.
+    fn memory_usage(&self) -> Option<u64> {
+        None
+    }
 }

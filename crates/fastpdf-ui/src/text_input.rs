@@ -23,8 +23,9 @@ use gpui::{
     actions, div, fill, hsla, point, px, relative, size,
 };
 
-/// Key context of the field; its bindings take precedence over the reader's.
-pub(crate) const INPUT_CONTEXT: &str = "FastPdfInput";
+/// Key context of the field (the find bar, as named by the central keymap);
+/// its bindings take precedence over the reader's.
+pub(crate) const INPUT_CONTEXT: &str = fastpdf_core::keymap::FIND_BAR;
 
 actions!(
     fastpdf_input,

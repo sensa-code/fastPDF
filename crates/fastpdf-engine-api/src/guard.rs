@@ -168,6 +168,10 @@ impl EngineDocument for GuardedDocument {
         self.call(|| self.inner.links(page))
     }
 
+    fn memory_usage(&self) -> Option<u64> {
+        self.call(|| Ok(self.inner.memory_usage())).ok().flatten()
+    }
+
     fn trim_memory(&self, pressure: MemoryPressure) {
         let _ = self.call(|| {
             self.inner.trim_memory(pressure);

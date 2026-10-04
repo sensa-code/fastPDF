@@ -44,10 +44,32 @@ pub enum ReaderCommand {
 pub struct Binding {
     pub keystroke: &'static str,
     pub command: ReaderCommand,
+    /// Where the binding applies. `None`: the reader view; otherwise a
+    /// focused component (e.g. [`FIND_BAR`]) whose binding wins there.
+    pub context: Option<&'static str>,
 }
 
+/// Key context of the find bar's text field.
+pub const FIND_BAR: &str = "FindBar";
+
 const fn bind(keystroke: &'static str, command: ReaderCommand) -> Binding {
-    Binding { keystroke, command }
+    Binding {
+        keystroke,
+        command,
+        context: None,
+    }
+}
+
+const fn bind_in(
+    context: &'static str,
+    keystroke: &'static str,
+    command: ReaderCommand,
+) -> Binding {
+    Binding {
+        keystroke,
+        command,
+        context: Some(context),
+    }
 }
 
 /// Default bindings. Zoom shortcuts follow Adobe Reader / SumatraPDF
@@ -86,14 +108,22 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind("ctrl-c", Copy),
         bind("ctrl-a", SelectAll),
         bind("escape", Cancel),
+        bind_in(FIND_BAR, "enter", FindNext),
+        bind_in(FIND_BAR, "shift-enter", FindPrevious),
+        bind_in(FIND_BAR, "escape", Cancel),
     ]
 };
 
-/// The command bound to `keystroke` in the default keymap.
+/// The command bound to `keystroke` in the reader view (no context).
 pub fn command_for(keystroke: &str) -> Option<ReaderCommand> {
+    command_in(None, keystroke)
+}
+
+/// The command bound to `keystroke` in `context`.
+pub fn command_in(context: Option<&str>, keystroke: &str) -> Option<ReaderCommand> {
     DEFAULT_BINDINGS
         .iter()
-        .find(|b| b.keystroke.eq_ignore_ascii_case(keystroke))
+        .find(|b| b.context == context && b.keystroke.eq_ignore_ascii_case(keystroke))
         .map(|b| b.command)
 }
 
@@ -111,15 +141,21 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn keystrokes_are_unique() {
+    fn keystrokes_are_unique_per_context() {
         let mut seen = HashSet::new();
         for b in DEFAULT_BINDINGS {
             assert!(
-                seen.insert(b.keystroke.to_ascii_lowercase()),
-                "duplicate {}",
-                b.keystroke
+                seen.insert((b.context, b.keystroke.to_ascii_lowercase())),
+                "duplicate {} in {:?}",
+                b.keystroke,
+                b.context
             );
         }
+        assert_eq!(
+            command_in(Some(FIND_BAR), "enter"),
+            Some(ReaderCommand::FindNext)
+        );
+        assert_eq!(command_for("enter"), None);
     }
 
     #[test]

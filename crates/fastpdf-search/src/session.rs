@@ -90,14 +90,27 @@ impl TextCache {
     }
 }
 
+impl TextCache {
+    /// Drops every cached text layer of `document` (call when it closes;
+    /// the cache is shared by all open documents).
+    pub fn remove_document(&self, document: DocumentId) {
+        self.cache.retain(|key, _| key.document != document);
+    }
+
+    pub fn stats(&self) -> fastpdf_cache::CacheStats {
+        self.cache.stats()
+    }
+}
+
 impl Default for TextCache {
     fn default() -> Self {
         Self::new(Self::DEFAULT_BUDGET)
     }
 }
 
-/// A running search. Dropping it cancels the search and waits for the
-/// thread, so at most one search per view is ever running.
+/// A running search. Dropping it cancels the search without blocking the
+/// caller (the UI thread); the search thread notices within one page and
+/// exits. Use [`SearchSession::cancel_and_wait`] where waiting is wanted.
 pub struct SearchSession {
     cancel: CancelToken,
     thread: Option<JoinHandle<()>>,
@@ -148,14 +161,21 @@ impl SearchSession {
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
-}
 
-impl Drop for SearchSession {
-    fn drop(&mut self) {
+    /// Cancels and blocks until the search thread has exited.
+    pub fn cancel_and_wait(mut self) {
         self.cancel.cancel();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+impl Drop for SearchSession {
+    fn drop(&mut self) {
+        // Detach: joining here could stall the UI thread for the duration
+        // of one page's text extraction.
+        self.cancel.cancel();
     }
 }
 
@@ -417,7 +437,7 @@ mod tests {
         let d = doc(1000, 20);
         let (session, rx) = start(d.clone(), Arc::new(TextCache::default()), "needle", 0);
         std::thread::sleep(Duration::from_millis(50));
-        drop(session);
+        session.cancel_and_wait();
         let events: Vec<_> = rx.try_iter().collect();
         assert!(matches!(
             events.last(),
@@ -427,6 +447,32 @@ mod tests {
             })
         ));
         assert!(d.extracted.load(Ordering::Relaxed) < 20);
+    }
+
+    #[test]
+    fn drop_does_not_block_and_documents_can_be_forgotten() {
+        let d = doc(1000, 20);
+        let texts = Arc::new(TextCache::default());
+        let (session, rx) = start(d.clone(), texts.clone(), "needle", 0);
+        std::thread::sleep(Duration::from_millis(50));
+        let started = std::time::Instant::now();
+        drop(session);
+        // Dropping only signals; it must not wait for the running extraction.
+        assert!(started.elapsed() < Duration::from_millis(15));
+        // The thread still finishes and reports cancellation.
+        let finished = rx
+            .iter()
+            .find(|e| matches!(e, SearchEvent::Finished { .. }));
+        assert!(matches!(
+            finished,
+            Some(SearchEvent::Finished {
+                cancelled: true,
+                ..
+            })
+        ));
+        assert!(texts.stats().entries > 0);
+        texts.remove_document(DocumentId::from_raw(1));
+        assert_eq!(texts.stats().entries, 0);
     }
 
     #[test]
