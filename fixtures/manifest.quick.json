@@ -1,0 +1,1996 @@
+{
+  "schema": "fastpdf-fixtures-manifest/1",
+  "generator": {
+    "script": "tools/fixtures/generate.py",
+    "version": "1.0.0",
+    "seed": 20261004
+  },
+  "profile": "quick",
+  "options": {
+    "large_file_mb": null,
+    "only": null
+  },
+  "environment": {
+    "python": "3.12.10",
+    "platform": "win32",
+    "zlib": "1.3.1",
+    "reportlab": "5.0.1",
+    "pypdf": "6.19.0",
+    "pillow": "12.3.0",
+    "fonttools": "4.66.1",
+    "cryptography": "50.0.2"
+  },
+  "system_fonts": [
+    {
+      "role": "tc_kai",
+      "file": "kaiu.ttf",
+      "index": 0,
+      "family": "DFKai-SB",
+      "postscript_name": "DFKaiShu-SB-Estd-BF",
+      "fs_type": 8,
+      "bytes": 5181580,
+      "sha256": "d5cb3539cd9cab3d38fccc5e04c42b6adc11d7dcf87bea624f1b269c6c360c6d",
+      "status": "found"
+    },
+    {
+      "role": "tc_ming",
+      "file": "mingliu.ttc",
+      "index": 1,
+      "family": "PMingLiU",
+      "postscript_name": "PMingLiU",
+      "fs_type": 8,
+      "bytes": 27702516,
+      "sha256": "d7857c403c7c79a4de93a11a22c8b0fedc077762e173a8b80b950c0b1e9caacc",
+      "status": "found"
+    },
+    {
+      "role": "tc_sans",
+      "file": "msjh.ttc",
+      "index": 0,
+      "family": "Microsoft JhengHei",
+      "postscript_name": "MicrosoftJhengHeiRegular",
+      "fs_type": 8,
+      "bytes": 21404172,
+      "sha256": "1fd5fc7046e0eea753988ee06d1a5a731df68475614e2174fbba9b4800f392ac",
+      "status": "found"
+    },
+    {
+      "role": "ja_gothic",
+      "file": "YuGothM.ttc",
+      "index": 0,
+      "family": "Yu Gothic Medium",
+      "postscript_name": "YuGothic-Medium",
+      "fs_type": 8,
+      "bytes": 13908392,
+      "sha256": "cb2021bbfe40b21ec564848b8d702125661594e1b4f1eb2e77fd8a98b485cf19",
+      "status": "found"
+    },
+    {
+      "role": "ja_msgothic",
+      "file": "msgothic.ttc",
+      "index": 0,
+      "family": "MS Gothic",
+      "postscript_name": "MS-Gothic",
+      "fs_type": 8,
+      "bytes": 8990160,
+      "sha256": "4bde3e6392b96910fb59094c6c1a4dbfae18fee78d0bf13dc30616837c4f95db",
+      "status": "found"
+    }
+  ],
+  "expected_values": {
+    "open_ok": "Valid file; must open and render every page.",
+    "password_required": "Encrypted with a non-empty user password (see encryption.user_password).",
+    "recover_expected": "Damaged but recoverable (xref rebuild, /Length repair, ...); a robust reader opens it, otherwise it must fail cleanly.",
+    "render_partial_ok": "Opens; some pages/objects are broken and may be skipped, the rest must render; never crash.",
+    "guardrail_expected": "Hostile input; a §25 resource limit should trigger while the process stays within its memory/time budget.",
+    "open_error_expected": "Should be rejected with a clean error (no panic, no hang)."
+  },
+  "summary": {
+    "files": 84,
+    "bytes": 62441046,
+    "skipped": 0,
+    "by_category": {
+      "small-text": {
+        "files": 3,
+        "bytes": 17259
+      },
+      "large-text": {
+        "files": 2,
+        "bytes": 2728429
+      },
+      "scanned": {
+        "files": 3,
+        "bytes": 23617985
+      },
+      "image-heavy": {
+        "files": 4,
+        "bytes": 20114991
+      },
+      "vector-heavy": {
+        "files": 4,
+        "bytes": 2906419
+      },
+      "cad": {
+        "files": 3,
+        "bytes": 1668789
+      },
+      "fonts": {
+        "files": 5,
+        "bytes": 252474
+      },
+      "cjk": {
+        "files": 4,
+        "bytes": 144407
+      },
+      "japanese": {
+        "files": 3,
+        "bytes": 131734
+      },
+      "traditional-chinese": {
+        "files": 10,
+        "bytes": 4788411
+      },
+      "transparency": {
+        "files": 3,
+        "bytes": 1235832
+      },
+      "encrypted": {
+        "files": 8,
+        "bytes": 1065631
+      },
+      "malformed": {
+        "files": 29,
+        "bytes": 1309155
+      },
+      "large-page-count": {
+        "files": 3,
+        "bytes": 2459530
+      }
+    }
+  },
+  "skipped": [],
+  "files": [
+    {
+      "path": "cad/a0-fem-mesh-hairlines.pdf",
+      "category": "cad",
+      "bytes": 1332137,
+      "sha256": "fbb196011a87f0e0606a70c8585211fa8b240d4b0bbc3d35f76a880d64e7b3c7",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "A0 有限元素網格：約 56,000 個填色三角形＋約 8.4 萬條 0 寬 hairline 邊。",
+      "guardrails": [],
+      "features": [
+        "A0",
+        "hairline",
+        "many-fills"
+      ],
+      "producer": "rawpdf",
+      "stats": {
+        "segments": 84340,
+        "triangles": 56000
+      }
+    },
+    {
+      "path": "cad/a0-floorplan-layers.pdf",
+      "category": "cad",
+      "bytes": 305151,
+      "sha256": "c9f15f802754f21face36b87c9a5ca3b906d62d713d58c159e1e8ccc1905c986",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "A0 橫式平面圖：牆線、45° hatch、家具、尺寸標註、文字，含 6 個 OCG 圖層（/OC BDC…EMC），數萬條細線與 0 寬 hairline。",
+      "guardrails": [],
+      "features": [
+        "A0",
+        "OCG",
+        "hairline",
+        "hatching",
+        "clip"
+      ],
+      "producer": "rawpdf",
+      "stats": {
+        "segments": 34514
+      }
+    },
+    {
+      "path": "cad/a1-schematic-xobjects.pdf",
+      "category": "cad",
+      "bytes": 31501,
+      "sha256": "31acc622813880ea08a0697d9ddf775033131aaa5e843da80f8da0c5028e5e07",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "A1 橫式電路圖：符號以 Form XObject 定義並重複引用約 1,400 次，加上正交走線與 4pt 標籤。",
+      "guardrails": [],
+      "features": [
+        "A1",
+        "form-xobject-reuse",
+        "tiny-text"
+      ],
+      "producer": "rawpdf",
+      "stats": {
+        "segments": 13030
+      }
+    },
+    {
+      "path": "cjk/cid-nonembedded-4lang.pdf",
+      "category": "cjk",
+      "bytes": 15922,
+      "sha256": "e867892600005af8011fe7b5234e4924d5bc0fd9a41a293970453d081fee3b9f",
+      "pages": 6,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "非嵌入 CJK 字型（Adobe CID 字型名稱）：MSung-Light（繁中，UniCNS-UCS2-H）、STSong-Light（簡中）、HeiseiMin-W3／HeiseiKakuGo-W5（日）、HYSMyeongJo-Medium／HYGothic-Medium（韓）。reader 必須自行找系統替代字型。",
+      "guardrails": [],
+      "features": [
+        "CIDFontType0",
+        "non-embedded",
+        "UCS2-CMap",
+        "font-fallback"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "cjk/cid-nonembedded-dense-50p.pdf",
+      "category": "cjk",
+      "bytes": 118564,
+      "sha256": "1276db764caa357d91d5f74b3892a5eb0380ef757bfdffac993addde9aa4db3b",
+      "pages": 50,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "50 頁密集繁中文字（MSung-Light，未嵌入），測替代字型下的文字渲染與抽取效能。",
+      "guardrails": [],
+      "features": [
+        "non-embedded",
+        "dense-text"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "cjk/cid-nonembedded-vertical.pdf",
+      "category": "cjk",
+      "bytes": 5823,
+      "sha256": "dc232be8a64fce157d557a346cf64379849d2a50340e57b99513599b093de8d2",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "非嵌入 CID 字型直排（UniCNS-UCS2-V、UniJIS-UCS2-V CMap，WMode 1），由右至左多欄。",
+      "guardrails": [],
+      "features": [
+        "vertical-writing",
+        "non-embedded",
+        "V-CMap"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "cjk/reportlab-msung-unigb-cmap-mismatch.pdf",
+      "category": "cjk",
+      "bytes": 4098,
+      "sha256": "a4cfe49bb5ed1236b235b634b945c53aca1af6c27d59c6226d7011cb5c7e5049",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "真實世界的 reportlab 舊行為：MSung-Light（CIDSystemInfo Adobe-CNS1）卻使用 /UniGB-UCS2-H CMap（GB1 字集）。字碼本身是 UCS-2，以 Unicode 做字型替代的 reader 可正確顯示；嚴格依 CID 對應的 reader 會出現錯字。不可 crash。",
+      "guardrails": [],
+      "features": [
+        "CIDFontType0",
+        "non-embedded",
+        "cmap-ordering-mismatch"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "encrypted/aes128-owner-only.pdf",
+      "category": "encrypted",
+      "bytes": 133240,
+      "sha256": "f58325f745f39c4a789a61a39686d6366632d221b29637bd44fb436800e8edf5",
+      "pages": 3,
+      "encrypted": true,
+      "encryption": {
+        "handler": "Standard",
+        "algorithm": "AES-128",
+        "V": 4,
+        "R": 4,
+        "key_bits": 128,
+        "user_password": "",
+        "owner_password": "fastpdf-owner-aes128",
+        "permissions": "print-only"
+      },
+      "password": "",
+      "expected": "open_ok",
+      "description": "AES-128（V4／R4，AESV2 crypt filter），空 user password。",
+      "guardrails": [],
+      "features": [
+        "Encrypt",
+        "AES-128",
+        "owner-only"
+      ],
+      "producer": "pypdf"
+    },
+    {
+      "path": "encrypted/aes128-user-password.pdf",
+      "category": "encrypted",
+      "bytes": 133246,
+      "sha256": "3507cf58195f8593af146955b653fce2b9f48de8366f22ae788e7633ff2b2292",
+      "pages": 3,
+      "encrypted": true,
+      "encryption": {
+        "handler": "Standard",
+        "algorithm": "AES-128",
+        "V": 4,
+        "R": 4,
+        "key_bits": 128,
+        "user_password": "fastpdf-user128",
+        "owner_password": "fastpdf-owner128",
+        "permissions": "all"
+      },
+      "password": "fastpdf-user128",
+      "expected": "password_required",
+      "description": "AES-128（R4），需要 user password（MD5 金鑰推導路徑）。",
+      "guardrails": [],
+      "features": [
+        "Encrypt",
+        "AES-128",
+        "user-password"
+      ],
+      "producer": "pypdf"
+    },
+    {
+      "path": "encrypted/aes256-r5-owner-only.pdf",
+      "category": "encrypted",
+      "bytes": 133488,
+      "sha256": "75d9508adec4bcb7c77a92191ec7e5a5d36aac5d4ea1023ebcf5b1b74500c08b",
+      "pages": 3,
+      "encrypted": true,
+      "encryption": {
+        "handler": "Standard",
+        "algorithm": "AES-256-R5",
+        "V": 5,
+        "R": 5,
+        "key_bits": 256,
+        "user_password": "",
+        "owner_password": "fastpdf-owner-r5",
+        "permissions": "print-only"
+      },
+      "password": "",
+      "expected": "open_ok",
+      "description": "AES-256（V5／R5，Acrobat 9 已棄用的擴充），空 user password。",
+      "guardrails": [],
+      "features": [
+        "Encrypt",
+        "AES-256-R5",
+        "owner-only"
+      ],
+      "producer": "pypdf"
+    },
+    {
+      "path": "encrypted/aes256-r6-owner-only.pdf",
+      "category": "encrypted",
+      "bytes": 133488,
+      "sha256": "5d39ad4eb5e1519417b7a81aceefb8990767e80cb2dc6a312313401104faf8ed",
+      "pages": 3,
+      "encrypted": true,
+      "encryption": {
+        "handler": "Standard",
+        "algorithm": "AES-256",
+        "V": 5,
+        "R": 6,
+        "key_bits": 256,
+        "user_password": "",
+        "owner_password": "fastpdf-owner-aes256",
+        "permissions": "print-only"
+      },
+      "password": "",
+      "expected": "open_ok",
+      "description": "AES-256（V5／R6，PDF 2.0 / ISO 32000-2），空 user password、有 owner password，權限僅允許列印。不需密碼即可開啟。",
+      "guardrails": [],
+      "features": [
+        "Encrypt",
+        "AES-256",
+        "owner-only"
+      ],
+      "producer": "pypdf"
+    },
+    {
+      "path": "encrypted/aes256-r6-user-password-unicode.pdf",
+      "category": "encrypted",
+      "bytes": 133494,
+      "sha256": "0c1c8de6964b8e44a31f68b6bad0f726a8ce31492ce417b8a03a498abb6a2e76",
+      "pages": 3,
+      "encrypted": true,
+      "encryption": {
+        "handler": "Standard",
+        "algorithm": "AES-256",
+        "V": 5,
+        "R": 6,
+        "key_bits": 256,
+        "user_password": "測試密碼2026",
+        "owner_password": "fastpdf-owner-unicode",
+        "permissions": "all"
+      },
+      "password": "測試密碼2026",
+      "expected": "password_required",
+      "description": "AES-256（R6），user password 含中文（UTF-8／SASLprep），測 Unicode 密碼處理。",
+      "guardrails": [],
+      "features": [
+        "Encrypt",
+        "AES-256",
+        "user-password"
+      ],
+      "producer": "pypdf"
+    },
+    {
+      "path": "encrypted/aes256-r6-user-password.pdf",
+      "category": "encrypted",
+      "bytes": 133494,
+      "sha256": "799c2708bd618193fb08d001b62a5864dda53989e1f453bc263918eab4ad2513",
+      "pages": 3,
+      "encrypted": true,
+      "encryption": {
+        "handler": "Standard",
+        "algorithm": "AES-256",
+        "V": 5,
+        "R": 6,
+        "key_bits": 256,
+        "user_password": "fastpdf-user",
+        "owner_password": "fastpdf-owner",
+        "permissions": "all"
+      },
+      "password": "fastpdf-user",
+      "expected": "password_required",
+      "description": "AES-256（R6），需要 user password 才能開啟（密碼見 encryption.user_password）。",
+      "guardrails": [],
+      "features": [
+        "Encrypt",
+        "AES-256",
+        "user-password"
+      ],
+      "producer": "pypdf"
+    },
+    {
+      "path": "encrypted/rc4-128-owner-only.pdf",
+      "category": "encrypted",
+      "bytes": 132588,
+      "sha256": "b6b5660a6fc76463a280e5e9ac03397b07157f3239e527cc011820a7a4261514",
+      "pages": 3,
+      "encrypted": true,
+      "encryption": {
+        "handler": "Standard",
+        "algorithm": "RC4-128",
+        "V": 2,
+        "R": 3,
+        "key_bits": 128,
+        "user_password": "",
+        "owner_password": "fastpdf-owner-rc4",
+        "permissions": "print-only"
+      },
+      "password": "",
+      "expected": "open_ok",
+      "description": "RC4 128-bit（V2／R3），空 user password。",
+      "guardrails": [],
+      "features": [
+        "Encrypt",
+        "RC4-128",
+        "owner-only"
+      ],
+      "producer": "pypdf"
+    },
+    {
+      "path": "encrypted/rc4-40-owner-only.pdf",
+      "category": "encrypted",
+      "bytes": 132593,
+      "sha256": "dec1f3aeeaab8d447f58972bb18b2cad6717e58cc44763cb961e287a2d01ab70",
+      "pages": 3,
+      "encrypted": true,
+      "encryption": {
+        "handler": "Standard",
+        "algorithm": "RC4-40",
+        "V": 1,
+        "R": 2,
+        "key_bits": 40,
+        "user_password": "",
+        "owner_password": "fastpdf-owner-rc4-40",
+        "permissions": "all"
+      },
+      "password": "",
+      "expected": "open_ok",
+      "description": "RC4 40-bit（V1／R2，舊式），空 user password。",
+      "guardrails": [],
+      "features": [
+        "Encrypt",
+        "RC4-40",
+        "owner-only"
+      ],
+      "producer": "pypdf"
+    },
+    {
+      "path": "fonts/standard14-all.pdf",
+      "category": "fonts",
+      "bytes": 16638,
+      "sha256": "111366886e95db4d05b8a34c28d87b5c826388eb36ae82a0f176d919f45397c2",
+      "pages": 6,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "全部 14 個 standard Type 1 字型（未嵌入）、WinAnsi／Symbol／ZapfDingbats／StandardEncoding 字碼表、MacRoman 與 /Differences。",
+      "guardrails": [],
+      "features": [
+        "standard-14",
+        "WinAnsiEncoding",
+        "MacRomanEncoding",
+        "Differences"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "fonts/text-state-operators.pdf",
+      "category": "fonts",
+      "bytes": 2398,
+      "sha256": "1fe296a1ef36cdee80048931b43e6ba771fa464e5648c44489924a1f2e18f5bb",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "文字狀態運算子：Tr 0–7（含 clip 模式）、Tc、Tw、Tz、Ts、TL、T*、' 與 \"、TJ kerning、旋轉／斜切／鏡像 Tm。",
+      "guardrails": [],
+      "features": [
+        "text-render-modes",
+        "TJ",
+        "Tm"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "fonts/truetype-subset-vera.pdf",
+      "category": "fonts",
+      "bytes": 130000,
+      "sha256": "866176fcceae4df086898e791bf249f807d9cde3e33a2be9ff53963c8188c369",
+      "pages": 4,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "嵌入 TrueType subset（reportlab 內附 Bitstream Vera 四種字重，FontFile2，每個 subset ≤256 字）。",
+      "guardrails": [],
+      "features": [
+        "TrueType",
+        "FontFile2",
+        "subset",
+        "embedded"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "fonts/type1-embedded-callig15.pdf",
+      "category": "fonts",
+      "bytes": 64740,
+      "sha256": "4875ed0ccd63004b92533548b2a8e52d5ef111ec688a07c6fc749d51c24337aa",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "嵌入 Type 1 字型程式（FontFile，reportlab 內附 callig15，授權允許自由散布）。",
+      "guardrails": [],
+      "features": [
+        "Type1",
+        "FontFile",
+        "embedded"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "fonts/type3-vector-and-bitmap.pdf",
+      "category": "fonts",
+      "bytes": 38698,
+      "sha256": "94b72ec903e65b44bacdc7f9436c5cd8c9d52a787d742397bbdf3e66291c4d14",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "Type3 字型：d1 無色筆畫字、d0 彩色字（含 shading 資源）、以及 dvips 風格 1-bit inline image mask 點陣字（大量 glyph）。",
+      "guardrails": [],
+      "features": [
+        "Type3",
+        "d0",
+        "d1",
+        "inline-image",
+        "ImageMask"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "image-heavy/image-formats-flate.pdf",
+      "category": "image-heavy",
+      "bytes": 2925201,
+      "sha256": "1c7f622d04070e69b17393eac4b1982c3ee7f0a584111edab7b2d5244a49d9d6",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "影像格式涵蓋：Flate+PNG predictor（RGB 2400x1600）、SMask alpha、16-bit 灰階、8／4-bit Indexed、1-bit ImageMask、color-key /Mask、/Decode 反相、/Interpolate、ICCBased。",
+      "guardrails": [],
+      "features": [
+        "FlateDecode",
+        "PNG-predictor",
+        "SMask",
+        "16bpc",
+        "Indexed",
+        "ImageMask",
+        "ColorKeyMask",
+        "Decode",
+        "Interpolate",
+        "ICCBased"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "image-heavy/jpeg-variants.pdf",
+      "category": "image-heavy",
+      "bytes": 6776119,
+      "sha256": "eeb7418fc5927c60d113889bc8b10d3f117170d12a6182ba2be37e3d48e3c16c",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "JPEG 變體：6000x4000（24 MP）大圖、Adobe CMYK（反相＋/Decode）、progressive、灰階、4:4:4、restart markers。CMYK 顏色在各 reader 間的慣例不一，主要測解碼路徑。",
+      "guardrails": [],
+      "features": [
+        "DCTDecode",
+        "24MP",
+        "CMYK",
+        "progressive",
+        "restart-markers"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "image-heavy/many-small-images-800.pdf",
+      "category": "image-heavy",
+      "bytes": 1218304,
+      "sha256": "42ccd0e8565d198cd26cf1981c9545596c03ea1003b179a838f6caa82001a846",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "2 頁共 800 張互不相同的 64x64 JPEG 縮圖，測試大量 XObject 的 per-image overhead。",
+      "guardrails": [],
+      "features": [
+        "DCTDecode",
+        "many-xobjects"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "image-heavy/photos-rgb-jpeg-6p.pdf",
+      "category": "image-heavy",
+      "bytes": 9195367,
+      "sha256": "bf890b48cff3f7582beba9e975df53ce38285f5d8aab4e7f829c80fbc6bc2ab0",
+      "pages": 6,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "6 頁、每頁一張 3000x2000 合成照片（RGB JPEG q88，DCT passthrough）。",
+      "guardrails": [],
+      "features": [
+        "DCTDecode",
+        "DeviceRGB",
+        "large-images"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "japanese/cid-nonembedded-heisei.pdf",
+      "category": "japanese",
+      "bytes": 8903,
+      "sha256": "e1965df04a95323708eb8c6c775b9180c15e1d231cdf8d393a2689fb73ee0300",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "日文非嵌入 CID 字型：HeiseiMin-W3、HeiseiKakuGo-W5 橫排（含平假名、片假名、半形片假名、全形英數、記號）與 HeiseiMin-W3 直排。",
+      "guardrails": [],
+      "features": [
+        "CIDFontType0",
+        "non-embedded",
+        "vertical-writing"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "japanese/embedded-ttfsubset.pdf",
+      "category": "japanese",
+      "bytes": 84178,
+      "sha256": "36d8f277e157cf3692ff18be7407c84b81162b1881eeb188ecf53f0cc427604b",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "日文嵌入 TrueType subset（reportlab，simple font、每個 subset ≤256 字；優先 Yu Gothic Medium，其次 MS Gothic）。系統字型只在產生時讀取。",
+      "guardrails": [],
+      "features": [
+        "TrueType",
+        "subset",
+        "embedded",
+        "system-font"
+      ],
+      "producer": "reportlab",
+      "inputs": {
+        "system_font": {
+          "role": "ja_gothic",
+          "file": "YuGothM.ttc",
+          "index": 0,
+          "family": "Yu Gothic Medium",
+          "postscript_name": "YuGothic-Medium",
+          "sha256": "cb2021bbfe40b21ec564848b8d702125661594e1b4f1eb2e77fd8a98b485cf19"
+        }
+      }
+    },
+    {
+      "path": "japanese/embedded-type0.pdf",
+      "category": "japanese",
+      "bytes": 38653,
+      "sha256": "7f1602a6dd7c728a2a60c68aefae2f12cf9049869925ce4b907b2245a4d6805b",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "日文嵌入 Type0／CIDFontType2／Identity-H＋ToUnicode（fontTools subset、保留 GID；優先 MS Gothic）。",
+      "guardrails": [],
+      "features": [
+        "Type0",
+        "CIDFontType2",
+        "Identity-H",
+        "ToUnicode",
+        "system-font"
+      ],
+      "producer": "rawpdf",
+      "inputs": {
+        "system_font": {
+          "role": "ja_msgothic",
+          "file": "msgothic.ttc",
+          "index": 0,
+          "family": "MS Gothic",
+          "postscript_name": "MS-Gothic",
+          "sha256": "4bde3e6392b96910fb59094c6c1a4dbfae18fee78d0bf13dc30616837c4f95db"
+        }
+      }
+    },
+    {
+      "path": "large-page-count/balanced-tree-2000p.pdf",
+      "category": "large-page-count",
+      "bytes": 705055,
+      "sha256": "2a696eb2d34c46b4363d8b8e485774dff6c4d7bc6b629abcadfb2a55754209c8",
+      "pages": 2000,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "2000 頁、fan-out 10 的平衡 page tree；MediaBox／CropBox／Rotate／Resources 皆由中間節點繼承。",
+      "guardrails": [],
+      "features": [
+        "balanced-page-tree",
+        "inherited-attributes",
+        "rotate"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "large-page-count/flat-2000p-reportlab.pdf",
+      "category": "large-page-count",
+      "bytes": 1347446,
+      "sha256": "74e4caa9bdd68192c0f939e4224de97b6e4ff049956c7bfc2a9f464308a7a7f5",
+      "pages": 2000,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "2000 頁簡單頁面（大標題＋色塊＋數行文字），扁平 page tree（單一 /Pages 含 2000 kids）。",
+      "guardrails": [],
+      "features": [
+        "flat-page-tree",
+        "standard-14"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "large-page-count/objstm-xrefstream-2000p.pdf",
+      "category": "large-page-count",
+      "bytes": 407029,
+      "sha256": "fac27f70069ed67592a27d3b58ecbe16acdb4e5c280e95cb52bc53d45f05ea93",
+      "pages": 2000,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "PDF 1.5：2000 頁的 page／pages 字典全部放在 object stream，並使用 cross-reference stream；頁面尺寸輪替。",
+      "guardrails": [],
+      "features": [
+        "object-streams",
+        "xref-stream",
+        "mixed-page-sizes"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "large-text/dense-300p-2col-helvetica.pdf",
+      "category": "large-text",
+      "bytes": 1533606,
+      "sha256": "7e1a574e5a13dab81367ccd292d575e5195b6ca15a8867317e8988d424bd5f74",
+      "pages": 300,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "300 頁雙欄密集文字（Helvetica 8pt）＋小標題，測試文字抽取順序與大量 Tj。",
+      "guardrails": [],
+      "features": [
+        "standard-14",
+        "two-column",
+        "dense-text"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "large-text/dense-300p-times.pdf",
+      "category": "large-text",
+      "bytes": 1194823,
+      "sha256": "cecce2abc44987bc12b5ce12ad09bb49af7caa5b8bb62eb9a1d6ef77c0113d0e",
+      "pages": 300,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "300 頁密集單欄文字（Times-Roman 9pt，每頁約 70 行），每 10 頁一個書籤。",
+      "guardrails": [],
+      "features": [
+        "standard-14",
+        "outlines",
+        "dense-text"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "malformed/bad-xref-offsets.pdf",
+      "category": "malformed",
+      "bytes": 3100,
+      "sha256": "146f820151b149399ac7742d1507c9ebce7602853b083483e54f2e1ba1b49c78",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "recover_expected",
+      "description": "xref 表每個 offset 都偏移 +7 bytes，需驗證 offset 並 fallback 重建。",
+      "guardrails": [
+        "§24 malformed xref"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/broken-embedded-fonts.pdf",
+      "category": "malformed",
+      "bytes": 30281,
+      "sha256": "90fa66eb79dc3cb986c617ab11d099c79cf76c29ab562625d8c2b434dd5b31f7",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "render_partial_ok",
+      "description": "壞掉的嵌入字型：FontFile2／FontFile 為隨機資料、截斷 30% 的 TrueType、Type0 的 W 陣列與 ToUnicode 損壞；最後一頁正常。",
+      "guardrails": [
+        "§24 broken fonts",
+        "§25 malicious font"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/content-syntax-errors.pdf",
+      "category": "malformed",
+      "bytes": 2413,
+      "sha256": "c123d05f707ee833fa1874a09cf9f2d668b4b983f8c7da5b995561ddc133c45b",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "render_partial_ok",
+      "description": "content stream 語法錯誤：未知運算子、operand 不足、未配對 BT/ET 與 q/Q、未結束字串、錯誤數字、資料不足的 inline image；最後一頁正常。",
+      "guardrails": [
+        "§24 invalid object",
+        "§24 weird encoding"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/corrupt-flate-stream.pdf",
+      "category": "malformed",
+      "bytes": 3310,
+      "sha256": "340ace32fd35f409d30dd2ffc9ca6ee8b831c4af20af2f3cbb0414dd3a31118e",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "render_partial_ok",
+      "description": "content stream 損壞：中段位元翻轉、deflate 截斷、非 deflate 資料；第 1、5 頁正常。",
+      "guardrails": [
+        "§24 corrupted stream"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/decompression-bomb-512mib.pdf",
+      "category": "malformed",
+      "bytes": 1045755,
+      "sha256": "e3ac7a45b1b41771f9b33db45050d47dfa398770ffcadaa317e17ed706e7838e",
+      "pages": 4,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "guardrail_expected",
+      "description": "Flate bomb：約 0.5 MB 的 stream inflate 後為 512 MiB 的 0（一個 content stream、一個 1000x1000 影像 stream），首末頁正常。",
+      "guardrails": [
+        "§25 decompression bomb",
+        "§25 memory exhaustion"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf",
+      "stats": {
+        "inflated_bytes": 536870912
+      }
+    },
+    {
+      "path": "malformed/decompression-bomb-nested-flate.pdf",
+      "category": "malformed",
+      "bytes": 2493,
+      "sha256": "f1c3fd8d9b53fd96987527d2340de399a56e03e8e8271725fe2e691ccc242720",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "guardrail_expected",
+      "description": "雙層 /FlateDecode /FlateDecode bomb：數 KB 的 stream 展開為 512 MiB 的 0。",
+      "guardrails": [
+        "§25 decompression bomb",
+        "§25 memory exhaustion"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf",
+      "stats": {
+        "inflated_bytes": 536870912
+      }
+    },
+    {
+      "path": "malformed/deep-nesting-array-5000.pdf",
+      "category": "malformed",
+      "bytes": 21701,
+      "sha256": "da3746ad13f35489c346f561d99efcaefcfc5f7a392acbf1687c21b28878693e",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "guardrail_expected",
+      "description": "5000 層巢狀 array（一個在獨立物件、一個 inline 在 page dict），第 3 頁正常。",
+      "guardrails": [
+        "§25 max nesting",
+        "§25 infinite recursion"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/deep-nesting-content-100000.pdf",
+      "category": "malformed",
+      "bytes": 2788,
+      "sha256": "50c85dcab1a1085b368e16d17146a7f12bd474ec15c0363e0f210bbb5cd306b4",
+      "pages": 4,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "guardrail_expected",
+      "description": "content stream 內 100000 層巢狀 array operand、100000 層 q…Q、100000 個未配對 q；第 4 頁正常。",
+      "guardrails": [
+        "§25 max nesting",
+        "§25 max recursion"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/deep-nesting-dict-5000.pdf",
+      "category": "malformed",
+      "bytes": 71693,
+      "sha256": "5bbbbf02df04881f0f9931842450c28b6e88977a55de195375ba79a423a2030b",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "guardrail_expected",
+      "description": "5000 層巢狀 dictionary（同上配置）。",
+      "guardrails": [
+        "§25 max nesting",
+        "§25 infinite recursion"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/empty-file.pdf",
+      "category": "malformed",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "pages": null,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_error_expected",
+      "description": "0 byte 檔案。",
+      "guardrails": [
+        "§24 invalid object"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/garbage-after-eof-64k.pdf",
+      "category": "malformed",
+      "bytes": 67847,
+      "sha256": "fb05a51a4f218a1c6919ea782613967f8fa56210deccc584c1d5510115b7dbe7",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "recover_expected",
+      "description": "%%EOF 之後附加 64 KiB 隨機資料，startxref 不在檔尾 1024 bytes 內。",
+      "guardrails": [
+        "§24 malformed xref"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/garbage-after-eof-small.pdf",
+      "category": "malformed",
+      "bytes": 2503,
+      "sha256": "462d3ad1d51abd23821430f45f3a493a3104e77a71c9d4b9f7cbd34a1b49d480",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "%%EOF 之後附加 200 bytes 隨機資料（仍在最後 1024 bytes 內可找到 startxref）。",
+      "guardrails": [
+        "§24 malformed xref"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/huge-image-declared.pdf",
+      "category": "malformed",
+      "bytes": 3928,
+      "sha256": "920b75a38837e95ee4fe0867242c3fc20f09d99ea74e069b219ab8c09006450d",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "guardrail_expected",
+      "description": "宣告巨大影像但資料很小：100000x100000 RGB、寬 2^31-1、SOF 宣稱 65535x65535 的 JPEG、300000x300000 ImageMask；最後一頁正常。",
+      "guardrails": [
+        "§25 max decoded image dimension",
+        "§25 max bitmap allocation",
+        "§25 giant bitmap",
+        "§25 integer overflow"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/huge-mediabox.pdf",
+      "category": "malformed",
+      "bytes": 2938,
+      "sha256": "67c00a2355e046ba9d61c6adba9917a2c7b77c810b94ff5f5a63d197d636ce81",
+      "pages": 7,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "guardrail_expected",
+      "description": "MediaBox 1e7x1e7、零面積、反向、整數溢位、/UserUnit 75000、負座標＋旋轉；最後一頁正常。",
+      "guardrails": [
+        "§25 giant page dimension",
+        "§25 integer overflow"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/indirect-reference-cycle.pdf",
+      "category": "malformed",
+      "bytes": 1394,
+      "sha256": "6b3bf27e20ee63412be6d1be66db6ce283e07c65c357c75c8e8fa0590bc1c0e5",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "guardrail_expected",
+      "description": "間接參照循環：/Length 7 0 R → 8 0 R → 7 0 R，/Resources 指向自己。",
+      "guardrails": [
+        "§25 infinite recursion",
+        "§25 max recursion"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/leading-junk-before-header.pdf",
+      "category": "malformed",
+      "bytes": 2930,
+      "sha256": "8d4895ed8db2ec608c33fba6f60f2cbdf406b5ddbecf76c9da40ea5f0078126b",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "recover_expected",
+      "description": "header 前有約 700 bytes 的 HTTP header 與二進位垃圾（xref offset 以 %PDF 為基準）。",
+      "guardrails": [
+        "§24 malformed xref"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/missing-object.pdf",
+      "category": "malformed",
+      "bytes": 1816,
+      "sha256": "691cec7a7e52c044c24fb07ac7d8333bcb8165e19c8670e68bae84d2e80795a2",
+      "pages": 4,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "render_partial_ok",
+      "description": "引用不存在的物件：/Annots → 9999 0 R、/Contents 指向 free entry、字型資源遺失；第 4 頁正常。",
+      "guardrails": [
+        "§24 missing object",
+        "§24 invalid object"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/no-catalog.pdf",
+      "category": "malformed",
+      "bytes": 806,
+      "sha256": "e3b1bdc2b7dbce9ea9b38a12573f104787c9f25169bc1ba805cda103fa23163e",
+      "pages": null,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_error_expected",
+      "description": "trailer 沒有 /Root，檔案中也沒有 Catalog 物件。",
+      "guardrails": [
+        "§24 invalid object"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/no-header.pdf",
+      "category": "malformed",
+      "bytes": 2256,
+      "sha256": "be280f94c17fd8b8d0aac2b183c7e2fb1dbc8bf8c5f964110689e27767858f55",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "recover_expected",
+      "description": "缺少 %PDF- header（offset 仍正確）。",
+      "guardrails": [
+        "§24 malformed xref"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/not-a-pdf-random-bytes.pdf",
+      "category": "malformed",
+      "bytes": 16384,
+      "sha256": "552de260ce568fca4172757206653e23e39fc4ff4dc95ca965cc4d465b018e10",
+      "pages": null,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_error_expected",
+      "description": "16 KiB 隨機位元組，副檔名為 .pdf。",
+      "guardrails": [
+        "§24 invalid object"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/page-count-lie.pdf",
+      "category": "malformed",
+      "bytes": 1313,
+      "sha256": "9b920df0f799d31d496487f8cb73d56add1c3ec508a8f023c68431c23b06ada7",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "recover_expected",
+      "description": "/Count 宣稱 2147483647 頁但只有 2 個 kids，不可依 /Count 預先配置記憶體。",
+      "guardrails": [
+        "§25 integer overflow",
+        "§25 memory exhaustion"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/page-parent-cycle.pdf",
+      "category": "malformed",
+      "bytes": 922,
+      "sha256": "8dbe0eb273cd2a89fff7bd44f4674f28b8235b20acbd9708b2a77795b5ff93c5",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "render_partial_ok",
+      "description": "頁面沒有 MediaBox／Resources，且 /Parent 鏈形成循環（屬性繼承查找可能無窮迴圈）。",
+      "guardrails": [
+        "§25 infinite recursion",
+        "§25 malformed object tree"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/page-tree-kids-cycle.pdf",
+      "category": "malformed",
+      "bytes": 1347,
+      "sha256": "6d63c7fabe86fbb140a2634ff74d9d6faec37238eed898e88a0843942f4068b9",
+      "pages": null,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "render_partial_ok",
+      "description": "page tree 的 /Kids 形成循環（中間節點的 kid 指回根節點），/Count 不一致。",
+      "guardrails": [
+        "§25 infinite recursion",
+        "§25 malformed object tree"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/startxref-beyond-eof.pdf",
+      "category": "malformed",
+      "bytes": 3087,
+      "sha256": "180beed33e75e47f64ea59ecb3a1d033d78c3070aa989e17def3929fe27ab1fd",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "recover_expected",
+      "description": "startxref 指向檔案結尾之後。",
+      "guardrails": [
+        "§24 malformed xref"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/truncated-at-60pct.pdf",
+      "category": "malformed",
+      "bytes": 7761,
+      "sha256": "a54d16354115ca98764a3c0cc3cfa12f1494a91b9c2275b4ff46fac07ce0603f",
+      "pages": null,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "render_partial_ok",
+      "description": "檔案在 60% 處被截斷（catalog／page tree 在前，後半頁面物件、xref、trailer 遺失）。",
+      "guardrails": [
+        "§24 malformed xref",
+        "§24 missing object"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/truncated-before-xref.pdf",
+      "category": "malformed",
+      "bytes": 2710,
+      "sha256": "4f03da10f117a3463a3935fa5f1cebd59d3dffdf8e161a1c6837590be9d30db4",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "recover_expected",
+      "description": "所有物件完整，但在 xref 之前截斷（無 xref／trailer／startxref／%%EOF），需重建 xref。",
+      "guardrails": [
+        "§24 malformed xref"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/wrong-stream-length.pdf",
+      "category": "malformed",
+      "bytes": 2273,
+      "sha256": "7cebcba80954da0d793dad861e94598620ee0e4c63f28c25d1b992411404233a",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "recover_expected",
+      "description": "stream /Length 錯誤：太小、太大、指向不存在物件、超過 64-bit、負值；需以 endstream 掃描修正。",
+      "guardrails": [
+        "§24 corrupted stream",
+        "§25 max object length",
+        "§25 integer overflow"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/xref-prev-cycle.pdf",
+      "category": "malformed",
+      "bytes": 1205,
+      "sha256": "3fe9ff0fa942b46af3996eecc2a3cca82a3186f60af43e571a90187a5995ef68",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "recover_expected",
+      "description": "incremental update 的 xref 鏈 /Prev 形成循環（A→B→A），必須偵測迴圈避免無窮迴圈。",
+      "guardrails": [
+        "§25 infinite recursion",
+        "§24 malformed xref"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "malformed/xref-table-garbled.pdf",
+      "category": "malformed",
+      "bytes": 2201,
+      "sha256": "03d384d6970ba2eb02a25a58bc00a164779726a1d30fdf30b4e6b72ea2eba555",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "recover_expected",
+      "description": "xref subsection 宣告 99 筆但內容不足、型別字元錯誤、欄寬錯誤、部分項目遺失。",
+      "guardrails": [
+        "§24 malformed xref"
+      ],
+      "features": [
+        "malformed"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "scanned/scan-bilevel-ccitt-g4-10p.pdf",
+      "category": "scanned",
+      "bytes": 536748,
+      "sha256": "5e34acd5201e2c4d208483af8c2dc8159268c7633f5ae85003fe9a6fcc146b9e",
+      "pages": 10,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "黑白掃描：10 頁 300 dpi 1-bit CCITT Group 4（CCITTFaxDecode，K -1，BlackIs1 false），公文掃描常見格式。",
+      "guardrails": [],
+      "features": [
+        "CCITTFaxDecode",
+        "G4",
+        "1-bit"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "scanned/scan-gray-jpeg-20p.pdf",
+      "category": "scanned",
+      "bytes": 18468462,
+      "sha256": "62fdef84828b2f4df2395379c394ab936fcdbba52aaffa128c61c428d06ee6c5",
+      "pages": 20,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "模擬掃描：20 頁、每頁一張 300 dpi 灰階 JPEG（2480x3508，含雜訊、輕微旋轉、模糊、灰塵、掃描器陰影），無文字層。",
+      "guardrails": [],
+      "features": [
+        "DCTDecode",
+        "DeviceGray",
+        "300dpi",
+        "one-image-per-page"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "scanned/scan-gray-ocr-layer-5p.pdf",
+      "category": "scanned",
+      "bytes": 4612775,
+      "sha256": "9148fc1116434a7cbcf4fb8c491f1a865a3a869e6dbf6f086ec68004f24ce7b4",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "模擬 OCR 後的可搜尋掃描檔：灰階 JPEG 影像＋隱形文字層（Tr 3、Helvetica、Tz 對齊寬度）。",
+      "guardrails": [],
+      "features": [
+        "DCTDecode",
+        "invisible-text",
+        "Tr3",
+        "searchable-scan"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "small-text/one-page-helvetica.pdf",
+      "category": "small-text",
+      "bytes": 3504,
+      "sha256": "227b575a7c5277fb22b5ab9c2e03be2c8678646cf0b851201577e8826d15ceec",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "單頁純文字（Helvetica，standard-14，未嵌入），最基本的開檔／首頁渲染基準。",
+      "guardrails": [],
+      "features": [
+        "standard-14",
+        "reportlab"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "small-text/three-pages-platypus-times.pdf",
+      "category": "small-text",
+      "bytes": 7048,
+      "sha256": "40f2101c0c501a7aa92b80b93118d4551d8e5f0c25055d37373563c5c9091bf9",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "三頁 platypus 排版：Times 內文、標題、項目符號、表格、書籤（outline）、內部與外部連結。",
+      "guardrails": [],
+      "features": [
+        "standard-14",
+        "outlines",
+        "link-annotations",
+        "table"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "small-text/two-pages-courier-letter.pdf",
+      "category": "small-text",
+      "bytes": 6707,
+      "sha256": "27c539fc54b54fc5f427dc33ec0d758dca63de4b83fc46828343a27adb6d3e6b",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "兩頁 Letter 尺寸、Courier 等寬字型的純文字 log。",
+      "guardrails": [],
+      "features": [
+        "standard-14",
+        "monospace",
+        "letter"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "traditional-chinese/big5-level1-chars-ttfsubset.pdf",
+      "category": "traditional-chinese",
+      "bytes": 1879701,
+      "sha256": "a0d193285f5ee6c134e00ba08494df64e022f70177ac809fb98135ad27761f16",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "Big5 第一字面全部 5401 個常用字，reportlab TrueType subset（約 22 個 subset 字型），測大量字型物件與 glyph cache。",
+      "guardrails": [],
+      "features": [
+        "TrueType",
+        "many-subsets",
+        "glyph-cache"
+      ],
+      "producer": "reportlab",
+      "inputs": {
+        "system_font": {
+          "role": "tc_ming",
+          "file": "mingliu.ttc",
+          "index": 1,
+          "family": "PMingLiU",
+          "postscript_name": "PMingLiU",
+          "sha256": "d7857c403c7c79a4de93a11a22c8b0fedc077762e173a8b80b950c0b1e9caacc"
+        }
+      }
+    },
+    {
+      "path": "traditional-chinese/big5-level1-chars-type0.pdf",
+      "category": "traditional-chinese",
+      "bytes": 1784721,
+      "sha256": "799eb3558c02efc952a01b5737b4039bb6ce870ea457a5b8f6e7f1651641f279",
+      "pages": 5,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "Big5 第一字面 5401 字，單一 Type0／Identity-H 字型（大型 subset），測 glyph cache 與 ToUnicode 對照。",
+      "guardrails": [],
+      "features": [
+        "Type0",
+        "Identity-H",
+        "ToUnicode",
+        "glyph-cache"
+      ],
+      "producer": "rawpdf",
+      "inputs": {
+        "system_font": {
+          "role": "tc_ming",
+          "file": "mingliu.ttc",
+          "index": 1,
+          "family": "PMingLiU",
+          "postscript_name": "PMingLiU",
+          "sha256": "d7857c403c7c79a4de93a11a22c8b0fedc077762e173a8b80b950c0b1e9caacc"
+        }
+      }
+    },
+    {
+      "path": "traditional-chinese/gov-letter-cid-msung-nonembedded.pdf",
+      "category": "traditional-chinese",
+      "bytes": 5995,
+      "sha256": "8659300379368583675bff43ab5c4e3cb2412667b3a2b18ee72da024f46ca51f",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "同一份虛構公文，使用非嵌入 MSung-Light（UniCNS-UCS2-H），需要字型替代。",
+      "guardrails": [],
+      "features": [
+        "CIDFontType0",
+        "non-embedded",
+        "gov-document"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "traditional-chinese/gov-letter-embedded-ttfsubset.pdf",
+      "category": "traditional-chinese",
+      "bytes": 96772,
+      "sha256": "5342127fe61936e56cb41631cbfd14bd94de611014f359740dc74fe27aa6cea1",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "模擬政府公文「函」（發文機關、受文者、發文日期／字號、主旨、說明、附表、正副本、附件表格），嵌入 TrueType subset（reportlab，優先標楷體）。內容全為虛構。新細明體／標楷體在 FreeType 中屬於 tricky font（字形可能依賴 TrueType hinting 指令組合筆畫），不執行 hinting 的 rasterizer 可能畫出錯位筆畫。",
+      "guardrails": [],
+      "features": [
+        "TrueType",
+        "subset",
+        "embedded",
+        "system-font",
+        "gov-document",
+        "table"
+      ],
+      "producer": "reportlab",
+      "inputs": {
+        "system_font": {
+          "role": "tc_kai",
+          "file": "kaiu.ttf",
+          "index": 0,
+          "family": "DFKai-SB",
+          "postscript_name": "DFKaiShu-SB-Estd-BF",
+          "sha256": "d5cb3539cd9cab3d38fccc5e04c42b6adc11d7dcf87bea624f1b269c6c360c6d"
+        }
+      }
+    },
+    {
+      "path": "traditional-chinese/gov-letter-embedded-type0.pdf",
+      "category": "traditional-chinese",
+      "bytes": 68286,
+      "sha256": "18136713335f0a2079cefa5e2044b6c99d4fe99595a233b6fe41463165550d6c",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "同一份虛構公文，以 Type0／CIDFontType2／Identity-H＋ToUnicode 嵌入（Word／瀏覽器輸出 PDF 的典型結構，優先標楷體）。新細明體／標楷體在 FreeType 中屬於 tricky font（字形可能依賴 TrueType hinting 指令組合筆畫），不執行 hinting 的 rasterizer 可能畫出錯位筆畫。",
+      "guardrails": [],
+      "features": [
+        "Type0",
+        "CIDFontType2",
+        "Identity-H",
+        "ToUnicode",
+        "gov-document"
+      ],
+      "producer": "rawpdf",
+      "inputs": {
+        "system_font": {
+          "role": "tc_kai",
+          "file": "kaiu.ttf",
+          "index": 0,
+          "family": "DFKai-SB",
+          "postscript_name": "DFKaiShu-SB-Estd-BF",
+          "sha256": "d5cb3539cd9cab3d38fccc5e04c42b6adc11d7dcf87bea624f1b269c6c360c6d"
+        }
+      }
+    },
+    {
+      "path": "traditional-chinese/gov-letter-scanned-ccitt-g4.pdf",
+      "category": "traditional-chinese",
+      "bytes": 67922,
+      "sha256": "64a3d6b9c7adca9bd90df832feeee548e3884a392fc921be1cb95a28ca53b2d4",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "掃描版公文黑白版：300 dpi 1-bit CCITT G4（公文掃描歸檔最常見的格式）。",
+      "guardrails": [],
+      "features": [
+        "CCITTFaxDecode",
+        "G4",
+        "gov-document",
+        "scan"
+      ],
+      "producer": "rawpdf",
+      "inputs": {
+        "system_font": {
+          "role": "tc_kai",
+          "file": "kaiu.ttf",
+          "index": 0,
+          "family": "DFKai-SB",
+          "postscript_name": "DFKaiShu-SB-Estd-BF",
+          "sha256": "d5cb3539cd9cab3d38fccc5e04c42b6adc11d7dcf87bea624f1b269c6c360c6d"
+        }
+      }
+    },
+    {
+      "path": "traditional-chinese/gov-letter-scanned-rgb-jpeg.pdf",
+      "category": "traditional-chinese",
+      "bytes": 699016,
+      "sha256": "2cacd34dca7bfc222987bafc264edf8869aaaffc5a1b7f0a6ab4d1df83cfd47e",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "掃描版公文：以系統繁中字型點陣化（200 dpi 彩色、紅色印章、紙色、雜訊、傾斜），每頁一張 RGB JPEG，無文字層。",
+      "guardrails": [],
+      "features": [
+        "DCTDecode",
+        "DeviceRGB",
+        "200dpi",
+        "gov-document",
+        "scan"
+      ],
+      "producer": "rawpdf",
+      "inputs": {
+        "system_font": {
+          "role": "tc_kai",
+          "file": "kaiu.ttf",
+          "index": 0,
+          "family": "DFKai-SB",
+          "postscript_name": "DFKaiShu-SB-Estd-BF",
+          "sha256": "d5cb3539cd9cab3d38fccc5e04c42b6adc11d7dcf87bea624f1b269c6c360c6d"
+        }
+      }
+    },
+    {
+      "path": "traditional-chinese/lab-report-cid-msung-nonembedded.pdf",
+      "category": "traditional-chinese",
+      "bytes": 7862,
+      "sha256": "18a2107fafa5e53582cf909bafae51bf3b10d19383fa03c966a08c8ba893d216",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "同一份虛構檢驗報告，使用非嵌入 MSung-Light（UniCNS-UCS2-H）。",
+      "guardrails": [],
+      "features": [
+        "CIDFontType0",
+        "non-embedded",
+        "medical-report"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "traditional-chinese/lab-report-embedded-ttfsubset.pdf",
+      "category": "traditional-chinese",
+      "bytes": 108299,
+      "sha256": "67500957bafb36bf483682ea4156f600b6a202731a435787bb4273c005eca609",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "模擬醫院檢驗報告（病人資料表、CBC／生化／血脂／尿液／甲狀腺，含數值、單位、參考範圍、H／L 註記），嵌入 TrueType subset（優先微軟正黑體）。病人與數值全為虛構。",
+      "guardrails": [],
+      "features": [
+        "TrueType",
+        "subset",
+        "embedded",
+        "system-font",
+        "medical-report",
+        "table"
+      ],
+      "producer": "reportlab",
+      "inputs": {
+        "system_font": {
+          "role": "tc_sans",
+          "file": "msjh.ttc",
+          "index": 0,
+          "family": "Microsoft JhengHei",
+          "postscript_name": "MicrosoftJhengHeiRegular",
+          "sha256": "1fd5fc7046e0eea753988ee06d1a5a731df68475614e2174fbba9b4800f392ac"
+        }
+      }
+    },
+    {
+      "path": "traditional-chinese/lab-report-embedded-type0.pdf",
+      "category": "traditional-chinese",
+      "bytes": 69837,
+      "sha256": "5c4dfac238187a0fbfdeff0a68b4d1315b00378922da07550d584de299d3b3f9",
+      "pages": 2,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "同一份虛構檢驗報告，以 Type0／Identity-H 嵌入（優先新細明體）。新細明體／標楷體在 FreeType 中屬於 tricky font（字形可能依賴 TrueType hinting 指令組合筆畫），不執行 hinting 的 rasterizer 可能畫出錯位筆畫。",
+      "guardrails": [],
+      "features": [
+        "Type0",
+        "CIDFontType2",
+        "Identity-H",
+        "ToUnicode",
+        "medical-report"
+      ],
+      "producer": "rawpdf",
+      "inputs": {
+        "system_font": {
+          "role": "tc_ming",
+          "file": "mingliu.ttc",
+          "index": 1,
+          "family": "PMingLiU",
+          "postscript_name": "PMingLiU",
+          "sha256": "d7857c403c7c79a4de93a11a22c8b0fedc077762e173a8b80b950c0b1e9caacc"
+        }
+      }
+    },
+    {
+      "path": "transparency/alpha-overlap.pdf",
+      "category": "transparency",
+      "bytes": 1217995,
+      "sha256": "d624f34cbaa787766453249e5bbc5e1693385756e61884d34657283d81e045ba",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "常數 alpha（ca／CA）：重疊半透明圓形、3000 個半透明矩形、半透明文字疊在漸層上、RGBA 影像（SMask）。",
+      "guardrails": [],
+      "features": [
+        "ca",
+        "CA",
+        "SMask",
+        "alpha-text"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "transparency/blend-modes-16.pdf",
+      "category": "transparency",
+      "bytes": 13114,
+      "sha256": "823a84775d4f81dc1fa2f2af05af5b9e8410e53134d2d063df4074b24bb426c8",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "全部 16 種 blend mode（/BM），RGB 圓形疊在漸層上。",
+      "guardrails": [],
+      "features": [
+        "blend-modes"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "transparency/softmask-groups.pdf",
+      "category": "transparency",
+      "bytes": 4723,
+      "sha256": "0f343b29acbe59d2640021650724e2aefdfa5dde8e7b82fcd7c8686e89e209ab",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "Luminosity／Alpha soft mask（ExtGState /SMask）、isolated／knockout transparency group 四種組合、巢狀 group、page-level /Group。",
+      "guardrails": [],
+      "features": [
+        "SMask-luminosity",
+        "SMask-alpha",
+        "isolated",
+        "knockout",
+        "page-group"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "vector-heavy/bezier-curves-40k.pdf",
+      "category": "vector-heavy",
+      "bytes": 1322716,
+      "sha256": "7c2f2d687899b1580ac50df86f48d1905af1dcf8ffbc711ca3eb8db8bfd6a06c",
+      "pages": 4,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "4 頁、每頁 10,000 條獨立 stroke 的 cubic bezier（各自顏色／線寬）。",
+      "guardrails": [],
+      "features": [
+        "bezier",
+        "many-strokes"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "vector-heavy/dense-polyline-map-300k.pdf",
+      "category": "vector-heavy",
+      "bytes": 1428803,
+      "sha256": "85f387978c3f6def520e3fbb2a7bdd6ea52c6b2d4ac0394cf2bb1b68cbc36848",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "A3 單頁地圖風格：300 條、每條 1000 點的 polyline（約 30 萬線段）＋虛線格線。",
+      "guardrails": [],
+      "features": [
+        "polyline",
+        "dense-path",
+        "dash"
+      ],
+      "producer": "rawpdf",
+      "stats": {
+        "segments": 299700
+      }
+    },
+    {
+      "path": "vector-heavy/fills-gradients-strokes.pdf",
+      "category": "vector-heavy",
+      "bytes": 148546,
+      "sha256": "a3ce81da2a674febcc36da5633fc2e5c960a84947cf4544e5a5e52f55c4a34de",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "2000 個自交多邊形（nonzero／even-odd 交替）、clip 內的 axial／radial 漸層、line cap／join／dash／miter limit。",
+      "guardrails": [],
+      "features": [
+        "fill-rules",
+        "clip",
+        "axial",
+        "radial",
+        "dash"
+      ],
+      "producer": "reportlab"
+    },
+    {
+      "path": "vector-heavy/shading-types-patterns.pdf",
+      "category": "vector-heavy",
+      "bytes": 6354,
+      "sha256": "0e1e5a93be9e98457fcf2d09dc9422bbd39580cde70f236685620b67174a4aaa",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "Shading type 1–7（含 Type 4 PostScript calculator 函數、Type 3 stitching、triangle／lattice mesh、Coons／tensor patch）與 tiling／shading pattern。",
+      "guardrails": [],
+      "features": [
+        "shading-1-7",
+        "function-type-4",
+        "tiling-pattern",
+        "shading-pattern"
+      ],
+      "producer": "rawpdf"
+    }
+  ]
+}
