@@ -14,11 +14,14 @@
 
 | Milestone | 內容 | 狀態 |
 |---|---|---|
-| M0 Audit | pdf-reader-gpui／zpdf／hayro／GPUI audit、架構提案 | 見 `docs/PROJECT_AUDIT.md` |
-| M1 Baseline | `fastpdf-bench` + `benchmarks/baseline.json` | 進行中 |
-| M2 Engine isolation | `fastpdf-engine-api`，只有 adapter 能依賴 engine | 依新 workspace 的設計即滿足，`tools/check_engine_isolation.py` 檢查 |
-| M3 zpdf PoC | `fastpdf-engine-zpdf`（feature `engine-zpdf`） | 進行中 |
-| M4–M7 | Renderer 比較、tile renderer、memory budget、UX | 見計畫 |
+| M0 Audit | pdf-reader-gpui／zpdf／hayro／GPUI audit、架構提案 | ✅ `docs/PROJECT_AUDIT.md` |
+| M1 Baseline | `fastpdf-bench` + `benchmarks/baseline.json` | ✅ |
+| M2 Engine isolation | `fastpdf-engine-api`，只有 adapter 能依賴 engine | ✅ `tools/check_engine_isolation.py` |
+| M3 zpdf PoC | `fastpdf-engine-zpdf`（feature `engine-zpdf`） | ✅ |
+| M4 Renderer comparison | `docs/engine-comparison.md` | ✅ Hayro 為預設 engine（ADR 0007） |
+| M5 Tile renderer | tile／scheduler／cache + GPUI viewport | ✅ 第一版可用的視窗 |
+| M6 Memory budget | `MemoryBudgetManager`、overlay、B-5 驗證 | 進行中 |
+| M7 UX | sidebar、搜尋、選取、列印、設定… | 進行中 |
 
 ## 需求
 
@@ -29,6 +32,7 @@
 ## 常用指令
 
 ```bash
+cargo run --release -p fastpdf-app -- path	oile.pdf   # 開啟 FastPDF
 cargo test --workspace                                  # 單元測試
 uv run tools/fixtures/generate.py                       # 產生測試 PDF 到 fixtures/generated/
 cargo run --release -p fastpdf-bench -- full fixtures/generated/small-text/<file>.pdf
@@ -46,7 +50,10 @@ crates/
   fastpdf-cache/         byte-budget LRU + MemoryBudgetManager
   fastpdf-render/        scale bucket、tile grid、layout、viewport、scheduler、tile cache
   fastpdf-search/        lazy、incremental、可取消的全文搜尋
-  fastpdf-core/          文件載入、DocumentSession、keymap、recent files、memory monitor
+  fastpdf-core/          文件載入、DocumentSession、keymap、選取、recent files、memory monitor
+  fastpdf-ui/            GPUI views（唯一依賴 GPUI 的 library crate）
+  fastpdf-app/           執行檔 `fastpdf`
+  fastpdf-print/         Win32 列印（分段 render）
   fastpdf-bench/         無 GUI 的 benchmark harness
 docs/                    spec、audit、ADR、profiling、development guide
 fixtures/                測試語料說明（產出不 commit）

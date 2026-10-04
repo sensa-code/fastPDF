@@ -286,6 +286,7 @@ upstream clone（`upstream/pdf-reader-gpui`）保留為 spec §28 的 benchmark 
 | `fastpdf-core` | 文件載入（讀取／mmap）、`DocumentSession`（layout + viewport + scheduler + tile cache → 每 frame 的繪製清單；縮圖；close）、導覽與 zoom／rotate 指令、集中式 keymap、文字選取與複製、recent files、`MemoryMonitor` | engine-api、cache、render | memmap2、windows-sys | 完成，24 tests |
 | `fastpdf-ui` | GPUI views：視窗、toolbar、viewport canvas（畫 `Frame`、texture 生命週期、upload 預算）、development overlay；sidebar／搜尋列／選取待做 | core、render | gpui（zed git `a846890`）、futures、image、log | 第一版完成 |
 | `fastpdf-app` | Binary `fastpdf`：CLI、背景開檔與 GPUI 初始化平行、engine registry（cargo features）、`FASTPDF_LOG` logger、panic hook、`FASTPDF_BENCH` 時間點；檔案關聯與 icon 待做 | ui、core、adapters | gpui、gpui_platform、log | 第一版完成 |
+| `fastpdf-print` | Win32 GDI 列印：印表機列表、頁碼範圍、份數、縮放與自動旋轉、印到檔案；以 256 列分段 render（buffer ≤ 8 MiB）；可取消；單頁失敗印空白並回報 | engine-api | windows-sys | 完成，25 tests（只用虛擬印表機測試） |
 | `fastpdf-bench` | 無 GUI 的 benchmark harness：`open`／`render`／`full`／`corpus`／`compare`／`diff`／`diff-corpus`／`engines`，JSON 輸出，corpus 每個檔案一個子 process | engine-api、render、core、adapters | serde、serde_json、windows-sys | 完成，17 tests |
 
 其他目錄：
