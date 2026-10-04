@@ -9,17 +9,20 @@
 
 use std::collections::HashSet;
 use std::fmt;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
+use fastpdf_cache::{BudgetedCache, SharedCache, retention};
 use fastpdf_engine_api::{
-    DocumentId, EngineDocument, EngineError, GuardedDocument, PageIndex, PageInfo, PageSize,
-    PixelFormat, Pixmap, Rgba8, Rotation,
+    DocumentId, EngineDocument, EngineError, GuardedDocument, PageId, PageIndex, PageInfo,
+    PageSize, PixelFormat, Pixmap, RenderRequest, RenderScale, Rgba8, Rotation,
 };
 use fastpdf_render::{
-    DocumentLayout, LayoutRect, PlanConfig, Priority, RenderScheduler, ScaleBucket,
-    SchedulerConfig, SchedulerStats, TileCache, TileGrid, TileKey, Viewport, ZoomLevel, plan_tiles,
+    DocumentLayout, Lane, LayoutRect, PlanConfig, Priority, RenderJob, RenderScheduler,
+    ScaleBucket, SchedulerConfig, SchedulerStats, TileCache, TileGrid, TileKey, Viewport,
+    ZoomLevel, plan_tiles,
 };
 
 /// Session settings.
@@ -100,6 +103,35 @@ pub struct SessionStats {
     pub tile_hits: u64,
     pub tile_misses: u64,
     pub tile_evictions: u64,
+    pub thumbnail_bytes: usize,
+    pub thumbnail_entries: usize,
+}
+
+/// Identity of a sidebar thumbnail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ThumbnailKey {
+    pub page: PageId,
+    pub width_px: u32,
+    pub rotation: Rotation,
+}
+
+/// One sidebar row returned by [`DocumentSession::thumbnails`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThumbnailItem<V> {
+    pub page: PageIndex,
+    /// Thumbnail size in device pixels: the configured width and the
+    /// page's aspect ratio.
+    pub size: [u32; 2],
+    /// `None` while rendering, or when the page cannot be rendered.
+    pub image: Option<V>,
+    pub failed: bool,
+}
+
+/// What the shared scheduler renders for a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum RenderKey {
+    Tile(TileKey),
+    Thumbnail(ThumbnailKey),
 }
 
 enum Incoming<V> {
@@ -108,10 +140,26 @@ enum Incoming<V> {
         image: V,
         bytes: usize,
     },
+    Thumbnail {
+        key: ThumbnailKey,
+        image: V,
+        bytes: usize,
+    },
     Failed {
-        key: TileKey,
+        key: RenderKey,
         error: EngineError,
     },
+}
+
+type ThumbnailEvict<V> = Arc<dyn Fn(Vec<(ThumbnailKey, V)>) + Send + Sync>;
+
+/// Sidebar thumbnails; exists only while the sidebar is open (spec §20,
+/// §23: thumbnail generation is a cost, so it starts on demand).
+struct Thumbnails<V> {
+    width_px: u32,
+    cache: Arc<SharedCache<ThumbnailKey, V>>,
+    failed: HashSet<ThumbnailKey>,
+    requested: Option<(Range<u32>, Rotation)>,
 }
 
 /// Inputs that require a new render plan when they change.
@@ -132,13 +180,15 @@ pub struct DocumentSession<V: Clone + Send + 'static> {
     viewport: Viewport,
     rotation: Rotation,
     zoom_mode: ZoomMode,
-    scheduler: RenderScheduler,
+    scheduler: RenderScheduler<RenderKey>,
     incoming: Receiver<Incoming<V>>,
     wake_pending: Arc<AtomicBool>,
     tiles: TileCache<V>,
     failed: HashSet<TileKey>,
     page_errors: Vec<(PageIndex, String)>,
     planned: Option<PlanInputs>,
+    thumbnails: Option<Thumbnails<V>>,
+    thumbnail_evict: Option<ThumbnailEvict<V>>,
 }
 
 impl<V: Clone + Send + 'static> fmt::Debug for DocumentSession<V> {
@@ -181,20 +231,25 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         let tx = Mutex::new(tx);
         let wake_pending = Arc::new(AtomicBool::new(false));
         let pending = Arc::clone(&wake_pending);
-        let sink = move |result: fastpdf_render::TileResult| {
-            let msg = match result.result {
-                Ok(pixmap) => {
+        let sink = move |result: fastpdf_render::TileResult<RenderKey>| {
+            let msg = match (result.key, result.result) {
+                (RenderKey::Tile(key), Ok(pixmap)) => {
                     let bytes = pixmap.byte_len();
                     Incoming::Tile {
-                        key: result.key,
+                        key,
                         image: convert(pixmap),
                         bytes,
                     }
                 }
-                Err(error) => Incoming::Failed {
-                    key: result.key,
-                    error,
-                },
+                (RenderKey::Thumbnail(key), Ok(pixmap)) => {
+                    let bytes = pixmap.byte_len();
+                    Incoming::Thumbnail {
+                        key,
+                        image: convert(pixmap),
+                        bytes,
+                    }
+                }
+                (key, Err(error)) => Incoming::Failed { key, error },
             };
             if let Ok(tx) = tx.lock() {
                 let _ = tx.send(msg);
@@ -239,6 +294,8 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             failed: HashSet::new(),
             page_errors: Vec::new(),
             planned: None,
+            thumbnails: None,
+            thumbnail_evict: None,
         };
         session.apply_zoom_mode();
         session.viewport.clamp_scroll(&session.layout);
@@ -456,6 +513,12 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             let needed: Vec<_> = plan
                 .into_iter()
                 .filter(|t| !self.tiles.contains(&t.key) && !self.failed.contains(&t.key))
+                .map(|t| RenderJob {
+                    key: RenderKey::Tile(t.key),
+                    priority: t.priority,
+                    distance: t.distance,
+                    request: t.request,
+                })
                 .collect();
             self.scheduler.submit_plan(needed);
             self.planned = Some(inputs);
@@ -465,6 +528,11 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
 
     pub fn stats(&self) -> SessionStats {
         let t = self.tiles.stats();
+        let th = self
+            .thumbnails
+            .as_ref()
+            .map(|th| th.cache.stats())
+            .unwrap_or_default();
         SessionStats {
             scheduler: self.scheduler.stats(),
             tile_bytes: t.bytes,
@@ -472,7 +540,144 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             tile_hits: t.hits,
             tile_misses: t.misses,
             tile_evictions: t.evictions,
+            thumbnail_bytes: th.bytes,
+            thumbnail_entries: th.entries,
         }
+    }
+
+    // ---- thumbnails (spec §23) -----------------------------------------
+
+    /// Starts the thumbnail sidebar. Nothing is rendered for thumbnails
+    /// before this is called, and afterwards only the rows the sidebar asks
+    /// for (plus a small margin) — never every page.
+    ///
+    /// `on_evict` receives thumbnails dropped from their cache (free GPU
+    /// memory), including late arrivals after the sidebar closed.
+    /// Returns the cache handle for the memory budget manager.
+    pub fn enable_thumbnails(
+        &mut self,
+        width_px: u32,
+        budget: usize,
+        on_evict: impl Fn(Vec<(ThumbnailKey, V)>) + Send + Sync + 'static,
+    ) -> Arc<dyn BudgetedCache> {
+        self.disable_thumbnails();
+        let hook: ThumbnailEvict<V> = Arc::new(on_evict);
+        let cache_hook = Arc::clone(&hook);
+        let cache = Arc::new(
+            SharedCache::new("thumbnails", budget, retention::THUMBNAILS)
+                .with_eviction_hook(move |evicted| cache_hook(evicted)),
+        );
+        self.thumbnails = Some(Thumbnails {
+            width_px: width_px.clamp(16, 1024),
+            cache: Arc::clone(&cache),
+            failed: HashSet::new(),
+            requested: None,
+        });
+        self.thumbnail_evict = Some(hook);
+        cache
+    }
+
+    /// Closes the thumbnail sidebar: cancels pending thumbnail renders and
+    /// releases every cached thumbnail.
+    pub fn disable_thumbnails(&mut self) {
+        if let Some(th) = self.thumbnails.take() {
+            self.scheduler.submit(Lane::Thumbnails, Vec::new());
+            th.cache.retain(|_, _| false);
+        }
+    }
+
+    pub fn thumbnails_enabled(&self) -> bool {
+        self.thumbnails.is_some()
+    }
+
+    /// Thumbnails for the sidebar rows `visible` (page indices). Missing
+    /// ones for `visible` and `margin` rows around it are scheduled at P4,
+    /// behind everything the main view needs. Empty while disabled.
+    pub fn thumbnails(&mut self, visible: Range<u32>, margin: u32) -> Vec<ThumbnailItem<V>> {
+        self.drain_incoming();
+        let rotation = self.rotation;
+        let id = self.id;
+        let count = self.page_count();
+        let Some(th) = self.thumbnails.as_mut() else {
+            return Vec::new();
+        };
+        let visible = visible.start.min(count)..visible.end.min(count);
+        let wanted =
+            visible.start.saturating_sub(margin)..visible.end.saturating_add(margin).min(count);
+        let key = |page: u32| ThumbnailKey {
+            page: PageId::new(id, PageIndex::new(page)),
+            width_px: th.width_px,
+            rotation,
+        };
+
+        let mut items = Vec::with_capacity(visible.len());
+        let mut jobs = Vec::new();
+        for page in wanted.clone() {
+            let k = key(page);
+            let in_view = visible.contains(&page);
+            let info = self.doc.page_info(PageIndex::new(page)).ok();
+            let size = info.map_or([th.width_px, th.width_px], |i| {
+                let d = i.display_size(rotation);
+                let h = (th.width_px as f32 * d.height / d.width.max(1.0))
+                    .round()
+                    .max(1.0);
+                [th.width_px, h as u32]
+            });
+            let image = if in_view {
+                th.cache.with(&k, Clone::clone)
+            } else {
+                None
+            };
+            let cached = image.is_some() || th.cache.contains(&k);
+            let failed = th.failed.contains(&k) || info.is_none();
+            if in_view {
+                items.push(ThumbnailItem {
+                    page: PageIndex::new(page),
+                    size,
+                    image,
+                    failed,
+                });
+            }
+            if cached || failed {
+                continue;
+            }
+            let Some(info) = info else { continue };
+            let scale =
+                RenderScale::new(th.width_px as f32 / info.display_size(rotation).width.max(1.0));
+            let Some(scale) = scale else {
+                th.failed.insert(k);
+                continue;
+            };
+            let mut request = RenderRequest::full_page(
+                PageIndex::new(page),
+                info.size,
+                info.rotation,
+                rotation,
+                scale,
+            );
+            request.background = self.config.paper;
+            // Visible rows first, in order; margin rows after them.
+            let distance = if in_view {
+                (page - visible.start) as f32
+            } else {
+                10_000.0 + page.abs_diff(visible.start) as f32
+            };
+            jobs.push(RenderJob {
+                key: RenderKey::Thumbnail(k),
+                priority: Priority::Thumbnail,
+                distance,
+                request,
+            });
+        }
+
+        let request = (wanted, rotation);
+        let stale = th.requested.as_ref() != Some(&request);
+        let stalled = !jobs.is_empty() && self.scheduler.is_lane_idle(Lane::Thumbnails);
+        if stale || stalled {
+            self.scheduler.submit(Lane::Thumbnails, jobs);
+            th.requested = Some(request);
+        }
+        items
     }
 
     fn plan_config(&self) -> PlanConfig {
@@ -502,11 +707,33 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
                         self.tiles.insert(key, image, bytes);
                     }
                 }
-                Incoming::Failed { key, error } => {
+                Incoming::Thumbnail { key, image, bytes } => match &self.thumbnails {
+                    Some(th) if th.width_px == key.width_px && key.rotation == self.rotation => {
+                        th.cache.insert(key, image, bytes);
+                    }
+                    // Sidebar closed or resized meanwhile: release right away.
+                    _ => {
+                        if let Some(evict) = &self.thumbnail_evict {
+                            evict(vec![(key, image)]);
+                        }
+                    }
+                },
+                Incoming::Failed {
+                    key: RenderKey::Tile(key),
+                    error,
+                } => {
                     self.failed.insert(key);
                     let page = key.page.page;
                     if !self.page_errors.iter().any(|(p, _)| *p == page) {
                         self.page_errors.push((page, error.to_string()));
+                    }
+                }
+                Incoming::Failed {
+                    key: RenderKey::Thumbnail(key),
+                    ..
+                } => {
+                    if let Some(th) = self.thumbnails.as_mut() {
+                        th.failed.insert(key);
                     }
                 }
             }
@@ -709,7 +936,7 @@ mod tests {
             _: &OpenOptions,
         ) -> Result<Box<dyn EngineDocument>, EngineError> {
             Ok(Box::new(Doc {
-                renders: Arc::new(AtomicUsize::new(0)),
+                renders: RENDERS.with(Arc::clone),
             }))
         }
     }
@@ -742,6 +969,16 @@ mod tests {
             target.fill(request.background);
             Ok(RenderOutcome::default())
         }
+    }
+
+    impl<V: Clone + Send + 'static> DocumentSession<V> {
+        fn doc_renders(&self) -> Arc<AtomicUsize> {
+            RENDERS.with(Arc::clone)
+        }
+    }
+
+    thread_local! {
+        static RENDERS: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
     }
 
     fn session() -> DocumentSession<Arc<Pixmap>> {
@@ -866,6 +1103,52 @@ mod tests {
         // The landscape page 2 is now known; page 3 is still at the top.
         assert!(s.layout().is_known(PageIndex::new(2)));
         assert_eq!(s.current_page(), PageIndex::new(3));
+    }
+
+    #[test]
+    fn thumbnails_are_lazy_and_limited_to_the_visible_rows() {
+        let mut s = session();
+        // Disabled: nothing is returned and nothing is rendered.
+        assert!(s.thumbnails(0..4, 2).is_empty());
+        let renders = s.doc_renders();
+        assert_eq!(renders.load(Ordering::Relaxed), 0);
+
+        let evicted = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&evicted);
+        s.enable_thumbnails(160, 32 << 20, move |e| {
+            counter.fetch_add(e.len(), Ordering::Relaxed);
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut items = s.thumbnails(0..4, 2);
+        while items.iter().any(|t| t.image.is_none()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+            items = s.thumbnails(0..4, 2);
+        }
+        assert_eq!(items.len(), 4);
+        assert!(items.iter().all(|t| t.image.is_some()));
+        // Page 2 is landscape: 160 x round(160 * 612 / 792).
+        assert_eq!(items[2].size, [160, 124]);
+        assert_eq!(items[0].image.as_ref().unwrap().size().width, 160);
+        // Only the visible rows plus the margin (pages 0..6) were rendered,
+        // never all 50 pages.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !s.scheduler.is_lane_idle(Lane::Thumbnails) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(renders.load(Ordering::Relaxed) <= 6, "{renders:?}");
+
+        // Page 4 cannot be rendered by the test engine: reported, not retried.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut broken = s.thumbnails(4..5, 0);
+        while !broken[0].failed && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+            broken = s.thumbnails(4..5, 0);
+        }
+        assert!(broken[0].failed && broken[0].image.is_none());
+
+        s.disable_thumbnails();
+        assert!(!s.thumbnails_enabled());
+        assert!(evicted.load(Ordering::Relaxed) >= 4);
     }
 
     #[test]
