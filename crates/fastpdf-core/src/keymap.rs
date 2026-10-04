@@ -33,6 +33,11 @@ pub enum ReaderCommand {
     ToggleFullscreen,
     ToggleSidebar,
     ToggleDevOverlay,
+    /// Copy the selected text.
+    Copy,
+    SelectAll,
+    /// Close the find bar / clear the selection.
+    Cancel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +83,9 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind("f11", ToggleFullscreen),
         bind("f4", ToggleSidebar),
         bind("ctrl-shift-d", ToggleDevOverlay),
+        bind("ctrl-c", Copy),
+        bind("ctrl-a", SelectAll),
+        bind("escape", Cancel),
     ]
 };
 

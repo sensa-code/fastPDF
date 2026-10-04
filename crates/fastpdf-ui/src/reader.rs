@@ -454,7 +454,13 @@ impl ReaderView {
             C::ToggleFullscreen => window.toggle_fullscreen(),
             C::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
             C::ToggleDevOverlay => self.overlay.visible = !self.overlay.visible,
-            C::Find | C::FindNext | C::FindPrevious | C::Print => {
+            C::Find
+            | C::FindNext
+            | C::FindPrevious
+            | C::Print
+            | C::Copy
+            | C::SelectAll
+            | C::Cancel => {
                 log::info!("{command:?} is not available in this version");
             }
             C::ZoomIn

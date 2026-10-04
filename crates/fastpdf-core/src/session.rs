@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex};
 
 use fastpdf_cache::{BudgetedCache, SharedCache, retention};
 use fastpdf_engine_api::{
-    DocumentId, EngineDocument, EngineError, GuardedDocument, PageId, PageIndex, PageInfo,
-    PageSize, PixelFormat, Pixmap, RenderRequest, RenderScale, Rgba8, Rotation,
+    Destination, DestinationView, DocumentId, EngineDocument, EngineError, GuardedDocument, PageId,
+    PageIndex, PageInfo, PageRect, PageSize, PixelFormat, Pixmap, RenderRequest, RenderScale,
+    Rgba8, Rotation,
 };
 use fastpdf_render::{
     DocumentLayout, Lane, LayoutRect, PlanConfig, Priority, RenderJob, RenderScheduler,
@@ -377,6 +378,58 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         self.viewport.scroll_x += f64::from(dx) / ppp;
         self.viewport.scroll_y += f64::from(dy) / ppp;
         self.viewport.clamp_scroll(&self.layout);
+    }
+
+    /// Maps a rectangle in page space (points, unrotated, CropBox top-left
+    /// origin — what text layers, links and search hits use) to view
+    /// coordinates `[x, y, width, height]` in logical pixels, applying the
+    /// page's and the user's rotation. `None` for unknown pages.
+    pub fn page_to_view(&self, page: PageIndex, rect: PageRect) -> Option<[f32; 4]> {
+        let (page_rect, info, rotation) = self.page_frame(page)?;
+        let (ax, ay) = rotate_point(rect.x0, rect.y0, info.size, rotation);
+        let (bx, by) = rotate_point(rect.x1, rect.y1, info.size, rotation);
+        let x0 = page_rect.x + f64::from(ax.min(bx));
+        let y0 = page_rect.y + f64::from(ay.min(by));
+        let x1 = page_rect.x + f64::from(ax.max(bx));
+        let y1 = page_rect.y + f64::from(ay.max(by));
+        let [vx0, vy0] = self.layout_to_view(x0, y0);
+        let [vx1, vy1] = self.layout_to_view(x1, y1);
+        Some([vx0, vy0, vx1 - vx0, vy1 - vy0])
+    }
+
+    /// The page under a view point (logical pixels) and the point in that
+    /// page's space, for hit testing (selection, links). `None` between
+    /// pages or outside the document.
+    pub fn view_to_page(&self, x: f32, y: f32) -> Option<(PageIndex, f32, f32)> {
+        let ppp = self.viewport.px_per_point();
+        let lx = self.viewport.scroll_x + f64::from(x) / ppp;
+        let ly = self.viewport.scroll_y + f64::from(y) / ppp;
+        let page = self.layout.page_at(ly);
+        let (page_rect, info, rotation) = self.page_frame(page)?;
+        if lx < page_rect.x || lx > page_rect.right() || ly < page_rect.y || ly > page_rect.bottom()
+        {
+            return None;
+        }
+        let dx = (lx - page_rect.x) as f32;
+        let dy = (ly - page_rect.y) as f32;
+        let (px, py) = unrotate_point(dx, dy, info.size, rotation);
+        Some((page, px, py))
+    }
+
+    /// Navigates to a link or bookmark target, scrolled so the destination's
+    /// top (when given) is at the top of the view.
+    pub fn go_to_destination(&mut self, dest: &Destination) {
+        self.go_to_page(dest.page);
+        let top = match dest.view {
+            DestinationView::Xyz { top, .. } | DestinationView::FitWidth { top } => top,
+            DestinationView::FitRect(r) => Some(r.y0),
+            DestinationView::Fit | DestinationView::FitHeight { .. } => None,
+        };
+        if let (Some(top), Some((page_rect, info, rotation))) = (top, self.page_frame(dest.page)) {
+            let (_, dy) = rotate_point(0.0, top.max(0.0), info.size, rotation);
+            self.viewport.scroll_y = page_rect.y + f64::from(dy);
+            self.viewport.clamp_scroll(&self.layout);
+        }
     }
 
     pub fn go_to_page(&mut self, page: PageIndex) {
@@ -928,6 +981,13 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         [vx0, vy0, vx1 - vx0, vy1 - vy0]
     }
 
+    /// Layout rectangle, geometry and total rotation of a known page.
+    fn page_frame(&self, page: PageIndex) -> Option<(LayoutRect, PageInfo, Rotation)> {
+        let info = self.known_page_info(page)?;
+        let rect = self.layout.page_rect(page)?;
+        Some((rect, info, info.rotation.then(self.rotation)))
+    }
+
     fn to_view(&self, rect: &LayoutRect) -> [f32; 4] {
         let [x0, y0] = self.layout_to_view(rect.x, rect.y);
         let [x1, y1] = self.layout_to_view(rect.right(), rect.bottom());
@@ -942,6 +1002,29 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             snap((x - self.viewport.scroll_x) * ppp),
             snap((y - self.viewport.scroll_y) * ppp),
         ]
+    }
+}
+
+/// Page space (unrotated, `size`) to displayed page space after a
+/// clockwise `rotation`.
+fn rotate_point(x: f32, y: f32, size: PageSize, rotation: Rotation) -> (f32, f32) {
+    let (w, h) = (size.width, size.height);
+    match rotation {
+        Rotation::R0 => (x, y),
+        Rotation::R90 => (h - y, x),
+        Rotation::R180 => (w - x, h - y),
+        Rotation::R270 => (y, w - x),
+    }
+}
+
+/// Inverse of [`rotate_point`].
+fn unrotate_point(dx: f32, dy: f32, size: PageSize, rotation: Rotation) -> (f32, f32) {
+    let (w, h) = (size.width, size.height);
+    match rotation {
+        Rotation::R0 => (dx, dy),
+        Rotation::R90 => (dy, h - dx),
+        Rotation::R180 => (w - dx, h - dy),
+        Rotation::R270 => (w - dy, dx),
     }
 }
 
@@ -1154,6 +1237,71 @@ mod tests {
         s.close();
         assert!(evicted.load(Ordering::Relaxed) >= shown);
         assert_eq!(s.stats().tile_entries, 0);
+    }
+
+    #[test]
+    fn rotation_mapping_round_trips() {
+        let size = PageSize::new(600.0, 800.0);
+        for r in [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
+            let (dx, dy) = rotate_point(100.0, 50.0, size, r);
+            let (x, y) = unrotate_point(dx, dy, size, r);
+            assert!((x - 100.0).abs() < 1e-4 && (y - 50.0).abs() < 1e-4, "{r:?}");
+        }
+        // Clockwise: the page's top-left corner ends up top-right.
+        assert_eq!(rotate_point(0.0, 0.0, size, Rotation::R90), (800.0, 0.0));
+        assert_eq!(rotate_point(0.0, 0.0, size, Rotation::R270), (0.0, 600.0));
+    }
+
+    #[test]
+    fn page_and_view_coordinates_agree() {
+        let mut s = session();
+        s.frame();
+        // The page's top-left text box shows at the page's top-left on screen.
+        let page = s.frame().pages[0].rect;
+        let r = s
+            .page_to_view(PageIndex::FIRST, PageRect::new(0.0, 0.0, 61.2, 79.2))
+            .unwrap();
+        assert!((r[0] - page[0]).abs() < 1.0 && (r[1] - page[1]).abs() < 1.0);
+        assert!((r[2] - page[2] / 10.0).abs() < 1.0);
+        // And clicking there maps back into page space.
+        let (p, x, y) = s.view_to_page(r[0] + 1.0, r[1] + 1.0).unwrap();
+        assert_eq!(p, PageIndex::FIRST);
+        assert!(x < 5.0 && y < 5.0);
+
+        // After a clockwise rotation the page's top-left is the view's top-right.
+        s.rotate_clockwise();
+        s.go_to_page(PageIndex::FIRST);
+        s.frame();
+        let page = s.frame().pages[0].rect;
+        let r = s
+            .page_to_view(PageIndex::FIRST, PageRect::new(0.0, 0.0, 10.0, 10.0))
+            .unwrap();
+        assert!(
+            (r[0] + r[2] - (page[0] + page[2])).abs() < 1.0,
+            "{r:?} {page:?}"
+        );
+        assert!((r[1] - page[1]).abs() < 1.0);
+        let (_, x, y) = s.view_to_page(r[0] + r[2] - 1.0, r[1] + 1.0).unwrap();
+        assert!(x < 10.0 && y < 10.0, "{x} {y}");
+        // Points in the gap between pages hit nothing.
+        assert!(s.view_to_page(page[0] - 3.0, page[1] + 5.0).is_none());
+    }
+
+    #[test]
+    fn destinations_scroll_to_their_top() {
+        let mut s = session();
+        s.frame();
+        s.go_to_destination(&Destination {
+            page: PageIndex::new(5),
+            view: DestinationView::Xyz {
+                left: None,
+                top: Some(400.0),
+                zoom: None,
+            },
+        });
+        let top = s.layout().page_rect(PageIndex::new(5)).unwrap().y;
+        assert!((s.viewport().scroll_y - (top + 400.0)).abs() < 1e-6);
+        assert_eq!(s.current_page(), PageIndex::new(5));
     }
 
     #[test]

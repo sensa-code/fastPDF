@@ -40,6 +40,9 @@ actions!(
         ToggleFullscreen,
         ToggleSidebar,
         ToggleDevOverlay,
+        Copy,
+        SelectAll,
+        Cancel,
     ]
 );
 
@@ -73,6 +76,9 @@ fn action_for(command: ReaderCommand) -> Box<dyn Action> {
         C::ToggleFullscreen => Box::new(ToggleFullscreen),
         C::ToggleSidebar => Box::new(ToggleSidebar),
         C::ToggleDevOverlay => Box::new(ToggleDevOverlay),
+        C::Copy => Box::new(Copy),
+        C::SelectAll => Box::new(SelectAll),
+        C::Cancel => Box::new(Cancel),
     }
 }
 
@@ -146,6 +152,9 @@ macro_rules! all_actions {
                 ToggleFullscreen,
                 ToggleSidebar,
                 ToggleDevOverlay,
+                Copy,
+                SelectAll,
+                Cancel,
             ]
         )
     };
