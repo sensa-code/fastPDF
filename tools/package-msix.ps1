@@ -8,7 +8,8 @@
      build-path checks and file set (exe, README, THIRD_PARTY_LICENSES.md, licenses/ incl. the
      third-party bundle, BUILDINFO.txt) as the zip, staged under <OutDir>/.msix-work
   2. layout = staged files + Assets/*.png (tools/icon/make_icon.py) + AppxManifest.xml filled
-     from packaging/msix/AppxManifest.xml (four-part version from Cargo, Publisher placeholder)
+     from packaging/msix/AppxManifest.xml (four-part version from Cargo, Publisher placeholder);
+     every layout file gets the source date as its file time (see Reproducibility)
   3. makeappx pack (Windows SDK) with full semantic validation (no /nv)
   4. round trip: makeappx unpack, then every layout file must come back byte-identical, the
      only extra file allowed is the package footprint (AppxBlockMap.xml, required;
@@ -16,6 +17,13 @@
      AppxSignature.p7x (unsigned), and the unpacked manifest must carry the expected identity,
      entry point, .pdf file type association, execution alias and runFullTrust
   5. removes <OutDir>/.msix-work unless -KeepWork
+
+  Reproducibility: makeappx orders the entries by file time and stamps every entry with the
+  time of packing (no option changes that). With the layout's file times set to the source
+  date, two packages of the same staged files hold the same entries in the same order, with
+  the same AppxBlockMap.xml and [Content_Types].xml; only the entry time stamps differ, so the
+  .msix hash changes on every run (docs/RELEASE.md section 1.6). The block map hash printed at
+  the end identifies the contents.
 
   It never signs, never installs (no signtool, no certificates, no Add-AppxPackage) and
   never enables Developer Mode. Installing needs the owner's signature: replace the
@@ -83,6 +91,7 @@ if ($NoRemapPaths) { $stageArgs.NoRemapPaths = $true }
 $staged = & (Join-Path $PSScriptRoot 'package.ps1') @stageArgs |
     Where-Object { $_ -is [pscustomobject] -and $_.PSObject.Properties['stage'] } | Select-Object -Last 1
 if (-not $staged) { throw 'tools/package.ps1 -StageOnly returned no staging folder' }
+if ($staged.source_date -isnot [DateTimeOffset]) { throw 'tools/package.ps1 -StageOnly returned no source date' }
 
 # ------------------------------------------------------------------ version
 if ($staged.version -notmatch '^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$') {
@@ -127,8 +136,12 @@ $emptyDirs = @(Get-ChildItem -LiteralPath $Layout -Recurse -Directory -Force |
     Where-Object { -not (Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1) } |
     ForEach-Object { $_.FullName.Substring($Layout.Length + 1) })
 if ($emptyDirs) { throw "empty folder(s) in the MSIX layout: $($emptyDirs -join ', ')" }
+# makeappx orders the entries by file time; with one time for every file the order (and so
+# AppxBlockMap.xml and [Content_Types].xml) depends on the files only, not on when they were copied.
+$layoutTime = $staged.source_date.UtcDateTime
+Get-ChildItem -LiteralPath $Layout -Recurse -File | ForEach-Object { $_.LastWriteTimeUtc = $layoutTime }
 $layoutFiles = @(Get-RelativeFiles $Layout)
-Write-Host "  $($layoutFiles.Count) files"
+Write-Host "  $($layoutFiles.Count) files, file times set to the source date $($layoutTime.ToString('yyyy-MM-dd HH:mm:ss')) UTC"
 
 # ------------------------------------------------------------------ pack
 Step "makeappx pack -> $Msix"
@@ -180,6 +193,8 @@ $checks = [ordered]@{
 $failed = @($checks.GetEnumerator() | Where-Object { -not $_.Value } | ForEach-Object { $_.Key })
 if ($failed) { throw "unpacked manifest check failed: $($failed -join ', ')" }
 $blockMapFiles = @(([xml](Get-Content -Raw -LiteralPath (Join-Path $Unpacked 'AppxBlockMap.xml'))).BlockMap.File).Count
+# Same staged files -> same block map (file and block hashes, in package order), unlike the .msix hash.
+$blockMapHash = Get-Sha256 (Join-Path $Unpacked 'AppxBlockMap.xml')
 Write-Host "  $($layoutFiles.Count) payload files byte-identical; block map lists $blockMapFiles; no signature; manifest: $($checks.Keys -join ', ')"
 
 # ------------------------------------------------------------------ cleanup + summary
@@ -187,9 +202,11 @@ if (-not $KeepWork) { Remove-Item -Recurse -Force $Work }
 Step 'done (unsigned: cannot be installed until the owner signs it, see docs/RELEASE.md section 4)'
 $size = (Get-Item $Msix).Length
 Write-Host "  package : $Msix ($([math]::Round($size / 1MB, 2)) MB)"
-Write-Host "  sha256  : $msixHash"
+Write-Host "  sha256  : $msixHash (differs on every run: makeappx stamps the entries with the packing time)"
+Write-Host "  blockmap: $blockMapHash (AppxBlockMap.xml; the same for the same staged files)"
 [pscustomobject]@{
     version = $staged.version; msix_version = $Version4; msix = $Msix; bytes = $size; sha256 = $msixHash
+    blockmap_sha256 = $blockMapHash
     exe_sha256 = $staged.exe_sha256; payload_files = $layoutFiles.Count; makeappx = $MakeAppx
     payload_files_packed = $payloadCount; pack_output = ($packSummary -join "`n")
     work = if ($KeepWork) { $Work } else { $null }

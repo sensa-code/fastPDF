@@ -28,9 +28,10 @@ FastPDF 要開始交到使用者手上。發佈形態決定了五件事：
 
 選項分析見 `docs/RELEASE.md` §4。本 ADR 的依據除了那份分析，還有這兩輪的實作結果：
 
-- **可攜版 zip 已可重複產生**：`tools/package.ps1`。
+- **可攜版 zip 已可重複產生，而且逐位元可重現**：`tools/package.ps1`。
   - 流程：dist build（fat LTO、去除符號、改寫 build 路徑）→ 檢查 VERSIONINFO 與 PE resource → 附上各 crate 授權全文 → zip 與 SHA-256 → 驗證 zip 內容 → 解壓後做 CLI 與 GUI smoke test。
   - exe 約 16 MB（HEAD `8270b3e` 為 16,732,672 bytes），zip 約 8.2 MB（含授權全文）。
+  - 同一個 commit、同一套工具鏈，打包出來的 exe 與 zip 逐位元相同：zip entry 的時間使用 commit 時間，link 時加上 `/Brepro`（`docs/RELEASE.md` §1.6〈可重現性〉）。
 - **per-user 檔案關聯已可用**：`crates/fastpdf-shell` 加上 `fastpdf --register-file-types`／`--unregister-file-types [--dry-run]`。
   - 全部寫在 `HKCU`，不需要 admin，不寫 `UserChoice`。
 - **MSIX（未簽章）**：
@@ -42,11 +43,13 @@ FastPDF 要開始交到使用者手上。發佈形態決定了五件事：
 
 1. **V0.1：可攜版 zip 加上 SHA-256**。
    - 由 `tools/package.ps1` 產生，不簽章。release notes 公告 SHA-256，並說明 SmartScreen 警告的原因。
+   - zip 可逐位元重現。release notes 附上 `BUILDINFO.txt` 與工具鏈版本，任何人都可以用同一個 tag 重新產生 zip 並比對 SHA-256，未簽章的 zip 也因此可以由第三方驗證。
    - 檔案關聯為 opt-in：使用者執行 `fastpdf --register-file-types`（per-user）。
 2. **V1.0：以 MSIX 為主要形態，由 owner 簽章**。
    - 憑證選項依 owner 的資格決定（`docs/RELEASE.md` §3）：Microsoft 的雲端簽章服務（若資格適用），或 OV／EV 憑證。是否上 Microsoft Store 也由 owner 決定。
    - 檔案關聯改由 manifest 宣告。以套件執行時，`--register-file-types`／`--unregister-file-types` 會偵測 package identity（`GetCurrentPackageFullName`），只印出說明並 exit 0，**不碰 registry**。
    - zip 版在 V1.0 後繼續提供，給不想安裝的使用者與企業的手動部署。
+   - MSIX 無法逐位元重現：makeappx 把打包時間寫進每個 entry，簽章本身也含時間。內容的一致性以解壓後的 payload 比對；未簽章的套件也可以比對 `AppxBlockMap.xml`。
 3. **MSI 只在企業需求明確時才做**，例如要用 Intune、GPO 部署，或需要 per-machine 安裝。屆時另寫 ADR，並先確認 WiX Toolset 授權與維護費的條件。
 4. **不做 auto-update**（spec §9）：
    - 不使用 `.appinstaller` 的自動更新；
@@ -66,6 +69,7 @@ FastPDF 要開始交到使用者手上。發佈形態決定了五件事：
   - 也無法做 B-8 的 zip 與 MSIX 啟動時間比較（spec §29），因為 package identity 與啟動路徑可能影響冷啟動。
 - **Publisher 是硬性綁定**：manifest 的 `Publisher` 必須和簽章憑證的 subject 逐字相同。樣板目前用明顯的佔位值，打包時以 `-Publisher` 覆蓋。
 - **zip 版的檔案關聯寫入 exe 的絕對路徑**：使用者搬移資料夾後，必須重新註冊。這點要寫進 README 與 UI 說明。
+- **可重現性綁定工具鏈**：rustc（`rust-toolchain.toml`）、MSVC 的 link.exe、Windows SDK 的 `rc.exe`、PowerShell／.NET（zip 的 deflate）都會影響輸出的位元組。升級其中任何一項，同一個 commit 的 SHA-256 也會改變，這是預期的結果，所以 release notes 要記錄這些版本。
 - **高 DPI 的 tile 與工作列圖示**：MSIX 目前只有 scale-100 的 logo，沒有 `resources.pri`。若要更清晰，需要加上 `targetsize-*`、`scale-*` 版本，並用 `makepri` 產生 PRI（SDK 內建，不需要新工具）。
 
 ## Alternatives considered
@@ -99,6 +103,14 @@ FastPDF 要開始交到使用者手上。發佈形態決定了五件事：
 | 時間 | staging 到 round-trip 約 7 秒（不含 dist build） |
 | zip 流程回歸 | `package.ps1` 在 `-StageOnly` 重構後完整執行一次：zip 623 個 entry、CLI 與 GUI smoke 通過（`first_paint` 212 ms）。之後 `%APPDATA%\FastPDF` 不存在，沒有殘留 process |
 | 加入 `licenses/overrides/` 後 | staging 只複製 `licenses/` 最上層的檔案，並拒絕空資料夾與 zip 目錄 entry。zip 為 625 個 entry（沒有目錄 entry），MSIX 為 629 個檔案，round-trip 通過 |
+
+**可重現性實測**（2026-10-05；HEAD `a199559` 的兩個 `git clone`，分別使用 `target\agent-pkg` 與 `target\agent-pkg2`；細節見 `docs/RELEASE.md` §5）：
+
+| 項目 | 修改前 | 修改後 |
+|---|---|---|
+| exe（兩次 fat LTO build） | 只差 24 bytes：link 時間（PE header 與 debug directory）與 PDB GUID | 逐位元相同（`478a5c8e…`） |
+| zip（同一個 exe 打包兩次） | 不同 | 逐位元相同；兩次完整流程（含 build）也相同（`e067e7f3…`） |
+| MSIX（同一個 exe 打包兩次） | entry 的時間與順序、`AppxBlockMap.xml`、`[Content_Types].xml` 都不同 | 只剩 makeappx 寫入的 entry 時間不同；`AppxBlockMap.xml` 相同 |
 
 **尚未驗證**（owner 簽章之後，在乾淨的 VM 上做）：
 

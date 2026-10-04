@@ -110,11 +110,11 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
 
 | 檔案 | 說明 |
 |---|---|
-| `FastPDF-X.Y.Z-win-x64/fastpdf.exe` | `--profile dist`：fat LTO、`codegen-units=1`、strip symbols |
+| `FastPDF-X.Y.Z-win-x64/fastpdf.exe` | `--profile dist`：fat LTO、`codegen-units=1`、strip symbols；link 時加上 `/Brepro`（見下方〈可重現性〉） |
 | `README.md` | 專案 README |
 | `THIRD_PARTY_LICENSES.md`、`licenses/Apache-2.0.txt` | 第三方 crate 清單與授權審查結果；Apache-2.0 全文 |
 | `licenses/third-party/` | 連結進 exe 的每個 crate 自己的授權檔（`<crate>-<version>/`）、共用的 `Apache-2.0.txt`、缺漏清單 `MISSING.md`。由 `license_report.py --bundle` 產生，見 §1.5 |
-| `BUILDINFO.txt` | 版本、git commit（含 dirty 標記）、rustc 版本、profile、build 時間、exe 的 SHA-256 |
+| `BUILDINFO.txt` | 版本、完整的 git commit hash（含 dirty 標記）、source date、rustc 版本、profile、exe 的 SHA-256。**不記錄打包時間** |
 
 `package.ps1` 會自動檢查：
 - VERSIONINFO 與 Cargo 版本一致，且沒有 `CompanyName`；
@@ -122,7 +122,32 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
 - staging 不可有空資料夾，zip 也不可有任何目錄 entry：
   - `licenses/` 只複製最上層的檔案。`licenses/overrides/` 這類子資料夾是 bundle 步驟的輸入，內容已經收進 `licenses/third-party/`；
   - 之前用 `licenses\*` 複製時，會留下一個空的 `licenses/overrides/`，在 zip 中成為多餘的目錄 entry。舊的檢查會把目錄 entry 濾掉，所以沒有發現；
+- zip 的 entry 依路徑排序，時間都是 source date，沒有檔案屬性（見〈可重現性〉）；
 - zip 內 exe 的 SHA-256 等於 build 產物。
+
+**可重現性（reproducible build）**：同一個 commit、同一套工具鏈，打包出來的 exe 與 zip 都逐位元相同，SHA-256 也相同。
+
+- **source date**：有設定 `SOURCE_DATE_EPOCH`（reproducible-builds.org 的慣例）就用它，否則用 HEAD 的 commit 時間（`git log -1 --format=%ct`）。不是 git checkout、也沒有設定時，用 1980-01-01 並顯示警告。
+- **zip**（`package.ps1` 自己寫 zip，不再用 `ZipFile.CreateFromDirectory`）：
+  - 只有檔案，沒有目錄 entry，依路徑的 ordinal 順序排列，不受檔案系統列舉順序影響；
+  - 每個 entry 的時間都是 source date。zip 的時間欄位（DOS 格式）不含時區，這裡存 UTC 的時鐘時間，精度 2 秒。解壓工具會把它當成本地時間，所以在 UTC+8 看到的檔案時間會比 commit 時間早 8 小時；
+  - 檔案屬性（external attributes）一律為 0；
+  - `BUILDINFO.txt` 記錄完整的 commit hash 與 source date，不記錄打包時間，也不記錄 source date 從哪裡來。所以把 `SOURCE_DATE_EPOCH` 設成 commit 時間，結果和不設定相同；
+  - deflate 由 .NET 的 zlib 執行，所以壓縮後的位元組也取決於 PowerShell／.NET 的版本。`package.ps1` 會印出版本，本次為 PowerShell 7.6.6、.NET 10.0.12。
+- **exe**：`package.ps1` build 時加上 `-Clink-arg=/Brepro`，和 `--remap-path-prefix` 放在同一個 `--config` 旗標中，**不需要修改 `.cargo/config.toml` 或 profile**。
+  - 沒有 `/Brepro` 時，link.exe 會把 link 的時間寫進 PE header 與 debug directory，並為 PDB 產生隨機的 GUID，所以每次 build 的 exe 都不同。dist profile 雖然 strip symbols，link 仍然會產生 `fastpdf.pdb`（不放進 zip），exe 的 CodeView 紀錄含有它的檔名與 GUID；
+  - `/Brepro` 讓這些欄位改由 image 內容的雜湊決定；
+  - build 路徑已經由 `--remap-path-prefix` 改寫，`CARGO_TARGET_DIR` 的路徑也不會進入 exe，所以 checkout 的位置與 target dir 不影響結果。
+- **前提**：
+  - 同一個 commit（含 `Cargo.lock`），working tree 是否 dirty 也要相同（`BUILDINFO.txt` 有標記）；
+  - 檔案的換行要和全新的 checkout 相同。`.gitattributes` 讓 git 把 CRLF 正規化，所以 working tree 中被改成 CRLF 的檔案，`git status` 看不出來，但放進 zip 的位元組不同。`package.ps1` 用 `git ls-files --eol` 找出這類檔案（`i/lf w/crlf`），顯示警告並在 `BUILDINFO.txt` 標記。最簡單的作法是在全新的 clone 打包；
+  - 同一套工具鏈：`rust-toolchain.toml` 的 rustc、MSVC 的 link.exe、Windows SDK 的 `rc.exe`，以及同一個 PowerShell／.NET；
+  - release 一律跑完整流程。`-SkipBuild` 的 `BUILDINFO.txt` 會註明沒有驗證 build 方式，所以 zip 會和完整流程的不同。
+- **MSIX 不能逐位元重現**：
+  - makeappx 把**打包當下的時間**寫進每個 entry 的時間欄位，而且沒有選項可以指定；
+  - makeappx 依檔案時間排列 entry。staging 中 license 檔的時間是複製當下的時間，所以原本每次打包的 entry 順序、`AppxBlockMap.xml` 與 `[Content_Types].xml` 都不同。`package-msix.ps1` 現在先把 layout 中所有檔案的時間設成 source date，這三者就只取決於檔案本身，與複製的時間無關；
+  - 結果：同樣的 staging 打包兩次，`.msix` 只有 entry 的時間欄位不同，把這些欄位清零後就逐位元相同。`package-msix.ps1` 會印出 `AppxBlockMap.xml` 的 SHA-256，可以用來比對兩個未簽章套件的內容；
+  - owner 簽章時會加入簽章與 timestamp，所以簽章後的套件本來就不會逐位元相同。要驗證簽章後的套件，用 `makeappx unpack` 解開，再比對 payload 檔案，排除 `AppxBlockMap.xml`、`[Content_Types].xml`、`AppxSignature.p7x` 與 `AppxMetadata\`。
 
 **MSIX（未簽章，ADR 0010）**：
 
@@ -136,7 +161,8 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
   - staging 的內容；
   - `packaging/msix/Assets/*.png`（由 `tools/icon/make_icon.py` 產生）；
   - 從 `packaging/msix/AppxManifest.xml` 填好的 manifest：四段版本、Publisher 佔位值，見 `packaging/msix/README.md`。
-- `makeappx pack` 使用 Windows SDK 內建的工具，並做完整的語意驗證（不加 `/nv`）。
+- `makeappx pack` 使用 Windows SDK 內建的工具，並做完整的語意驗證（不加 `/nv`）。打包前，layout 中所有檔案的時間都設成 source date。
+- 腳本最後印出 `.msix` 與 `AppxBlockMap.xml` 的 SHA-256：前者每次打包都不同，後者對同樣的 staging 相同（見上方〈可重現性〉）。
 - `makeappx unpack` round-trip 的檢查項目：
   - 每個檔案都逐位元相同；
   - 額外檔案只能是 `AppxBlockMap.xml`（`unpack` 不會寫出 `[Content_Types].xml`）；
@@ -168,6 +194,12 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 ### 1.8 SHA-256 與發佈
 
 - [ ] release notes 附上 zip 的 SHA-256（`.sha256` 檔的格式為 `<hex>  <檔名>`）。使用者可以用 `Get-FileHash -Algorithm SHA256 <zip>` 驗證。
+- [ ] release notes 附上 `BUILDINFO.txt` 的內容，以及 MSVC、Windows SDK、PowerShell／.NET 的版本。zip 可重現（§1.6〈可重現性〉），所以任何人都可以重新產生同一個 zip 來驗證：
+  1. 用全新的 `git clone` checkout release 的 tag（長期使用的 working tree 可能有 `git status` 看不出來的換行差異，見 §1.6）；
+  2. 用同一套工具鏈執行 `pwsh -File tools/package.ps1`；
+  3. 比對 zip 的 SHA-256。不同時，先比對 `BUILDINFO.txt` 中的 exe 雜湊，判斷差異在 exe（工具鏈）還是在打包（PowerShell／.NET），再逐檔比對解壓後的內容。
+- [ ] 公告之前，自己先在另一個 checkout（最好是另一台機器）重做一次，確認 SHA-256 相同。
+- [ ] MSIX 無法逐位元重現（§1.6）：公告的 SHA-256 只用來確認下載完整；內容是否一致，要以解壓後的 payload 比對。
 - [ ] `git tag -a vX.Y.Z -m "FastPDF X.Y.Z"`，由 owner 決定何時 push。
 - [ ] release notes 內容：變更摘要、KPI 實測值、已知問題（未簽章、檔案關聯只有命令列、沒有 UI 等）、SHA-256。
 - [ ] **不提供** auto-update（spec §9）。新版本由使用者自行下載。
@@ -340,6 +372,27 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 | smoke：GUI | 開 `three-pages-platypus-times.pdf`，從 process 建立起算：`window_visible` 240 ms、`first_paint` 241 ms、`first_page_exact` 266 ms。只量 1 次，warm cache，機器上同時有其他負載（未改寫路徑的那次為 214／242 ms）；結束後沒有殘留 process |
 | SHA-256（示範用） | exe 為 `eef10b170fad9a6574b7ee20f49efa2b83675eeb84fb8aaee24c3068cf82b3fc` |
 
-**注意**：
-- zip 的 SHA-256 **每次打包都會不同**，因為 `BUILDINFO.txt` 的 build 時間和 zip entry 的時間戳都會變（同一個 exe 打包兩次，得到 `4674fc6d…` 與 `03cfed7d…`）。公告的雜湊必須對**實際發佈的那個 zip** 計算。
-- 如果需要 byte-for-byte 可重現的 zip，要固定 entry 時間戳並移除 build 時間，列為待辦。
+**注意**（第一次打包時的情況，2026-10-05 已修正）：
+- 當時 zip 的 SHA-256 **每次打包都不同**：`BUILDINFO.txt` 有 build 時間，zip entry 的時間取自檔案時間（同一個 exe 打包兩次，得到 `4674fc6d…` 與 `03cfed7d…`）。exe 每次 build 也不同（link 時間與 PDB GUID）。
+- 現在 exe 與 zip 都逐位元可重現，見 §1.6〈可重現性〉與下方實測。公告的雜湊仍然要對**實際發佈的那個 zip** 計算。
+
+**可重現性實測**（2026-10-05）：
+- 來源：HEAD `a199559` 用 `git clone` 建立的兩個 checkout，加上本次的 `package.ps1`／`package-msix.ps1` 修改；
+- 環境：PowerShell 7.6.6、.NET 10.0.12，其餘同上；
+- 每次都用 `-NoGuiSmoke`。
+
+| 比對 | 修改前 | 修改後 |
+|---|---|---|
+| zip：同一個 exe 打包兩次（`-SkipBuild`） | `fd48aad7…` 與 `995476a2…`，不同 | 兩次都是 `790ed325…`（8,635,269 bytes） |
+| zip：`SOURCE_DATE_EPOCH` | — | 設成 commit 時間，結果和不設定相同（`790ed325…`）。設成 `1700000000`，`BUILDINFO.txt` 與 entry 時間都變成 2023-11-14 22:13:20 UTC，zip 為 `07ec5093…` |
+| exe：兩個 checkout、兩個 target dir（`agent-pkg`、`agent-pkg2`）各做一次 fat LTO build | `8dbbd148…`（`D:\fastPDF`、03:09 build）與 `e7467447…`（checkout B）。大小都是 16,823,296 bytes，只有 5 處、共 24 bytes 不同：PE header 的 TimeDateStamp、3 個 debug directory entry 的 TimeDateStamp、CodeView 的 PDB GUID | 兩次都是 `478a5c8e…`（16,823,296 bytes）。TimeDateStamp 變成內容雜湊 `0xcfe6b053`，debug directory 多一個 `REPRO` entry |
+| zip：上面兩次完整流程（含 build） | — | 兩次都是 `e067e7f3…`（8,635,283 bytes）。最終版腳本再跑一次（build 已是最新）也一樣 |
+| MSIX：同一個 exe 打包兩次 | `f445635a…`（8,617,380 bytes）與 `0a9d5768…`（8,617,400 bytes）。631 個 entry 的時間與順序、`AppxBlockMap.xml`、`[Content_Types].xml` 都不同 | `5efb6b13…` 與 `5771779c…`（都是 8,617,273 bytes），只有 entry 的時間欄位不同（1,262 bytes），清零後逐位元相同。`AppxBlockMap.xml` 都是 `15a77e0a…` |
+
+- 修改前的 exe 比對已經涵蓋不同的 checkout 路徑與 target dir：兩者除了時間與 GUID 以外完全相同，表示 `--remap-path-prefix` 有效，`CARGO_TARGET_DIR` 的路徑也沒有進入 exe。
+- build 時間：修改前的 checkout B 與修改後的 checkout A 同時以低優先權 build，各約 4 分 50 秒；修改後的 checkout B 單獨 build 為 3 分 40 秒。
+- **長期使用的 working tree 打包結果不同**：從 `D:\fastPDF` 本身打包同一個 exe，zip 為 `562dbfcb…`，和 clone 的結果不同。
+  - 原因：有 11 個 tracked 檔案在 working tree 是 CRLF，但 index 是 LF（`git ls-files --eol` 顯示 `i/lf w/crlf`），`git status` 看不出來；
+  - 其中 `licenses/Apache-2.0.txt` 會放進 zip（`licenses/` 與 `licenses/third-party/` 各一份），所以 zip 不同；
+  - `package.ps1` 現在會警告，並在 `BUILDINFO.txt` 標記。發佈一律用全新的 clone（§1.8）。
+  - exe 不受影響：rustc 讀取原始碼時會把 CRLF 正規化。修改前的 exe 比對中，`D:\fastPDF` 同樣含有 CRLF 的 `.rs` 檔，結果也只差時間與 GUID。

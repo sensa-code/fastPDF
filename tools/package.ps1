@@ -7,7 +7,9 @@
   1. cargo build --profile dist -p fastpdf-app --locked   (honors CARGO_TARGET_DIR)
      with --remap-path-prefix for CARGO_HOME and the repo (unless -NoRemapPaths), so
      dependency panic locations do not embed the build account's user name; the
-     binary is then checked for leftover CARGO_HOME / USERPROFILE / repo paths
+     binary is then checked for leftover CARGO_HOME / USERPROFILE / repo paths.
+     The linker gets /Brepro: no link time stamp and no random PDB GUID in the exe, so
+     the same sources and toolchain give the same exe (docs/RELEASE.md section 1.6)
   2. checks the exe's VERSIONINFO against the Cargo version (build.rs ran) and its PE
      resources: RT_GROUP_ICON #1, the icon images, RT_VERSION #1 and exactly one
      RT_MANIFEST (GPUI's; a second one would mean a resource conflict)
@@ -15,10 +17,17 @@
      (subfolders such as licenses/overrides/ are inputs of the bundle step, not shipped as is),
      BUILDINFO.txt and licenses/third-party/: each linked crate's own license and NOTICE files
      plus MISSING.md (python tools/license_report.py --bundle; needs python and cargo on PATH);
-     the staging folder may not contain empty folders
-  4. zips the staging folder (top-level folder inside the zip), writes <zip>.sha256
+     the staging folder may not contain empty folders. BUILDINFO.txt records the commit,
+     whether the working tree differs from it (uncommitted changes, or line endings that git
+     status hides) and the source date (SOURCE_DATE_EPOCH if set, else the HEAD commit time),
+     never the packaging time
+  4. zips the staging folder (top-level folder inside the zip), writes <zip>.sha256.
+     The zip is reproducible: entries sorted by path (ordinal), each stamped with the
+     source date, no file attributes, no directory entries, so the same exe and commit
+     give the same zip bytes (with the same PowerShell/.NET, whose zlib does the deflate)
   5. verifies the zip: exact entry list (under licenses/third-party/ exactly the files the
-     bundle step reported writing), no directory entries, and the exe's SHA-256 inside the zip
+     bundle step reported writing), no directory entries, sorted entries stamped with the
+     source date, and the exe's SHA-256 inside the zip
   6. smoke test on the extracted copy: --version and --help (no window), then one
      GUI start with FASTPDF_BENCH=1 on a fixture until the first frame is presented;
      the process tree is always terminated. Saved settings and recent files are
@@ -78,14 +87,18 @@ $Exe = Join-Path $TargetDir "$CargoProfile\fastpdf.exe"
 # ------------------------------------------------------------------ build
 if (-not $SkipBuild) {
     $cargoArgs = @('build', '--profile', $CargoProfile, '-p', 'fastpdf-app', '--locked')
+    # /Brepro: link.exe writes a hash of the image instead of the link time (PE header, debug
+    # directory) and derives the PDB GUID from it, so rebuilding the same sources gives the same exe.
+    $rustflags = @('-Clink-arg=/Brepro')
     if (-not $NoRemapPaths) {
-        # Joined with .cargo/config.toml's target.'cfg(windows)'.rustflags (Cargo merges
-        # target.<triple> and target.<cfg> flags; RUSTFLAGS would replace them instead).
         $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
         $remap = @("--remap-path-prefix=$cargoHome=cargo-home", "--remap-path-prefix=$Repo=fastpdf")
         if ($remap -match "'") { throw "a path contains ' (cannot be a TOML literal string); use -NoRemapPaths" }
-        $cargoArgs += @('--config', "target.x86_64-pc-windows-msvc.rustflags=[$(($remap | ForEach-Object { "'$_'" }) -join ', ')]")
+        $rustflags += $remap
     }
+    # Joined with .cargo/config.toml's target.'cfg(windows)'.rustflags (Cargo merges
+    # target.<triple> and target.<cfg> flags; RUSTFLAGS would replace them instead).
+    $cargoArgs += @('--config', "target.x86_64-pc-windows-msvc.rustflags=[$(($rustflags | ForEach-Object { "'$_'" }) -join ', ')]")
     Step "cargo $($cargoArgs -join ' ')"
     Push-Location $Repo
     try { Invoke-Checked 'cargo' $cargoArgs } finally { Pop-Location }
@@ -178,16 +191,56 @@ try {
 if ($bundleFiles -notcontains 'MISSING.md') { throw 'license_report.py --bundle did not report MISSING.md' }
 
 $exeHash = (Get-FileHash -Algorithm SHA256 $Exe).Hash.ToLowerInvariant()
-$gitRev = (git -C $Repo rev-parse --short=12 HEAD 2>$null)
+$gitRev = git -C $Repo rev-parse HEAD 2>$null
 $dirty = $false
-if ($gitRev) { $dirty = (git -C $Repo status --porcelain 2>$null | Measure-Object).Count -gt 0 } else { $gitRev = 'unknown (not a git checkout)' }
-$rustc = (rustc -V 2>$null)
+$commitEpoch = $null
+$eolDrift = @()
+if ($gitRev) {
+    $dirty = (git -C $Repo status --porcelain 2>$null | Measure-Object).Count -gt 0
+    $commitEpoch = git -C $Repo log -1 --format=%ct HEAD 2>$null
+    # git status hides line-ending-only differences (.gitattributes: text=auto eol=lf), but the
+    # package ships bytes: a tracked file with CRLF where a fresh checkout has LF (git ls-files
+    # --eol: i/lf w/crlf) makes the zip differ from one packaged in a clean clone.
+    $eolDrift = @(git -C $Repo ls-files --eol 2>$null | ForEach-Object {
+        if ($_ -match '^i/(\S+)\s+w/(\S+)\s.*\t(.+)$' -and $Matches[1] -ne $Matches[2]) { $Matches[3] }
+    })
+    if ($eolDrift) {
+        Write-Warning ("line endings of $($eolDrift.Count) tracked file(s) differ from a fresh checkout, which " +
+            "git status does not show, so the package may differ from one built in a clean clone: " +
+            "$(($eolDrift | Select-Object -First 5) -join ', ')$(if ($eolDrift.Count -gt 5) { ', ...' }). " +
+            'Package from a fresh clone, or delete these files and run git checkout -- on them.')
+    }
+} else { $gitRev = 'unknown (not a git checkout)' }
+$treeNotes = @()
+if ($dirty) { $treeNotes += 'working tree had uncommitted changes' }
+if ($eolDrift) { $treeNotes += "line endings of $($eolDrift.Count) tracked file(s) differ from a fresh checkout" }
+# Source date (reproducible-builds.org): SOURCE_DATE_EPOCH if set, else the HEAD commit time.
+# BUILDINFO.txt and every zip entry carry it instead of the clock, so packaging the same exe
+# and commit twice gives the same bytes.
+if ($env:SOURCE_DATE_EPOCH) {
+    if ($env:SOURCE_DATE_EPOCH -notmatch '^\d{1,11}$') {
+        throw "SOURCE_DATE_EPOCH must be whole seconds since 1970-01-01 UTC, got '$env:SOURCE_DATE_EPOCH'"
+    }
+    $sourceEpoch = [long]$env:SOURCE_DATE_EPOCH; $sourceDateOrigin = 'SOURCE_DATE_EPOCH'
+} elseif ($commitEpoch -match '^\d+$') {
+    $sourceEpoch = [long]$commitEpoch; $sourceDateOrigin = 'commit time'
+} else {
+    Write-Warning 'no source date (not a git checkout and SOURCE_DATE_EPOCH is not set): using 1980-01-01'
+    $sourceEpoch = [long]0; $sourceDateOrigin = 'unknown: not a git checkout and SOURCE_DATE_EPOCH not set'
+}
+# Zip entry times (DOS format) run from 1980 to 2107 in 2-second steps.
+$SourceDate = [DateTimeOffset]::FromUnixTimeSeconds([math]::Max($sourceEpoch, [long]315532800))
+if ($SourceDate.Year -gt 2107) { throw "source date $($SourceDate.ToString('u')) does not fit a zip entry time (1980-2107)" }
+# Inside the repo, so rust-toolchain.toml selects the toolchain that built the exe.
+Push-Location $Repo
+try { $rustc = (rustc -V 2>$null) } finally { Pop-Location }
 @(
     "FastPDF $Version (win-x64, $Flavor)"
-    "git: $gitRev$(if ($dirty) { ' (working tree had uncommitted changes)' })"
+    "git: $gitRev$(if ($treeNotes) { " ($($treeNotes -join '; '))" })"
+    # Not where the date came from: SOURCE_DATE_EPOCH set to the commit time must give the same zip.
+    "source date: $($SourceDate.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss')) UTC"
     "rustc: $rustc"
-    "cargo profile: $CargoProfile$(if ($SkipBuild) { ' (existing build; path remapping not verified)' } elseif ($NoRemapPaths) { ' (paths not remapped)' } else { ' (--remap-path-prefix: CARGO_HOME, repo)' })"
-    "built (UTC): $([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))"
+    "cargo profile: $CargoProfile$(if ($SkipBuild) { ' (existing build; path remapping not verified)' } elseif ($NoRemapPaths) { ' (paths not remapped; link /Brepro)' } else { ' (--remap-path-prefix: CARGO_HOME, repo; link /Brepro)' })"
     "fastpdf.exe sha256: $exeHash"
 ) | Set-Content (Join-Path $Stage 'BUILDINFO.txt') -Encoding utf8
 
@@ -201,7 +254,7 @@ if ($StageOnly) {
     Step "staged $Stage"
     return [pscustomobject]@{
         version = $Version; name = $Name; stage = $Stage; exe = $Exe; exe_sha256 = $exeHash
-        third_party_files = $bundleFiles
+        third_party_files = $bundleFiles; source_date = $SourceDate
     }
 }
 
@@ -209,7 +262,27 @@ if ($StageOnly) {
 $Zip = Join-Path $OutDir "$Name.zip"
 Step "zip -> $Zip"
 if (Test-Path $Zip) { Remove-Item -Force $Zip }
-[System.IO.Compression.ZipFile]::CreateFromDirectory($Stage, $Zip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
+# Reproducible zip: files only, in ordinal path order, each stamped with the source date (the
+# DOS time holds its UTC clock time) and no file attributes. Nothing depends on the clock, the
+# time zone, file times or file system order; the deflate bytes come from .NET's zlib, so they
+# depend on the PowerShell/.NET version (printed below).
+$zipFiles = [string[]]@(Get-ChildItem -LiteralPath $Stage -Recurse -File -Force |
+    ForEach-Object { $_.FullName.Substring($Stage.Length + 1).Replace('\', '/') })
+[Array]::Sort($zipFiles, [StringComparer]::Ordinal)
+$archive = [System.IO.Compression.ZipFile]::Open($Zip, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($rel in $zipFiles) {
+        $entry = $archive.CreateEntry("$Name/$rel", [System.IO.Compression.CompressionLevel]::Optimal)
+        $entry.LastWriteTime = $SourceDate
+        $entry.ExternalAttributes = 0
+        $in = [IO.File]::OpenRead((Join-Path $Stage $rel))
+        try {
+            $out = $entry.Open()
+            try { $in.CopyTo($out) } finally { $out.Dispose() }
+        } finally { $in.Dispose() }
+    }
+} finally { $archive.Dispose() }
+Write-Host "  $($zipFiles.Count) entries dated $($SourceDate.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss')) UTC ($sourceDateOrigin); PowerShell $($PSVersionTable.PSVersion), .NET $([Environment]::Version)"
 $zipHash = (Get-FileHash -Algorithm SHA256 $Zip).Hash.ToLowerInvariant()
 "$zipHash  $Name.zip" | Set-Content "$Zip.sha256" -Encoding ascii -NoNewline
 
@@ -221,9 +294,17 @@ $expected = @("$Name/fastpdf.exe", "$Name/README.md", "$Name/THIRD_PARTY_LICENSE
 $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
 try {
     $names = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
-    # CreateFromDirectory writes directory entries only for empty folders: none are expected.
+    # The zip holds files only: a directory entry would be a stray folder.
     $dirEntries = @($names | Where-Object { $_.EndsWith('/') })
     if ($dirEntries) { throw "unexpected directory entries in the zip: $($dirEntries -join ', ')" }
+    # Reproducibility: ordinal order, the source date (2 s resolution) and no attributes.
+    $sorted = [string[]]$names.Clone()
+    [Array]::Sort($sorted, [StringComparer]::Ordinal)
+    if (($sorted -join "`n") -cne ($names -join "`n")) { throw 'zip entries are not in ordinal path order' }
+    $dosClock = $SourceDate.UtcDateTime.AddSeconds(-($SourceDate.UtcDateTime.Second % 2))
+    $unstable = @($archive.Entries | Where-Object { $_.LastWriteTime.DateTime -ne $dosClock -or $_.ExternalAttributes -ne 0 } |
+        ForEach-Object { $_.FullName })
+    if ($unstable) { throw "zip entries without the source date or with file attributes: $($unstable -join ', ')" }
     $entries = $names
     $missing = @($expected | Where-Object { $entries -notcontains $_ })
     $extra = @($entries | Where-Object { $expected -notcontains $_ })
@@ -236,7 +317,7 @@ try {
     } finally { $stream.Dispose() }
     if ($inZip -ne $exeHash) { throw "fastpdf.exe in the zip differs from the build ($inZip vs $exeHash)" }
 } finally { $archive.Dispose() }
-Write-Host "  $($entries.Count) files ($($bundleFiles.Count) under licenses/third-party/), exe hash matches"
+Write-Host "  $($entries.Count) files ($($bundleFiles.Count) under licenses/third-party/), sorted and dated, exe hash matches"
 
 # ------------------------------------------------------------------ smoke test
 $smoke = [ordered]@{}
@@ -322,4 +403,8 @@ Step 'done'
 Write-Host "  package : $Zip ($([math]::Round((Get-Item $Zip).Length / 1MB, 2)) MB)"
 Write-Host "  sha256  : $zipHash"
 Write-Host "  exe     : $exeHash"
-[pscustomobject]@{ version = $Version; zip = $Zip; sha256 = $zipHash; exe_sha256 = $exeHash; smoke = $smoke }
+Write-Host "  source  : $gitRev, $($SourceDate.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss')) UTC ($sourceDateOrigin)"
+[pscustomobject]@{
+    version = $Version; zip = $Zip; sha256 = $zipHash; exe_sha256 = $exeHash; smoke = $smoke
+    git = $gitRev; dirty = $dirty; eol_drift_files = $eolDrift.Count; source_date = $SourceDate
+}
