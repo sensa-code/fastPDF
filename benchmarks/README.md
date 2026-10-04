@@ -22,6 +22,17 @@ cargo run --release -p fastpdf-bench -- corpus fixtures/generated/manifest.json 
 - `baseline.json`：2026-10-04，engine Hayro（git `ced00dd0`），FastPDF `52c5736`（bench 從該 commit 的乾淨匯出目錄 build；報告中的 `-dirty` 來自執行時工作目錄裡尚未 commit 的列印 crate，與量測的程式碼無關），rustc 1.99.0，release profile，每檔 3 次子 process 取中位數，量測前機器 CPU 2.8%。
 - 機器：AMD Ryzen 9 9950X（16C/32T）、128 GB RAM、Windows 11 Pro。
 - 結果摘要與 zpdf 的比較見 `docs/engine-comparison.md`。
+- 2026-10-05 以配對方式比較 M1 與 HEAD（`d3970eb`）：84 個檔案狀態相同，到第一頁的時間幾何平均比值 1.001，沒有退步，所以 baseline 沒有更新（`docs/benchmarks/b1-paired.md`）。
+
+## 有背景負載時：配對比較
+
+`fastpdf-bench compare` 拿一次量測和 `baseline.json` 比較，只有在安靜的機器上才準。機器上有其他負載（編譯、VM、索引）時，請改用配對比較：每個檔案用兩個 build 交替執行，比較每一對的比值。
+
+```bash
+python tools/bench_paired.py --a OLD/fastpdf-bench.exe --b NEW/fastpdf-bench.exe --pairs 3
+```
+
+判定規則與讀法見 `docs/benchmarks/b1-paired.md`。
 
 ## 讀數字時要注意
 

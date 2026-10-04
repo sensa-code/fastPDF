@@ -30,6 +30,7 @@ uv run tools/fixtures/generate.py                     # test corpus -> fixtures/
 cargo run --release -p fastpdf-bench -- full <file.pdf>
 cargo run --release -p fastpdf-bench -- corpus fixtures/generated/manifest.json --repeat 3 --out benchmarks/runs/x.json
 cargo run --release -p fastpdf-bench -- compare benchmarks/baseline.json benchmarks/runs/x.json
+python tools/bench_paired.py --a OLD/fastpdf-bench.exe --b NEW/fastpdf-bench.exe   # paired B-1 under load
 cargo run --release -p fastpdf-bench -- scroll <file.pdf>          # B-5 memory time series
 cargo run --release -p fastpdf-bench --features engine-zpdf -- diff-corpus fixtures/generated/manifest.json --engine hayro,zpdf
 python tools/bench_tile_matrix.py --bench target/release/fastpdf-bench.exe   # B-3/B-4
