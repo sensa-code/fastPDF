@@ -1,6 +1,6 @@
 # ADR 0005 — Engine Strategy: Hayro Baseline, zpdf Candidate
 
-- 狀態：Accepted for M1–M4；主要 engine 的最終選擇在 M4 之後另以新 ADR 決定
+- 狀態：Accepted for M1–M4。主要 engine 的選擇已由 [ADR 0007](0007-primary-engine-hayro.md) 依 M4 數據決定（Hayro）
 - 日期：2026-10-04
 - 相關 spec：§3、§6、§19、§42–§44、§49 Q4–Q6；證據：`docs/audit/hayro.md`、`docs/audit/zpdf.md`
 

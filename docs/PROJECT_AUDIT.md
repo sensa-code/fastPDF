@@ -277,16 +277,16 @@ upstream clone（`upstream/pdf-reader-gpui`）保留為 spec §28 的 benchmark 
 
 | Crate | 責任 | 內部依賴 | 第三方依賴 | 狀態 |
 |---|---|---|---|---|
-| `fastpdf-engine-api` | Domain model（`DocumentId`、`PageIndex`、`PageSize`、`Rotation`、`RenderScale`、`PixelRect`、`PageRect`、`RenderRequest`、`Pixmap`、`TextLayer`、`OutlineItem`、`Link`、`DocumentMetadata`、`EngineError`、`ResourceLimits`、`CancelToken`）；`PdfEngine`／`EngineDocument` trait；`GuardedDocument`（驗證、guardrail、panic isolation） | — | **無**（只用 std） | 完成，22 tests |
-| `fastpdf-engine-hayro` | Hayro adapter：PDF user space ↔ FastPDF 座標轉換、tile render、錯誤對應 | engine-api | hayro、hayro-syntax、hayro-interpret（Apache-2.0 OR MIT） | M1 |
-| `fastpdf-engine-zpdf` | zpdf adapter（M3 PoC，feature-gated），pin 在已 audit 的 commit | engine-api | zpdf（MIT，git rev `fe0ed23`） | M3 進行中 |
+| `fastpdf-engine-api` | Domain model（`DocumentId`、`PageIndex`、`PageSize`、`Rotation`、`RenderScale`、`PixelRect`、`PageRect`、`RenderRequest`、`Pixmap`、`TextLayer`、`OutlineItem`、`Link`、`DocumentMetadata`、`EngineError`、`ResourceLimits`、`CancelToken`）；`PdfEngine`／`EngineDocument` trait；`GuardedDocument`（驗證、guardrail、panic isolation） | — | **無**（只用 std） | 完成，23 tests |
+| `fastpdf-engine-hayro` | Hayro adapter：座標轉換、block 合併的 tile render、guardrail（靜態掃描、預先解譯預算、bomb 預解壓）、Windows CJK 字型 resolver、glyph 層級 text layer、outline／links | engine-api | hayro（git `ced00dd0`，Apache-2.0 OR MIT）、memmap2、flate2 | 完成，46 tests；**V0.1 預設 engine**（ADR 0007） |
+| `fastpdf-engine-zpdf` | zpdf adapter（M3 PoC，feature-gated），pin 在已 audit 的 commit | engine-api | zpdf 子 crate（MIT，git `fe0ed23`，不含 writer） | 完成，39 tests |
 | `fastpdf-cache` | `ByteLru`（以 byte 計重的 O(1) LRU）、`SharedCache`（thread-safe、eviction hook、protected floor）、`MemoryBudgetManager`（Normal／Soft／Hard） | engine-api（只用 `MemoryPressure`） | 無 | 完成，11 tests |
-| `fastpdf-render` | `ScaleBucket`／`ZoomLevel`、`TileGrid`／`TileKey`、`DocumentLayout`（lazy 頁面尺寸）、`Viewport`、`plan_tiles`（P0–P3）、`RenderScheduler`（固定 worker、cancel／discard）、`TileCache`（progressive fallback） | engine-api、cache | 無 | 完成，31 tests |
+| `fastpdf-render` | `ScaleBucket`／`ZoomLevel`、`TileGrid`／`TileKey`（含 gutter）、`DocumentLayout`（lazy 頁面尺寸）、`Viewport`、`plan_tiles`（P0–P3）、`RenderScheduler`（固定 worker、lane、cancel／discard）、`TileCache`（progressive fallback） | engine-api、cache | 無 | 完成，34 tests |
 | `fastpdf-search` | 第一次搜尋才啟動、由目前頁往外搜尋、串流回報、可取消；`TextCache` 有預算 | engine-api、cache | 無 | 完成，11 tests |
-| `fastpdf-core` | 文件載入（讀取／mmap）、`DocumentSession`（layout + viewport + scheduler + tile cache → 每 frame 的繪製清單）、導覽與 zoom／rotate 指令、集中式 keymap、recent files、`MemoryMonitor` | engine-api、cache、render | memmap2、windows-sys | 完成，16 tests |
-| `fastpdf-ui` | GPUI views：視窗、toolbar、viewport element（畫 `Frame`）、sidebar（outline／thumbnails）、搜尋列、development overlay | core、render | gpui | M5／M7 |
-| `fastpdf-app` | Binary：CLI、engine registry（cargo features）、logging（`FASTPDF_LOG`）、panic hook、Windows 整合（檔案關聯、DPI manifest、icon） | ui、core、adapters | tracing-subscriber、winresource（build） | M5 |
-| `fastpdf-bench` | 無 GUI 的 benchmark harness：`open`／`render`／`full`／`corpus`／`compare`／`engines`，JSON 輸出，corpus 每個檔案一個子 process | engine-api、render、core、adapters | serde、serde_json、windows-sys | 完成，14 tests |
+| `fastpdf-core` | 文件載入（讀取／mmap）、`DocumentSession`（layout + viewport + scheduler + tile cache → 每 frame 的繪製清單；縮圖；close）、導覽與 zoom／rotate 指令、集中式 keymap、文字選取與複製、recent files、`MemoryMonitor` | engine-api、cache、render | memmap2、windows-sys | 完成，24 tests |
+| `fastpdf-ui` | GPUI views：視窗、toolbar、viewport canvas（畫 `Frame`、texture 生命週期、upload 預算）、development overlay；sidebar／搜尋列／選取待做 | core、render | gpui（zed git `a846890`）、futures、image、log | 第一版完成 |
+| `fastpdf-app` | Binary `fastpdf`：CLI、背景開檔與 GPUI 初始化平行、engine registry（cargo features）、`FASTPDF_LOG` logger、panic hook、`FASTPDF_BENCH` 時間點；檔案關聯與 icon 待做 | ui、core、adapters | gpui、gpui_platform、log | 第一版完成 |
+| `fastpdf-bench` | 無 GUI 的 benchmark harness：`open`／`render`／`full`／`corpus`／`compare`／`diff`／`diff-corpus`／`engines`，JSON 輸出，corpus 每個檔案一個子 process | engine-api、render、core、adapters | serde、serde_json、windows-sys | 完成，17 tests |
 
 其他目錄：
 
@@ -440,11 +440,11 @@ zpdf audit 已粗測：9 份文件中 8 份 GPU tile 比 CPU 慢，且必須 rea
 | Milestone | 內容 | 驗收條件 | 狀態 |
 |---|---|---|---|
 | **M0 Audit** | 本文件、`architecture-current.md`、`audit/*.md`、ADR 0001–0006 | spec §51 的 10 項交付物 | ✅ |
-| **M1 Baseline** | `fastpdf-bench`、Hayro adapter（open／page info／render／text）、fixtures、`benchmarks/baseline.json` | `corpus` 跑完 quick corpus：0 crash、0 timeout，baseline 已 commit | 進行中（harness、fixtures 完成；adapter 實作中） |
+| **M1 Baseline** | `fastpdf-bench`、Hayro adapter（open／page info／render／text）、fixtures、`benchmarks/baseline.json` | `corpus` 跑完 quick corpus：0 crash、0 timeout，baseline 已 commit | ✅（84 檔：first page 中位數 4.3 ms，0 crash／timeout） |
 | **M2 Engine isolation** | `fastpdf-engine-api` + `GuardedDocument`；只有 adapter 依賴 engine | `tools/check_engine_isolation.py` 在 CI 通過 | ✅（以新 workspace 的設計達成） |
-| **M3 zpdf PoC** | `fastpdf-engine-zpdf`（feature `engine-zpdf`）：open、page count、page size、render | bench 以 `--engine zpdf` 跑完 corpus | 進行中 |
-| **M4 Renderer comparison** | 同一 corpus 比較 correctness、open、first page、CPU、memory、render latency | `docs/engine-comparison.md`；不預設誰贏 | 待 M1、M3 |
-| **M5 Tile renderer** | `TileGrid`／`TileCache`／`RenderScheduler`（✅ 已完成並有測試）；GPUI viewport element、texture 生命週期、upload 預算；B-3、B-4 | 600% zoom 只 render 相交 tile；捲動不空白；VRAM churn 測試穩定 | 核心完成，UI 實作中 |
+| **M3 zpdf PoC** | `fastpdf-engine-zpdf`（feature `engine-zpdf`）：open、page count、page size、render | bench 以 `--engine zpdf` 跑完 corpus | ✅（另含 text／outline／links） |
+| **M4 Renderer comparison** | 同一 corpus 比較 correctness、open、first page、CPU、memory、render latency | `docs/engine-comparison.md`；不預設誰贏 | ✅（Hayro 為 V0.1 預設，ADR 0007） |
+| **M5 Tile renderer** | `TileGrid`／`TileCache`／`RenderScheduler`（✅ 已完成並有測試）；GPUI viewport element、texture 生命週期、upload 預算；B-3、B-4 | 600% zoom 只 render 相交 tile；捲動不空白；VRAM churn 測試穩定 | GPUI 整合完成，VRAM churn 穩定；B-3／B-4 待量 |
 | **M6 Memory budget** | `MemoryBudgetManager`（✅）、`MemoryMonitor`（✅）接進 app；development overlay；B-5 | 捲過 2000 頁 RSS 有上限；overlay 顯示各 cache 統計 | 核心完成 |
 | **M7 UX** | toolbar、sidebar（outline、縮圖：只 render 可見列）、搜尋 UI（✅ 引擎完成）、文字選取與複製、recent files 選單、設定、dark mode、列印（Win32）、檔案關聯 | V0.1 功能清單（spec §8） | 未開始 |
 

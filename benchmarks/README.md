@@ -17,6 +17,12 @@ cargo run --release -p fastpdf-bench -- corpus fixtures/generated/manifest.json 
     --repeat 3 --timeout 120 --out benchmarks/baseline.json
 ```
 
+## 目前的 baseline
+
+- `baseline.json`：2026-10-04，engine Hayro（git `ced00dd0`），FastPDF `52c5736`（bench 從該 commit 的乾淨匯出目錄 build；報告中的 `-dirty` 來自執行時工作目錄裡尚未 commit 的列印 crate，與量測的程式碼無關），rustc 1.99.0，release profile，每檔 3 次子 process 取中位數，量測前機器 CPU 2.8%。
+- 機器：AMD Ryzen 9 9950X（16C/32T）、128 GB RAM、Windows 11 Pro。
+- 結果摘要與 zpdf 的比較見 `docs/engine-comparison.md`。
+
 ## 讀數字時要注意
 
 - 數字只能和**同一台機器、同一個 toolchain**（報告裡的 `machine`、`rustc`）的數字比較。
