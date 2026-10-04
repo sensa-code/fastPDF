@@ -24,6 +24,7 @@
 ## Consequences
 
 - 大檔開檔成本 ≈ engine 的最小 parse（xref、trailer、page tree）＋實際碰到的 page fault，不再與檔案大小成正比。
+- mmap 的頁面被讀到後會計入 working set（B-5：800 MiB 檔整份捲完，working set 約 1 GB），但它們是 file-backed、可共用的頁面：不計入 private bytes、commit，也不計入工作管理員預設的「記憶體（private working set）」，OS 在記憶體壓力下可以直接丟棄。KPI 量測以 private 指標為準。
 - **大檔開著時無法被其他程式覆寫**（與 Adobe Reader 行為相同；小檔不受影響）。這是為了 mapping 的正確性而接受的 UX 取捨。
 - 網路磁碟（SMB）上的 mapped file 若在連線中斷時被存取，Windows 會丟出 `EXCEPTION_IN_PAGE_ERROR`，導致 process crash。**待辦**：以 `GetDriveTypeW == DRIVE_REMOTE` 偵測網路路徑，一律改用讀取（列入 Risks）。
 - zpdf adapter 對大檔會產生一份完整複本（800 MB 檔案 → 約 800 MB RSS），除非 upstream 或我們的 fork 改為接受共享 bytes。

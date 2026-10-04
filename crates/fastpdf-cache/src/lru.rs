@@ -117,6 +117,19 @@ impl<K: Hash + Eq + Clone, V> ByteLru<K, V> {
     ///
     /// Returns the replaced value (if any) followed by evicted entries.
     pub fn insert(&mut self, key: K, value: V, weight: usize) -> Vec<(K, V)> {
+        self.insert_with_limit(key, value, weight, self.budget)
+    }
+
+    /// Like [`ByteLru::insert`], but evicts only down to `limit` bytes
+    /// instead of the budget (callers pass a larger limit to keep entries
+    /// that are in use right now).
+    pub fn insert_with_limit(
+        &mut self,
+        key: K,
+        value: V,
+        weight: usize,
+        limit: usize,
+    ) -> Vec<(K, V)> {
         let mut out = Vec::new();
         if let Some(old) = self.remove(&key) {
             out.push((key.clone(), old));
@@ -126,7 +139,7 @@ impl<K: Hash + Eq + Clone, V> ByteLru<K, V> {
         self.push_front(idx);
         self.bytes += weight;
         self.stats.inserts += 1;
-        self.evict_until(self.budget, &mut out);
+        self.evict_until(limit, &mut out);
         out
     }
 

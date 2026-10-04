@@ -36,6 +36,8 @@
 
 - 每個 cache 都有上限，且 manager 可以在不了解 cache 內容的情況下釋放記憶體。
 - Engine 內部 cache 只能透過 `trim_memory` 間接控制；如果 engine 不支援，hard limit 時唯一的手段是重新開檔（丟掉整個 engine document）。各 engine 的支援程度列入 M4 比較。
+- 畫面上可見的 tile 不會因為預算被淘汰：可見範圍本身超過 tile 預算時（例如 300 dpi 掃描檔放大到 300%、預算只有 16 MB），cache 會暫時超出預算，超出量等於可見範圍。否則插入新 tile 會擠掉其他可見 tile，畫面陷入不斷重 render 的迴圈（B-5 實測每 5 秒重繪 1,169–1,802 個 tile）。
+- relief 之後 cache 會立刻被新 tile 回填，記憶體曲線呈鋸齒狀（B-5）。若要更平滑，需要讓 relief 暫時降低各 cache 的預算（hysteresis），列為後續工作。
 - external bytes 的量測頻率需要節制（例如每秒一次或每次 tile 抵達時節流），以免 idle 時產生 CPU 喚醒（§1 idle CPU ≈ 0）。只在有工作時量測。
 
 ## Alternatives considered

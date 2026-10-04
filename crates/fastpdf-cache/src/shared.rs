@@ -60,8 +60,20 @@ impl<K: Hash + Eq + Clone, V> SharedCache<K, V> {
         self
     }
 
+    /// Inserts an entry, evicting least recently used ones to stay within
+    /// budget — but never below the protected bytes plus the new entry: when
+    /// the visible set alone exceeds the budget, evicting visible entries
+    /// would only make the view re-render them in a loop.
     pub fn insert(&self, key: K, value: V, weight: usize) {
-        let evicted = self.lock().insert(key, value, weight);
+        let evicted = {
+            let mut lru = self.lock();
+            let floor = self
+                .protected
+                .load(Ordering::Relaxed)
+                .saturating_add(weight);
+            let limit = lru.budget().max(floor);
+            lru.insert_with_limit(key, value, weight, limit)
+        };
         self.dispose(evicted);
     }
 
@@ -160,6 +172,23 @@ mod tests {
         assert_eq!(cache.shrink_to(30), 60);
         assert_eq!(seen.load(Ordering::Relaxed), 4);
         assert_eq!(BudgetedCache::bytes(&cache), 30);
+    }
+
+    #[test]
+    fn a_visible_set_larger_than_the_budget_is_not_thrashed() {
+        let cache: SharedCache<u32, ()> = SharedCache::new("tiles", 100, 50);
+        // 150 bytes are on screen: more than the 100-byte budget.
+        cache.set_protected_bytes(150);
+        for i in 0..15 {
+            cache.insert(i, (), 10);
+        }
+        // Everything fit under the protected floor; nothing was evicted.
+        assert_eq!(BudgetedCache::bytes(&cache), 150);
+        assert!(cache.contains(&0));
+        // Once the view shrinks, the next insert falls back to the budget.
+        cache.set_protected_bytes(0);
+        cache.insert(99, (), 10);
+        assert!(BudgetedCache::bytes(&cache) <= 100);
     }
 
     #[test]
