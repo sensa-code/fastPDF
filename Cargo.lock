@@ -1608,6 +1608,7 @@ dependencies = [
  "fastpdf-core",
  "fastpdf-engine-api",
  "fastpdf-engine-hayro",
+ "fastpdf-engine-remote",
  "fastpdf-engine-zpdf",
  "fastpdf-shell",
  "fastpdf-ui",
@@ -1663,6 +1664,15 @@ dependencies = [
  "flate2",
  "hayro",
  "memmap2",
+]
+
+[[package]]
+name = "fastpdf-engine-remote"
+version = "0.0.1"
+dependencies = [
+ "fastpdf-engine-api",
+ "log",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

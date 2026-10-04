@@ -9,6 +9,11 @@
 //! with" list and Default apps for `.pdf` files, for the current user only
 //! (`file_types.rs`); `--dry-run` prints the registry changes instead.
 //!
+//! `--engine NAME-isolated` (e.g. `hayro-isolated`) renders through a render
+//! host process instead of in-process (opt-in, ADR 0008); FastPDF starts
+//! itself as that host with `--render-host`, an internal mode that is
+//! dispatched before anything else and never opens a window.
+//!
 //! Environment: `FASTPDF_LOG` (log filter, spec §31), `FASTPDF_ENGINE`
 //! (engine name), `FASTPDF_BENCH=1` (start-up milestones as JSON lines on
 //! stdout), `FASTPDF_DEV_OVERLAY=1` (development overlay, spec §46),
@@ -38,6 +43,7 @@ mod bench;
 mod engines;
 mod file_types;
 mod logger;
+mod render_host;
 #[cfg(feature = "engine-synthetic")]
 mod synthetic;
 
@@ -166,7 +172,17 @@ impl Env {
     }
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    // A render host (ADR 0008) shares this executable but runs no UI:
+    // dispatch before settings, logging or GPUI are touched.
+    if let Some(code) = render_host::dispatch() {
+        return code;
+    }
+    reader_main();
+    std::process::ExitCode::SUCCESS
+}
+
+fn reader_main() {
     let clock = bench::Clock::start();
     let env = Env::read();
     let development = env.development();

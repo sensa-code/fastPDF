@@ -1,0 +1,42 @@
+[package]
+name = "fastpdf-engine-remote"
+description = "Out-of-process rendering for FastPDF: the render host process and the RemoteEngine that drives it (ADR 0008)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# No PDF engine here on purpose: the host gets its engine from a factory the
+# application passes to `run_host`, so this crate stays engine-neutral
+# (tools/check_engine_isolation.py).
+[dependencies]
+fastpdf-engine-api.workspace = true
+log.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",                 # SECURITY_ATTRIBUTES (pipes, processes, jobs)
+    "Win32_Storage_FileSystem",       # CreateFileW, ReadFile, WriteFile, GetFileType
+    "Win32_System_IO",                # OVERLAPPED, GetOverlappedResult, completion ports
+    "Win32_System_Pipes",             # CreateNamedPipeW, ConnectNamedPipe
+    "Win32_System_Memory",            # CreateFileMappingW, MapViewOfFile (tile slots)
+    "Win32_System_Threading",         # CreateProcessW, events, waits
+    "Win32_System_JobObjects",        # memory limit, kill-on-close
+    "Win32_System_SystemServices",    # JOB_OBJECT_MSG_* completion messages
+    "Win32_System_ProcessStatus",     # host private bytes for the overlay
+    "Win32_System_Diagnostics_Debug", # SetErrorMode in the host
+] }
+
+# Test-only render host with a synthetic engine (no PDF engine involved). The
+# integration tests start it through CARGO_BIN_EXE_fastpdf-remote-test-host;
+# it is never shipped.
+[[bin]]
+name = "fastpdf-remote-test-host"
+path = "test-host/main.rs"
+test = false
+doc = false
+bench = false
+
+[lints]
+workspace = true

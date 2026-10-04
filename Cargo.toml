@@ -4,6 +4,7 @@ members = [
     "crates/fastpdf-engine-api",
     "crates/fastpdf-engine-hayro",
     "crates/fastpdf-engine-zpdf",
+    "crates/fastpdf-engine-remote",
     "crates/fastpdf-cache",
     "crates/fastpdf-render",
     "crates/fastpdf-search",
@@ -30,6 +31,7 @@ repository = "https://example.invalid/fastpdf" # placeholder until a public home
 fastpdf-engine-api = { path = "crates/fastpdf-engine-api" }
 fastpdf-engine-hayro = { path = "crates/fastpdf-engine-hayro" }
 fastpdf-engine-zpdf = { path = "crates/fastpdf-engine-zpdf" }
+fastpdf-engine-remote = { path = "crates/fastpdf-engine-remote" }
 fastpdf-cache = { path = "crates/fastpdf-cache" }
 fastpdf-render = { path = "crates/fastpdf-render" }
 fastpdf-search = { path = "crates/fastpdf-search" }

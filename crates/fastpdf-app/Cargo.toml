@@ -23,6 +23,8 @@ engine-synthetic = []
 
 [dependencies]
 fastpdf-engine-api.workspace = true
+# Opt-in out-of-process rendering (`--engine NAME-isolated`, ADR 0008).
+fastpdf-engine-remote.workspace = true
 fastpdf-core.workspace = true
 fastpdf-ui.workspace = true
 # `--register-file-types` / `--unregister-file-types` (file_types.rs).

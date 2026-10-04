@@ -1,6 +1,6 @@
 # ADR 0008 — Out-of-Process Rendering（render host process）
 
-- 狀態：Proposed
+- 狀態：Proposed。PR 1–3 與 opt-in 版的 PR 4 已實作（`crates/fastpdf-engine-remote`，`fastpdf --engine hayro-isolated`），預設仍是 in-process。實作與本文的差異見〈實作現況〉。
 - 日期：2026-10-04
 - 相關 spec：§12、§18、§24、§25、§29、§33；風險：`docs/PROJECT_AUDIT.md` R1、R10；`docs/audit/hayro.md` R1–R3
 - 原型：scratchpad 的 `oop/proto`（不在 repo 內），以 path dependency 指向 HEAD `956c573` 的 `git archive` 快照，避免受其他 agent 未 commit 的修改影響
@@ -230,6 +230,66 @@ engine 的快取與文件 bytes 整批移到 host，總量不變；額外成本�
 | 3. `RemoteEngine`／`RemoteDocument` | slot pool 與大型 region 分條、取消（slot 等到終結回覆才歸還）、deadline watchdog、crash 偵測、strike 與重啟策略、`EngineError::HostCrashed` | 既有的 adapter 測試套件改以 RemoteEngine 包裝 Hayro 執行並全數通過；`fastpdf-bench diff-corpus` in-process vs remote：84 檔 0 像素差異；throughput 差距 ≤ 5%；注入測試：同頁 2 次 crash 後標為永久失敗，其他頁不受影響 |
 | 4. core／app 整合 | loader 新增「只開 handle、不讀檔」策略並 duplicate 給 host；`main` 開頭平行 spawn；`--in-process` 開關；頁面與文件層級的錯誤 UI；overlay 顯示 host PID、private 與重啟次數 | B-8：window visible 與第一頁清晰的中位數和 in-process 相差 ≤ 5 ms；idle CPU 不變；parent＋host 總 private ≤ in-process＋20 MiB；hostile 語料（`fixtures/generated/malformed/` 與 hostile 產生器的檔案）全跑一遍，UI process 0 次結束 |
 | 5. 權限降低 | restricted token＋Low IL（MOTW 檔案）、拆成獨立小 exe 並啟用 win32k lockdown、CFG／ACG | host 無法寫入 `%USERPROFILE%`（測試）；CJK 與非內嵌字型的 fixture 輸出與 PR 3 一致；spawn 時間增加 ≤ 5 ms |
+
+## 實作現況（2026-10-04）
+
+- **程式**：
+  - `crates/fastpdf-engine-remote`：
+    - `protocol/`：std-only 的二進位格式，含 fuzz 測試；
+    - `win/`：pipe、section、process，是唯一含 `unsafe` 的部分，每個 block 都有 `// SAFETY:` 說明；
+    - `host.rs`、`client.rs`、`remote.rs`；
+    - `policy.rs`：crash 歸責與重啟策略；
+    - `gate.rs`：可疑頁單獨執行。
+  - App 端：`fastpdf --render-host` 在 `main` 最前面分派；`--engine NAME-isolated`（或 `FASTPDF_ENGINE`）是 opt-in 的入口；host 無法啟動時改回 in-process，並寫一行警告。
+- **與本文設計的差異**：
+  1. **pipe 以名稱開啟，不用 handle 繼承**（§1.3）。
+     - 做法：隨機名稱，加上 `FILE_FLAG_FIRST_PIPE_INSTANCE`、`PIPE_REJECT_REMOTE_CLIENTS`，連線後檢查 client PID；host 端以 `SECURITY_IDENTIFICATION` 開啟，parent 無法冒用 host 的身分。
+     - 原因：handle 在可繼承狀態下時，同一 process 其他 thread 的 `CreateProcess`（例如 `std::process::Command`）也會繼承到。這份複本會讓 pipe 在 host 死後仍保持開啟，延後 crash 偵測。
+     - 代價：多了一個全域名稱，被搶註時最多只會讓啟動失敗。PR 5 的 Low IL host 需要替 pipe 加上 low mandatory label。
+  2. **用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 直接在 job 內建立 host**，取代 §3 的「`CREATE_SUSPENDED` → `AssignProcessToJobObject` → `ResumeThread`」。
+     - 原因：舊做法有空窗。測試 process 在 `CreateProcessW` 與 `AssignProcessToJobObject` 之間結束時，host 永遠停在 suspended 狀態，不屬於任何 job。測試中發生過 2 次。
+     - 結果：改成 `JOB_LIST`，並讓 reader thread 只持有 `Weak`（原本的 `Arc` 會讓 `RemoteEngine` drop 後待命 host 仍然存活）之後，4 次完整測試都沒有殘留的 host。
+  3. **超過 slot 大小的 render 使用獨立的 section**，不分條（§1.4），結果與 in-process 逐位元組相同。
+  4. **文件 bytes 仍複製進 section**（§1.5 的「沒有檔案的來源」做法），loader 還沒有「只開 handle」的策略，所以會多佔一份檔案大小的記憶體。
+  5. **沒有新增 `EngineError::HostCrashed`**，crash 以 `Internal` 錯誤回報。overlay 也還沒有顯示 host 的統計數字。
+  6. **host 不和 GPUI 平行啟動**：選 engine 時同步啟動待命 host（約 +15 ms）。
+- **UI thread 不等 host**：core 在 UI thread 上同步呼叫 `page_info`（`DocumentSession::resolve_pages`）。
+  - **快取**：`RemoteDocument` 自己快取頁面幾何，快取不受 host 重啟影響。open 時先取前 64 頁，其餘頁面由背景 thread 每批 1024 頁補齊。
+  - **cache miss**（只會發生在背景補齊之前）：
+    - 不經過 admission gate 與 state lock，也不會自己重啟 host；
+    - host 端由 4 條專用的幾何 thread 處理，不排在 render worker 後面；
+    - UI thread 最多等 1 s。
+  - **實測**：
+    - 3000 頁全部命中快取：2.8 ms，host 已經結束也一樣；
+    - cache miss 且唯一的 render worker 正忙：130 µs；
+    - gate 被獨佔：165 µs；
+    - host 卡住：1.014 s 後回報錯誤，其他頁的請求不受影響。
+  - **仍有的限制**：超過 1 s 的錯誤在 core 會變成永久的頁面錯誤。要完全避免，需要在 engine-api 加上可重試的錯誤種類，並在 core 重試。
+- **取消與 admission**：被取消的請求，admission 要等到 host 送出該請求的最終回覆，或 host 結束，才會釋放；呼叫端仍然立即返回。
+  - 實測：呼叫端在 203 ms 返回，下一個請求在 1.502 s、host 真正做完時才進入。
+  - 這保證可疑頁仍然單獨執行，crash 的歸責也不會出錯。另外，只有恰好一個可歸責的請求在執行時才會歸責，否則視為不明。
+- **驗收量測**（Hayro，release build，背景負載 4–10%）：
+  - **正確性**：84 個 fixture 各取第一、中間、最後一頁，共 192 頁。186 頁整頁與 186 個 tile 逐位元組相同，6 頁的 render 錯誤也相同，192 個 text layer 相同。0 個差異，host 0 次 crash。
+  - **捲動吞吐量**：
+    - 需要 render 新內容時（11 次交替量測）：−0.3% 至 −5.0%，其中一次 +1.8%。
+    - tile 全部命中 Hayro block cache 時：−14% 至 −29%，remote 仍有 6,300–12,000 tiles/s。差距來自兩次複製與三次 thread 交接。
+  - **hostile 輸入**（`malformed/`，job 記憶體上限 64／32 MiB）：bomb 由 Hayro 自己的 guardrail 擋下；`deep-nesting-content-100000` 的第 2–3 頁讓 host 結束，重啟後第 4 頁正常 render，parent 的 private 只從 672 KiB 增加到 932 KiB。
+  - **crash 偵測時間**：正常結束 1.4–2.2 ms、stack overflow 16–20 ms、abort 118–182 ms（經過 Windows Error Reporting）。
+  - **成本**：
+    - 多一個 process（約 3–5 MiB）；
+    - tile section 10.6 MiB；
+    - 文件複製一份；
+    - 每個 tile 4–24 µs；
+    - 啟動約 +15 ms。
+  - **測試**：48 個單元測試、22 個整合測試、2 個 app 測試。protocol fuzz 預設 40k 次，各 fuzz 測試另外以 1M 次跑過一次（約 25 s）。
+  - **修正 P1／P2 之後重新驗收**（背景負載 8–16%）：84 個 fixture 的比對仍然 0 差異。捲動吞吐量為 −0.1% 至 −3.7%，只有 2 頁的 gov-letter（每次 12 個 tile）是 −3.4% 至 −7.8%（修正前 −5.0% 至 +1.8%）。這一輪的修改沒有碰到每個 tile 的路徑，但無法從這幾次量測完全排除影響。
+- **PR 4 尚未完成的驗收**：
+  - B-8 與 in-process 的比較；
+  - parent＋host 的總 private；
+  - 經由 UI 跑完 hostile 語料；
+  - 錯誤 UI 與 overlay；
+  - 平行啟動、只開 handle 的 loader。
+  - 這些完成之前維持 opt-in。
 
 ## Consequences
 
