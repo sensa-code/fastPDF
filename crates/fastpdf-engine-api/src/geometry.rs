@@ -130,7 +130,9 @@ impl RenderScale {
 }
 
 fn scale_to_pixels(points: f32, scale: f32) -> u32 {
-    let px = (f64::from(points) * f64::from(scale)).ceil();
+    // Round up partial pixels, but not float noise: 612 pt at 160/612
+    // computes to 160.0000005 and must stay 160 px.
+    let px = (f64::from(points) * f64::from(scale) - 1e-3).ceil();
     if !px.is_finite() || px < 1.0 {
         1
     } else if px >= f64::from(u32::MAX) {
@@ -296,6 +298,17 @@ mod tests {
         let s = RenderScale::new(2.0).unwrap_or(RenderScale::IDENTITY);
         let px = s.page_pixels(PageSize::new(100.2, 50.0), Rotation::R90);
         assert_eq!(px, PixelSize::new(100, 201));
+    }
+
+    #[test]
+    fn float_noise_does_not_add_a_pixel() {
+        let s = RenderScale::new(160.0 / 612.0).unwrap();
+        assert_eq!(s.page_pixels(PageSize::LETTER, Rotation::R0).width, 160);
+        let s = RenderScale::new(96.0 / 72.0).unwrap();
+        assert_eq!(
+            s.page_pixels(PageSize::LETTER, Rotation::R0),
+            PixelSize::new(816, 1056)
+        );
     }
 
     #[test]
