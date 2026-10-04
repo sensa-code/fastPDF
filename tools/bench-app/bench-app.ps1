@@ -386,7 +386,13 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
-    if ($cfg.capture) { $psi.EnvironmentVariables['FASTPDF_BENCH'] = '1' }
+    if ($cfg.capture) {
+        $psi.EnvironmentVariables['FASTPDF_BENCH'] = '1'
+        # Ignore the user's saved settings (night mode, default zoom, window
+        # bounds) and recent files so every run starts from the same state.
+        $psi.EnvironmentVariables['FASTPDF_SETTINGS_FILE'] = ''
+        $psi.EnvironmentVariables['FASTPDF_RECENT_FILE'] = ''
+    }
     $clock = New-Object System.Diagnostics.Stopwatch
     $launchFt = [DateTime]::UtcNow.ToFileTimeUtc()
     $clock.Start()
