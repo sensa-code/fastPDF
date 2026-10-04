@@ -6,8 +6,35 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+# zpdf is pinned to the audited commit fe0ed23 (v0.14.0-1-gfe0ed23, see
+# docs/audit/zpdf.md). We depend on the individual zpdf crates rather than the
+# `zpdf` facade: the facade unconditionally pulls in `zpdf-writer` (editing,
+# signing, encrypt-on-save), whose optional `timestamp` feature is the only
+# network-capable code in zpdf (ureq/rustls/ring). Without the writer in the
+# graph that feature cannot be switched on by feature unification. Only the
+# CPU backend (tiny-skia) is used; `zpdf-render-wgpu` is never compiled.
+# None of these crates has cargo features of its own.
 [dependencies]
 fastpdf-engine-api.workspace = true
+zpdf-core = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
+zpdf-document = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
+zpdf-content = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
+zpdf-display-list = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
+zpdf-font = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
+zpdf-image = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
+zpdf-color = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
+zpdf-render = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
+zpdf-render-cpu = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
+# Already in the graph through zpdf. Used only to observe zpdf's own
+# "key did not validate" verdict while opening encrypted files (password.rs),
+# because zpdf exposes no API for it.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Test-only: produces RC4 / AES-256 encrypted fixtures at test time so no
+# binary fixtures need to be committed. Default features only (no `timestamp`).
+zpdf-writer = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
+zpdf-parser = { git = "https://github.com/Xero-Team/zpdf", rev = "fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f" }
 
 [lints]
 workspace = true
