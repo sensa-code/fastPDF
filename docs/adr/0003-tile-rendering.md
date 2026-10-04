@@ -1,6 +1,6 @@
 # ADR 0003 — Tile Rendering, Scale Buckets and the Render Scheduler
 
-- 狀態：Accepted（實作於 `crates/fastpdf-render`；tile size 512 與 worker 數 2 已由 B-3／B-4 定案，見 `docs/benchmarks/b3-b4-tiles-workers.md`）
+- 狀態：Accepted（實作於 `crates/fastpdf-render`；worker 數 2 由 B-4 定案；tile size 由 B-3 定為 512，2026-10-04 為了對齊 GPU atlas 改為 508，見 `docs/benchmarks/b3-b4-tiles-workers.md`）
 - 日期：2026-10-04
 - 相關 spec：§1、§12、§13、§14、§17、§18
 
@@ -14,7 +14,10 @@
 
 ## Decision
 
-1. **Tile grid**：頁面在某個 render scale 下旋轉後的 pixel 空間切成正方形 tile（`TileGrid`），邊緣 tile 裁切到頁面大小。預設 512 px（`DEFAULT_TILE_SIZE`），最小 64 px。B-3 實測 256／512／1024 的 viewport fill 時間相同（±3%）；512 只比 256 多約 4 MB，atlas 項目卻少四倍。每個 tile render 時四周多畫 2 px gutter，只顯示內部區域，避免縮放時的接縫。
+1. **Tile grid**：頁面在某個 render scale 下旋轉後的 pixel 空間切成正方形 tile（`TileGrid`），邊緣 tile 裁切到頁面大小。預設 508 px（`DEFAULT_TILE_SIZE`），最小 64 px。
+   - B-3 實測 256／512／1024 的 viewport fill 時間相同（±3%）；512 只比 256 多約 4 MB，atlas 項目卻少四倍。
+   - 每個 tile render 時四周多畫 2 px gutter，只顯示內部區域，避免縮放時的接縫。
+   - **508 而不是 512**：加上 gutter 後，內部 tile 剛好是 512 px，GPUI 最小的 1024×1024 atlas texture 可以放 4 個；516 px 的 tile 一張 texture 只放得下 1 個，其餘空間浪費。實測縮放後的 private bytes 少約 30 MB（NVIDIA driver 為每張 texture commit 記憶體；內顯則直接佔用系統記憶體），viewport fill 時間在雜訊範圍內（508／512 的幾何平均比值 1.017，範圍 0.991–1.061）。
 2. **Scale bucket**：display scale = zoom × window scale factor（1.0 = 96 dpi 下的 100%）。tile 只會以 26 個固定 bucket 之一 render（0.125 … 48）。這些 bucket 剛好涵蓋 Windows 常見的 scale factor（1.25、1.5、1.75、2.0），所以最常見的情況不需要任何縮放。任意 zoom（例如 137%）會選「略低於需求但放大 ≤ 6%」的 bucket，否則選上一個 bucket（縮小顯示，文字較銳利）。cache 種類因此有上界（每頁 × 每 rotation × 26）。
 3. **TileKey** = `PageId`（document + page）+ `ScaleBucket` + user `Rotation` + `ColorMode` + tile size + `TileCoord`。page 的 intrinsic `/Rotate` 每頁固定，不需要放進 key。
 4. **Layout 與 viewport**：`DocumentLayout` 以 point 為單位垂直排列所有頁面；未知頁面先用估計尺寸（通常是第 1 頁的尺寸），之後再修正（spec §11：開檔不需要解析全部頁面）。修正尺寸時以 `ScrollAnchor`（頁 + 頁內比例）維持畫面不跳動。`Viewport` 的 scroll offset 以 point 表示，所以 zoom 時不會漂移；`zoom_around` 讓滑鼠位置下的內容保持不動（Ctrl + 滾輪）。
@@ -33,7 +36,7 @@
 
 ## Consequences
 
-- 600% zoom 的 Letter 頁面（4896 × 6336 px，約 120 MB RGBA）在 1920×1080 viewport 下最多只需要約 20 個 512 px tile（約 20 MB）。
+- 600% zoom 的 Letter 頁面（4896 × 6336 px，約 120 MB RGBA）在 1920×1080 viewport 下最多只需要約 20 個 508 px tile（約 20 MB）。
 - 快速捲動時，舊 plan 的工作在下一次 `submit_plan` 就被丟棄或取消；engine 若支援 cooperative cancel，in-flight 工作也會提早結束。
 - 不支援 region render 的 engine（`region_render: false`）每個 tile 都要完整 rasterize 整頁，成本 = tile 數 × 整頁。這是選擇 engine 的關鍵指標之一，已列入 M4 比較。
 - 每個 tile 的邊界都是整數 pixel，相鄰 tile 由同一個 render scale 產生，不會有接縫；但 anti-aliasing 在 tile 邊界可能有 1 px 差異，需要以截圖比對確認（M5 驗收項目）。

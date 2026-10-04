@@ -2,9 +2,17 @@ use fastpdf_engine_api::{ColorMode, PageId, PixelRect, PixelSize, Rotation};
 
 use crate::ScaleBucket;
 
-/// Default tile edge in device pixels. Provisional until the tile-size
-/// benchmark (256 vs 512) settles it (spec §12).
-pub const DEFAULT_TILE_SIZE: u32 = 512;
+/// Default tile edge in device pixels (spec §12). B-3 found 256, 512 and
+/// 1024 equally fast (within 3%); see docs/benchmarks/b3-b4-tiles-workers.md.
+///
+/// 508 rather than 512: with the 2 px gutter the session renders on each side
+/// (`SessionConfig::tile_gutter`) an interior tile is 512 px, so four fit one
+/// 1024 x 1024 GPU atlas texture (GPUI's smallest atlas texture), where two
+/// 516 px tiles never fit side by side. With 512 px tiles the private bytes
+/// after a zoom were 30 MB higher on NVIDIA, whose driver commits memory for
+/// every texture (docs/benchmarks/b8-app.md, "508 px tile"); viewport fill
+/// time is unchanged within noise (b3-b4-tiles-workers.md, "508 vs 512").
+pub const DEFAULT_TILE_SIZE: u32 = 508;
 
 /// Column/row of a tile within a page's tile grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

@@ -263,7 +263,8 @@ mod tests {
             assert_eq!(a.key, b.key);
             assert!(a.request.region.is_within(b.request.region));
         }
-        assert_eq!(padded[0].request.region, PixelRect::new(0, 0, 514, 514));
+        let edge = DEFAULT_TILE_SIZE + 2; // no gutter at the page corner
+        assert_eq!(padded[0].request.region, PixelRect::new(0, 0, edge, edge));
     }
 
     #[test]
@@ -290,6 +291,9 @@ mod tests {
         let plan = plan_tiles(DocumentId::from_raw(1), &rotated, &viewport, info, &config);
         assert!(plan.iter().all(|t| t.key.rotation == Rotation::R90));
         // Landscape after rotation: 1056 px wide, so a third tile column exists.
-        assert!(plan.iter().any(|t| t.request.region.x >= 1024));
+        assert!(
+            plan.iter()
+                .any(|t| t.request.region.x >= 2 * DEFAULT_TILE_SIZE)
+        );
     }
 }

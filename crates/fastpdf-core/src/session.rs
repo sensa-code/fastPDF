@@ -1378,8 +1378,9 @@ mod tests {
         let t = &frame.tiles[0];
         // The first tile touches the page's top-left corner: no gutter there,
         // 2 px on the right and bottom.
-        assert_eq!(t.src, [0.0, 0.0, 512.0, 512.0]);
-        assert_eq!(t.image.size().width, 514);
+        let tile = fastpdf_render::DEFAULT_TILE_SIZE;
+        assert_eq!(t.src, [0.0, 0.0, tile as f32, tile as f32]);
+        assert_eq!(t.image.size().width, tile + 2);
         assert!(frame.tiles.iter().all(|t| t.key.page.document == s.id()));
     }
 

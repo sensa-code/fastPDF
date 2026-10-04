@@ -37,3 +37,27 @@ peak RSS 中位數（MB）：tile 256 約 37–38、512 約 41–43、1024 約 4
 - **Render workers 預設 2**（原本暫定 2–4）。依 spec §18「latency 優先，而不是 throughput 最大化」：2 個 worker 的延遲和更多 worker 相同，記憶體較少，同時保留一個 worker 給 prefetch 或第二個 block。
 - **Tile size 維持 512**：時間與 256 相同，只多約 4 MB RSS，但 atlas 項目與上傳次數是 256 的四分之一。
 - 限制：只量了冷啟動的第一個 viewport；快速捲動時的 prefetch 吞吐量（多個 block 並行）沒有納入，之後以 app 層 B-8 的捲動情境補量。
+
+## 508 vs 512（2026-10-04，atlas 對齊）
+
+- **背景**：tile 加上兩側各 2 px 的 gutter 後是 516 px，GPUI 最小的 1024×1024 atlas texture 只放得下 1 個。改成 508 px 後剛好 512 px，一張可以放 4 個。B-8 實測縮放後的 private bytes 少約 30 MB（`docs/benchmarks/b8-app.md`〈508 px tile 實驗〉）。
+- **方法**：
+  - 和本文相同的 6 個 fixture 與 3 種 scale（1、2、6），2 個 worker，viewport 1920×1080；
+  - 每種組合 5 對，順序交替（508、512 ／ 512、508 …），每次都是新的 `fastpdf-bench render` process；
+  - release build（HEAD `dc372f4`），量測時沒有編譯在跑。
+- **結果**：
+
+| Fixture | ×1 | ×2 | ×6 |
+|---|---|---|---|
+| small-text／three-pages | 1.055 | 1.040 | 1.033 |
+| traditional-chinese／gov-letter | 1.011 | 0.992 | 0.999 |
+| vector-heavy／dense-polyline-map | 1.003 | 0.996 | 0.998 |
+| cad／a0-floorplan | 0.991 | 1.009 | 1.014 |
+| scanned／scan-gray-jpeg | 1.061 | 1.037 | 1.033 |
+| image-heavy／photos-rgb-jpeg | 1.011 | 1.019 | 1.008 |
+
+  表中是 508／512 的 viewport fill 時間比值，取每對比值的中位數，> 1 表示 508 較慢。
+  - 幾何平均 1.017，範圍 0.991–1.061。
+  - 比值最大的兩個（small-text、scanned ×1）絕對差距只有 0.3–1.2 ms。
+  - 兩者的可見 tile 數相同（6 或 12 個），peak RSS 差距在 ±2 MB 內。
+- **結論**：差距落在本文原本判定為雜訊的 ±3% 內，所以預設改為 508。
