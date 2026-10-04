@@ -25,6 +25,8 @@ engine-synthetic = []
 fastpdf-engine-api.workspace = true
 fastpdf-core.workspace = true
 fastpdf-ui.workspace = true
+# `--register-file-types` / `--unregister-file-types` (file_types.rs).
+fastpdf-shell.workspace = true
 fastpdf-engine-hayro = { workspace = true, optional = true }
 fastpdf-engine-zpdf = { workspace = true, optional = true }
 gpui.workspace = true

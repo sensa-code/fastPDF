@@ -1609,6 +1609,7 @@ dependencies = [
  "fastpdf-engine-api",
  "fastpdf-engine-hayro",
  "fastpdf-engine-zpdf",
+ "fastpdf-shell",
  "fastpdf-ui",
  "gpui",
  "gpui_platform",

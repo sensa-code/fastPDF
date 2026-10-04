@@ -2,7 +2,12 @@
 //!
 //! ```text
 //! fastpdf [--engine NAME] [file.pdf]
+//! fastpdf --register-file-types | --unregister-file-types [--dry-run]
 //! ```
+//!
+//! The second form adds FastPDF to (or removes it from) Explorer's "Open
+//! with" list and Default apps for `.pdf` files, for the current user only
+//! (`file_types.rs`); `--dry-run` prints the registry changes instead.
 //!
 //! Environment: `FASTPDF_LOG` (log filter, spec §31), `FASTPDF_ENGINE`
 //! (engine name), `FASTPDF_BENCH=1` (start-up milestones as JSON lines on
@@ -31,6 +36,7 @@
 
 mod bench;
 mod engines;
+mod file_types;
 mod logger;
 #[cfg(feature = "engine-synthetic")]
 mod synthetic;
@@ -42,7 +48,10 @@ use std::sync::Arc;
 use fastpdf_engine_api::PdfEngine;
 use fastpdf_ui::{ReaderOptions, Startup};
 
-const USAGE: &str = "usage: fastpdf [--engine NAME] [file.pdf]";
+use crate::file_types::FileTypes;
+
+const USAGE: &str = "usage: fastpdf [--engine NAME] [file.pdf]
+       fastpdf --register-file-types | --unregister-file-types [--dry-run]";
 
 #[derive(Debug, Default, PartialEq)]
 struct Args {
@@ -50,6 +59,10 @@ struct Args {
     engine: Option<String>,
     help: bool,
     version: bool,
+    /// Register or unregister the `.pdf` association instead of reading.
+    file_types: Option<FileTypes>,
+    /// With `file_types`: print the registry changes, make none.
+    dry_run: bool,
 }
 
 impl Args {
@@ -70,6 +83,11 @@ impl Args {
                 Some(flag) if flag.starts_with("--engine=") => {
                     parsed.engine = Some(flag["--engine=".len()..].to_owned());
                 }
+                Some("--register-file-types") => parsed.set_file_types(FileTypes::Register)?,
+                Some("--unregister-file-types") => {
+                    parsed.set_file_types(FileTypes::Unregister)?;
+                }
+                Some("--dry-run") => parsed.dry_run = true,
                 Some(flag) if flag.starts_with('-') && flag.len() > 1 => {
                     return Err(format!("unknown option {flag}"));
                 }
@@ -81,7 +99,27 @@ impl Args {
                 }
             }
         }
+        if parsed.file_types.is_some() && (parsed.file.is_some() || parsed.engine.is_some()) {
+            return Err(
+                "--register-file-types and --unregister-file-types take no file or engine".into(),
+            );
+        }
+        if parsed.dry_run && parsed.file_types.is_none() {
+            return Err("--dry-run needs --register-file-types or --unregister-file-types".into());
+        }
         Ok(parsed)
+    }
+
+    fn set_file_types(&mut self, action: FileTypes) -> Result<(), String> {
+        match self.file_types {
+            Some(other) if other != action => {
+                Err("choose one of --register-file-types and --unregister-file-types".into())
+            }
+            _ => {
+                self.file_types = Some(action);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -145,6 +183,10 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if args.help || args.version || args.file_types.is_some() {
+        // Command-line uses: their output belongs in the calling terminal.
+        console::attach_to_parent();
+    }
     if args.help {
         println!(
             "{USAGE}\n\nengines: {}\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE, FASTPDF_SETTINGS_FILE\ndevelopment: FASTPDF_PRINT_TO_FILE, FASTPDF_DEV_SCRIPT",
@@ -155,6 +197,9 @@ fn main() {
     if args.version {
         println!("fastpdf {}", env!("CARGO_PKG_VERSION"));
         return;
+    }
+    if let Some(action) = args.file_types {
+        std::process::exit(file_types::run(action, args.dry_run));
     }
     if env.bench {
         clock.emit_startup();
@@ -335,6 +380,26 @@ mod tests {
         let b = parse(&["--engine=hayro"]).expect("valid");
         assert_eq!(b.engine.as_deref(), Some("hayro"));
         assert_eq!(b.file, None);
+    }
+
+    #[test]
+    fn parses_file_type_commands() {
+        let a = parse(&["--register-file-types"]).expect("valid");
+        assert_eq!(
+            (a.file_types, a.dry_run),
+            (Some(FileTypes::Register), false)
+        );
+        let b = parse(&["--dry-run", "--unregister-file-types"]).expect("valid");
+        assert_eq!(
+            (b.file_types, b.dry_run),
+            (Some(FileTypes::Unregister), true)
+        );
+        assert!(parse(&["--register-file-types", "--register-file-types"]).is_ok());
+        assert!(parse(&["--register-file-types", "--unregister-file-types"]).is_err());
+        assert!(parse(&["--register-file-types", "a.pdf"]).is_err());
+        assert!(parse(&["--unregister-file-types", "--engine", "hayro"]).is_err());
+        assert!(parse(&["--dry-run"]).is_err(), "nothing to dry-run");
+        assert!(parse(&["--dry-run", "a.pdf"]).is_err());
     }
 
     #[test]

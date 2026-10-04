@@ -113,7 +113,7 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
 
 - [ ] release notes 附上 zip 的 SHA-256（`.sha256` 檔的格式為 `<hex>  <檔名>`）。使用者可以用 `Get-FileHash -Algorithm SHA256 <zip>` 驗證。
 - [ ] `git tag -a vX.Y.Z -m "FastPDF X.Y.Z"`，由 owner 決定何時 push。
-- [ ] release notes 內容：變更摘要、KPI 實測值、已知問題（未簽章、檔案關聯尚未提供 UI 等）、SHA-256。
+- [ ] release notes 內容：變更摘要、KPI 實測值、已知問題（未簽章、檔案關聯只有命令列、沒有 UI 等）、SHA-256。
 - [ ] **不提供** auto-update（spec §9）。新版本由使用者自行下載。
 
 ### 1.9 隱私：binary 內的 build 路徑
@@ -132,7 +132,11 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
 ## 2. 檔案關聯（`crates/fastpdf-shell`）
 
 - **作法**：`Registration::new(exe)` 產生純資料的 `Plan`，`apply(&plan)` 才實際寫入 registry（只在 Windows 上編譯）。單元測試只檢查計畫內容，**從不執行 apply**。
-- **CLI**：預計由 `fastpdf-app` 接上，例如 `fastpdf --register-file-types`、`--unregister-file-types`。兩者都要支援 `--dry-run`，用 `Plan::to_reg_file()` 印出 `.reg` 內容供檢視。
+- **CLI**（`crates/fastpdf-app/src/file_types.rs`）：
+  - `fastpdf --register-file-types`、`fastpdf --unregister-file-types`：對目前執行的 exe（`std::env::current_exe()`）套用計畫，不開視窗。成功時印出變更數量與「預設應用程式」設定頁的位置，失敗時 exit code 為 1；
+  - 加上 `--dry-run` 只印出 `Plan::to_reg_file()` 的 `.reg` 內容供檢視，不寫入 registry。輸出是 UTF-8；含非 ASCII 字元的 `.reg` 要給 regedit 匯入時，必須另存成 UTF-16 LE（含 BOM）；
+  - 兩者不能和檔案或 `--engine` 一起使用。release build 是 GUI subsystem，在 PowerShell 中要等它結束並看到輸出，請用 `fastpdf --register-file-types | Out-Host`；
+  - 開發機上只執行過 `--dry-run`，實際寫入請依下方〈驗證方式〉在 Sandbox 或 VM 中確認。
 - **範圍**：全部寫在 `HKEY_CURRENT_USER`，不需要系統管理員權限，也不影響其他使用者。
 
 | Key（在 `HKCU` 之下） | 作用 |
