@@ -445,9 +445,9 @@ zpdf audit 已粗測：9 份文件中 8 份 GPU tile 比 CPU 慢，且必須 rea
 | **M2 Engine isolation** | `fastpdf-engine-api` + `GuardedDocument`；只有 adapter 依賴 engine | `tools/check_engine_isolation.py` 在 CI 通過 | ✅（以新 workspace 的設計達成） |
 | **M3 zpdf PoC** | `fastpdf-engine-zpdf`（feature `engine-zpdf`）：open、page count、page size、render | bench 以 `--engine zpdf` 跑完 corpus | ✅（另含 text／outline／links） |
 | **M4 Renderer comparison** | 同一 corpus 比較 correctness、open、first page、CPU、memory、render latency | `docs/engine-comparison.md`；不預設誰贏 | ✅（Hayro 為 V0.1 預設，ADR 0007） |
-| **M5 Tile renderer** | `TileGrid`／`TileCache`／`RenderScheduler`（✅ 已完成並有測試）；GPUI viewport element、texture 生命週期、upload 預算；B-3、B-4 | 600% zoom 只 render 相交 tile；捲動不空白；VRAM churn 測試穩定 | GPUI 整合完成，VRAM churn 穩定；B-3／B-4 待量 |
-| **M6 Memory budget** | `MemoryBudgetManager`（✅）、`MemoryMonitor`（✅）接進 app；development overlay；B-5 | 捲過 2000 頁 RSS 有上限；overlay 顯示各 cache 統計 | 核心完成 |
-| **M7 UX** | toolbar、sidebar（outline、縮圖：只 render 可見列）、搜尋 UI（✅ 引擎完成）、文字選取與複製、recent files 選單、設定、dark mode、列印（Win32）、檔案關聯 | V0.1 功能清單（spec §8） | 未開始 |
+| **M5 Tile renderer** | `TileGrid`／`TileCache`／`RenderScheduler`（✅ 已完成並有測試）；GPUI viewport element、texture 生命週期、upload 預算；B-3、B-4 | 600% zoom 只 render 相交 tile；捲動不空白；VRAM churn 測試穩定 | ✅（gutter 消除接縫；B-3／B-4：tile 512、2 workers，`docs/benchmarks/b3-b4-tiles-workers.md`） |
+| **M6 Memory budget** | `MemoryBudgetManager`（✅）、`MemoryMonitor`（✅）接進 app；development overlay；B-5 | 捲過 2000 頁 RSS 有上限；overlay 顯示各 cache 統計 | ✅（B-5：private 穩定在 190–220 MiB，與頁數無關；`docs/benchmarks/b5-memory.md`） |
+| **M7 UX** | toolbar、sidebar（outline、縮圖：只 render 可見列）、搜尋 UI、文字選取與複製、recent files、設定、dark mode、列印（Win32）、檔案關聯 | V0.1 功能清單（spec §8） | 大部分完成：spec §8 的功能都已可用；檔案關聯、安裝程式、平滑捲動待做 |
 
 之後的 PR 一律遵守 spec §38：每個 PR 都是一個小的架構變更，附上 benchmark 的 Before／After／Why／Tradeoff。
 

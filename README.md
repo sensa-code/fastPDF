@@ -19,9 +19,10 @@
 | M2 Engine isolation | `fastpdf-engine-api`，只有 adapter 能依賴 engine | ✅ `tools/check_engine_isolation.py` |
 | M3 zpdf PoC | `fastpdf-engine-zpdf`（feature `engine-zpdf`） | ✅ |
 | M4 Renderer comparison | `docs/engine-comparison.md` | ✅ Hayro 為預設 engine（ADR 0007） |
-| M5 Tile renderer | tile／scheduler／cache + GPUI viewport | ✅ 第一版可用的視窗 |
-| M6 Memory budget | `MemoryBudgetManager`、overlay、B-5 驗證 | 進行中 |
-| M7 UX | sidebar、搜尋、選取、列印、設定… | 進行中 |
+| M5 Tile renderer | tile／scheduler／cache + GPUI viewport；B-3／B-4（tile 512、2 workers） | ✅ |
+| M6 Memory budget | `MemoryBudgetManager`、overlay 分項、B-5 驗證（大型 PDF 不爆 RAM） | ✅ |
+| M7 UX | sidebar（outline、縮圖）、搜尋、選取／複製、列印、recent files、深色外觀、夜間模式、設定 | V0.1 功能清單完成；檔案關聯、安裝程式待做 |
+| 下一步 | render host process（ADR 0008，Proposed） | 設計與原型量測完成 |
 
 ## 需求
 
