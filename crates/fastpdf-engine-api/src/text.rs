@@ -1,5 +1,9 @@
 use crate::{PageIndex, PageRect};
 
+mod layout;
+
+pub use layout::{CharPos, LaidText, LineBreak, is_cjk};
+
 /// Text of one page with geometry, used by selection, copy and search.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextLayer {
@@ -60,8 +64,8 @@ impl TextLayer {
         }
     }
 
-    /// Plain text with one line per span; good enough for search and copy
-    /// until layout analysis lands.
+    /// Plain text with one line per span, in content order. Copy and search
+    /// use the reading order of [`TextLayer::lay_out`] instead.
     pub fn plain_text(&self) -> String {
         let mut out = String::with_capacity(self.spans.iter().map(|s| s.text.len() + 1).sum());
         for span in &self.spans {

@@ -437,6 +437,42 @@ mod tests {
     }
 
     #[test]
+    fn hits_that_wrap_highlight_every_line() {
+        // A word broken over two lines has a rectangle on each.
+        let wrapped = SearchHit {
+            page: PageIndex::new(3),
+            start: 40,
+            end: 46,
+            rects: vec![
+                PageRect::new(500.0, 100.0, 520.0, 114.0),
+                PageRect::new(72.0, 120.0, 86.0, 134.0),
+            ],
+        };
+        let mut list = HitList::default();
+        list.insert(vec![hit(3, 60), wrapped.clone(), hit(3, 0)]);
+        assert!(list.activate_from(PageIndex::new(3)));
+        list.step(true);
+        assert_eq!(list.active(), Some(&wrapped));
+        // Both of its rectangles are drawn as the active hit, in order.
+        let rects: Vec<_> = list.on_page(PageIndex::new(3)).collect();
+        assert_eq!(
+            rects,
+            vec![
+                (PageRect::new(0.0, 0.0, 10.0, 10.0), false),
+                (wrapped.rects[0], true),
+                (wrapped.rects[1], true),
+                (PageRect::new(60.0, 0.0, 70.0, 10.0), false),
+            ]
+        );
+        let done = Progress {
+            finished: true,
+            ..Progress::default()
+        };
+        let en = crate::i18n::Language::English.strings();
+        assert_eq!(status_text("x", &list, done, en), "2 of 3");
+    }
+
+    #[test]
     fn status_reports_progress_then_position() {
         let mut list = HitList::default();
         let mut p = Progress {

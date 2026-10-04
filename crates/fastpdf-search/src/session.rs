@@ -7,6 +7,7 @@ use fastpdf_engine_api::{
     CancelToken, DocumentId, EngineDocument, EngineError, PageId, PageIndex, PageRect, TextLayer,
 };
 
+use crate::page_text::PageText;
 use crate::{Matcher, search_order};
 
 /// What to look for.
@@ -20,9 +21,12 @@ pub struct SearchQuery {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
     pub page: PageIndex,
-    /// `char` range within the page's searched text.
+    /// Byte range within the page's search text: its characters in reading
+    /// order, as [`Matcher`] compares them. Orders the hits of a page.
     pub start: usize,
     pub end: usize,
+    /// In reading order: one rectangle per span and line the hit covers
+    /// (a hit that wraps onto the next line has one on each).
     pub rects: Vec<PageRect>,
 }
 
@@ -43,13 +47,38 @@ pub enum SearchEvent {
     Finished { hits: usize, cancelled: bool },
 }
 
-/// Byte-budgeted cache of extracted text layers.
+/// Byte-budgeted cache of extracted text layers and, for pages that were
+/// searched, their search text (a few percent of the layer for Latin
+/// text), so that the next query skips the layout.
 pub struct TextCache {
-    cache: Arc<SharedCache<PageId, Arc<TextLayer>>>,
+    cache: Arc<SharedCache<PageId, Entry>>,
     /// Documents closed via `remove_document`; extractions still running
     /// for them must not refill the cache. Grows by one id per closed
     /// document, which is negligible.
     closed: std::sync::Mutex<std::collections::HashSet<DocumentId>>,
+}
+
+/// A page's text layer and its search text: what searching it needs.
+type Searchable = (Arc<TextLayer>, Arc<PageText>);
+
+/// A cached page: its text layer and, once a search without case
+/// sensitivity read it, its (case-folded) search text.
+#[derive(Debug)]
+struct Entry {
+    layer: Arc<TextLayer>,
+    search: Option<Arc<PageText>>,
+}
+
+impl Entry {
+    /// Weight in the cache: what the entry keeps on the heap.
+    fn bytes(&self) -> usize {
+        self.layer.heap_bytes()
+            + std::mem::size_of::<TextLayer>()
+            + self
+                .search
+                .as_ref()
+                .map_or(0, |t| t.heap_bytes() + std::mem::size_of::<PageText>())
+    }
 }
 
 impl fmt::Debug for TextCache {
@@ -85,20 +114,76 @@ impl TextCache {
         cancel: &CancelToken,
     ) -> Result<Arc<TextLayer>, EngineError> {
         let key = PageId::new(document, page);
-        if let Some(layer) = self.cache.with(&key, Arc::clone) {
+        if let Some(layer) = self.cache.with(&key, |e| Arc::clone(&e.layer)) {
             return Ok(layer);
         }
-        let layer = Arc::new(doc.text_layer(page, cancel)?);
-        let bytes = layer.heap_bytes() + std::mem::size_of::<TextLayer>();
-        let closed = self
-            .closed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(&document);
-        if !closed {
-            self.cache.insert(key, Arc::clone(&layer), bytes);
+        self.extract(key, doc, cancel)
+    }
+
+    /// What searching `page` needs: its text layer and search text, made on
+    /// first use (search text without case sensitivity is cached with the
+    /// layer). `None` when the page lacks one of the query's characters: it
+    /// cannot match, and no search text is made for it.
+    fn search_text(
+        &self,
+        document: DocumentId,
+        doc: &dyn EngineDocument,
+        page: PageIndex,
+        cancel: &CancelToken,
+        matcher: &Matcher,
+    ) -> Result<Option<Searchable>, EngineError> {
+        let key = PageId::new(document, page);
+        let folded = !matcher.case_sensitive();
+        let cached = self
+            .cache
+            .with(&key, |e| (Arc::clone(&e.layer), e.search.clone()));
+        let layer = match cached {
+            Some((layer, Some(text))) if folded => return Ok(Some((layer, text))),
+            Some((layer, _)) => layer,
+            None => self.extract(key, doc, cancel)?,
+        };
+        if !matcher.may_match(&layer) {
+            return Ok(None);
         }
+        let text = Arc::new(PageText::new(&layer, matcher.case_sensitive()));
+        if folded {
+            self.store(
+                key,
+                Entry {
+                    layer: Arc::clone(&layer),
+                    search: Some(Arc::clone(&text)),
+                },
+            );
+        }
+        Ok(Some((layer, text)))
+    }
+
+    fn extract(
+        &self,
+        key: PageId,
+        doc: &dyn EngineDocument,
+        cancel: &CancelToken,
+    ) -> Result<Arc<TextLayer>, EngineError> {
+        let layer = Arc::new(doc.text_layer(key.page, cancel)?);
+        self.store(
+            key,
+            Entry {
+                layer: Arc::clone(&layer),
+                search: None,
+            },
+        );
         Ok(layer)
+    }
+
+    /// Caches `entry` (replacing the page's entry) unless its document was
+    /// closed. The `closed` lock is held throughout, so `remove_document`
+    /// cannot purge in between and see the entry slip back in.
+    fn store(&self, key: PageId, entry: Entry) {
+        let closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
+        if !closed.contains(&key.document) {
+            let bytes = entry.bytes();
+            self.cache.insert(key, entry, bytes);
+        }
     }
 }
 
@@ -217,14 +302,15 @@ fn run(
             });
             return;
         }
-        match texts.get_or_extract(document, doc, page, cancel) {
-            Ok(layer) => {
-                let found = search_layer(&layer, matcher);
+        match texts.search_text(document, doc, page, cancel, matcher) {
+            Ok(Some((layer, text))) => {
+                let found = search_layer(&layer, &text, matcher);
                 if !found.is_empty() {
                     hits += found.len();
                     sink(SearchEvent::Hits(found));
                 }
             }
+            Ok(None) => {}
             Err(EngineError::Cancelled) => continue,
             Err(EngineError::Unsupported(what)) => {
                 sink(SearchEvent::PageFailed {
@@ -252,45 +338,19 @@ fn run(
     });
 }
 
-/// Searches one page. Spans are joined with line breaks, which the matcher
-/// treats as whitespace, so phrases that wrap across spans are found.
-fn search_layer(layer: &TextLayer, matcher: &Matcher) -> Vec<SearchHit> {
-    // Map from char index in the joined text to (span, char within span).
-    let mut text = String::new();
-    let mut origin: Vec<Option<(usize, usize)>> = Vec::new();
-    for (si, span) in layer.spans.iter().enumerate() {
-        for (ci, c) in span.text.chars().enumerate() {
-            text.push(c);
-            origin.push(Some((si, ci)));
-        }
-        text.push('\n');
-        origin.push(None);
-    }
+/// Searches one page, in reading order, across span and line boundaries
+/// (see [`Matcher`] for how they compare): matches in the page's search
+/// text, with highlight rectangles from its layer.
+fn search_layer(layer: &TextLayer, text: &PageText, matcher: &Matcher) -> Vec<SearchHit> {
     matcher
-        .find_all(&text)
-        .into_iter()
+        .find_in(text.text())
         .map(|m| SearchHit {
             page: layer.page,
             start: m.start,
             end: m.end,
-            rects: highlight_rects(layer, &origin[m.start..m.end]),
+            rects: text.rects(layer, m),
         })
         .collect()
-}
-
-/// One rectangle per span touched by the match: the union of the matched
-/// characters' boxes, or the whole span box when the engine only provides
-/// span-level geometry.
-fn highlight_rects(layer: &TextLayer, chars: &[Option<(usize, usize)>]) -> Vec<PageRect> {
-    let mut rects: Vec<(usize, PageRect)> = Vec::new();
-    for &(si, ci) in chars.iter().flatten() {
-        let rect = layer.spans[si].char_rect(ci);
-        match rects.last_mut() {
-            Some((last, r)) if *last == si => *r = r.union(rect),
-            _ => rects.push((si, rect)),
-        }
-    }
-    rects.into_iter().map(|(_, r)| r).collect()
 }
 
 #[cfg(test)]
@@ -303,6 +363,15 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
+
+    /// One page searched the way the session does it.
+    fn search(layer: &TextLayer, matcher: &Matcher) -> Vec<SearchHit> {
+        if !matcher.may_match(layer) {
+            return Vec::new();
+        }
+        let text = PageText::new(layer, matcher.case_sensitive());
+        search_layer(layer, &text, matcher)
+    }
 
     /// Page `n` contains "page n" plus "needle" on pages divisible by 3.
     struct TextDoc {
@@ -448,8 +517,226 @@ mod tests {
                 char_bounds: Vec::new(),
             }],
         };
-        let hits = search_layer(&layer, &Matcher::new("needle", false).unwrap());
+        let hits = search(&layer, &Matcher::new("needle", false).unwrap());
         assert_eq!(hits[0].rects, vec![PageRect::new(70.0, 0.0, 130.0, 12.0)]);
+    }
+
+    /// Horizontal text with its top-left corner at (x, y): CJK characters
+    /// 10 pt wide, others 5 pt, all 10 pt high.
+    fn text(s: &str, x: f32, y: f32) -> TextSpan {
+        let mut cx = x;
+        let char_bounds: Vec<PageRect> = s
+            .chars()
+            .map(|c| {
+                let w = if fastpdf_engine_api::is_cjk(c) {
+                    10.0
+                } else {
+                    5.0
+                };
+                let r = PageRect::new(cx, y, cx + w, y + 10.0);
+                cx = r.x1;
+                r
+            })
+            .collect();
+        let bounds = char_bounds
+            .iter()
+            .copied()
+            .reduce(PageRect::union)
+            .unwrap_or_default();
+        TextSpan {
+            text: s.into(),
+            bounds,
+            char_bounds,
+        }
+    }
+
+    /// Vertical CJK text running down from (x, y), 10 pt per character.
+    fn column(s: &str, x: f32, y: f32) -> TextSpan {
+        let char_bounds: Vec<PageRect> = (0..s.chars().count())
+            .map(|i| {
+                let y0 = y + 10.0 * i as f32;
+                PageRect::new(x, y0, x + 10.0, y0 + 10.0)
+            })
+            .collect();
+        let bounds = char_bounds
+            .iter()
+            .copied()
+            .reduce(PageRect::union)
+            .unwrap_or_default();
+        TextSpan {
+            text: s.into(),
+            bounds,
+            char_bounds,
+        }
+    }
+
+    fn find(spans: Vec<TextSpan>, query: &str) -> Vec<SearchHit> {
+        let layer = TextLayer {
+            page: PageIndex::new(3),
+            spans,
+        };
+        search(&layer, &Matcher::new(query, false).unwrap())
+    }
+
+    fn rects(hits: &[SearchHit]) -> Vec<Vec<PageRect>> {
+        hits.iter().map(|h| h.rects.clone()).collect()
+    }
+
+    #[test]
+    fn cjk_words_match_across_spans_and_lines() {
+        // One line drawn as two spans (a font switch).
+        let spans = vec![text("並以公", 0.0, 0.0), text("文或電子郵件", 30.0, 0.0)];
+        assert_eq!(
+            rects(&find(spans, "公文")),
+            vec![vec![
+                PageRect::new(20.0, 0.0, 30.0, 10.0),
+                PageRect::new(30.0, 0.0, 40.0, 10.0),
+            ]]
+        );
+        // A word broken over two lines: one rectangle on each.
+        let spans = vec![
+            text("聯絡窗口，並以公", 0.0, 0.0),
+            text("文或電子郵件送達本局。", 0.0, 14.0),
+        ];
+        let hits = find(spans.clone(), "公文");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].page, PageIndex::new(3));
+        assert_eq!(
+            hits[0].rects,
+            vec![
+                PageRect::new(70.0, 0.0, 80.0, 10.0),
+                PageRect::new(0.0, 14.0, 10.0, 24.0),
+            ]
+        );
+        // The query may be typed with a space or a line break in it.
+        assert_eq!(rects(&find(spans.clone(), "公 文")), rects(&hits));
+        assert_eq!(rects(&find(spans.clone(), "公\n文")), rects(&hits));
+        // Longer phrases over the break, and the punctuation around it.
+        assert_eq!(find(spans.clone(), "並以公文或電子郵件").len(), 1);
+        assert_eq!(find(spans, "窗口，並以公文").len(), 1);
+    }
+
+    #[test]
+    fn latin_words_match_across_lines_as_one_space() {
+        let spans = vec![
+            text("the quick brown", 0.0, 0.0),
+            text("fox jumps", 0.0, 12.0),
+        ];
+        let hits = find(spans.clone(), "brown fox");
+        assert_eq!(
+            rects(&hits),
+            vec![vec![
+                PageRect::new(50.0, 0.0, 75.0, 10.0),
+                PageRect::new(0.0, 12.0, 15.0, 22.0),
+            ]]
+        );
+        // Several spaces (or a tab) in the query are one space.
+        assert_eq!(
+            rects(&find(spans.clone(), "  BROWN   \tfox ")),
+            rects(&hits)
+        );
+        // The line break is a word boundary.
+        assert!(find(spans.clone(), "brownfox").is_empty());
+        // A space in one span is covered by its rectangle.
+        assert_eq!(
+            rects(&find(spans, "quick brown")),
+            vec![vec![PageRect::new(20.0, 0.0, 75.0, 10.0)]]
+        );
+        // Words drawn apart without a space character get one.
+        let apart = vec![text("Hello", 0.0, 0.0), text("world", 28.0, 0.0)];
+        assert_eq!(find(apart.clone(), "hello world").len(), 1);
+        assert!(find(apart, "helloworld").is_empty());
+    }
+
+    #[test]
+    fn mixed_chinese_and_latin() {
+        // Latin text next to Chinese matches with or without the spaces
+        // documents put around it, also across a line break.
+        let spans = vec![text("本系統使用", 0.0, 0.0), text("PDF格式與", 0.0, 14.0)];
+        for q in ["使用PDF格式", "使用 PDF 格式", "使用\nPDF"] {
+            let hits = find(spans.clone(), q);
+            assert_eq!(hits.len(), 1, "{q:?}");
+            assert_eq!(hits[0].rects.len(), 2, "{q:?}");
+            assert_eq!(hits[0].rects[0], PageRect::new(30.0, 0.0, 50.0, 10.0));
+        }
+        let solid = vec![text("請使用FastPDF閱讀", 0.0, 0.0)];
+        assert_eq!(find(solid.clone(), "FastPDF閱讀").len(), 1);
+        assert_eq!(find(solid.clone(), "使用 FastPDF").len(), 1);
+        assert!(find(solid, "Fast PDF").is_empty());
+    }
+
+    #[test]
+    fn vertical_text_matches_down_its_columns() {
+        // Columns right to left, as in vertical writing.
+        let spans = vec![column("元。數位", 300.0, 0.0), column("轉型讓", 286.0, 0.0)];
+        let hits = find(spans, "數位轉型");
+        assert_eq!(
+            rects(&hits),
+            vec![vec![
+                PageRect::new(300.0, 20.0, 310.0, 40.0),
+                PageRect::new(286.0, 0.0, 296.0, 20.0),
+            ]]
+        );
+    }
+
+    #[test]
+    fn hits_come_in_reading_order() {
+        // The document draws the lower line first.
+        let spans = vec![
+            text("second needle", 0.0, 12.0),
+            text("first needle", 0.0, 0.0),
+        ];
+        let hits = find(spans, "needle");
+        assert_eq!(hits.len(), 2);
+        assert!(hits[0].start < hits[1].start);
+        assert_eq!(hits[0].rects, vec![PageRect::new(30.0, 0.0, 60.0, 10.0)]);
+        assert_eq!(hits[1].rects, vec![PageRect::new(35.0, 12.0, 65.0, 22.0)]);
+    }
+
+    #[test]
+    fn pages_without_a_query_character_are_skipped() {
+        let spans = vec![text("公告", 0.0, 0.0), text("文件", 0.0, 14.0)];
+        let layer = TextLayer {
+            page: PageIndex::FIRST,
+            spans,
+        };
+        assert!(!Matcher::new("公文書", false).unwrap().may_match(&layer));
+        assert!(Matcher::new("公文", false).unwrap().may_match(&layer));
+        // Every character occurs, but not in this order.
+        assert!(search(&layer, &Matcher::new("文公", false).unwrap()).is_empty());
+        // Case folding applies to the check as to the match.
+        let latin = TextLayer {
+            page: PageIndex::FIRST,
+            spans: vec![text("FastPDF", 0.0, 0.0)],
+        };
+        assert!(Matcher::new("pdf", false).unwrap().may_match(&latin));
+        assert!(!Matcher::new("pdf", true).unwrap().may_match(&latin));
+    }
+
+    #[test]
+    fn hostile_layers_are_searched_without_panicking() {
+        let bad = PageRect {
+            x0: f32::NAN,
+            y0: f32::INFINITY,
+            x1: f32::NEG_INFINITY,
+            y1: f32::NAN,
+        };
+        let spans = vec![
+            TextSpan {
+                text: "公文".into(),
+                bounds: bad,
+                char_bounds: vec![bad],
+            },
+            TextSpan {
+                text: "文".into(),
+                bounds: PageRect::default(),
+                char_bounds: Vec::new(),
+            },
+            TextSpan::default(),
+        ];
+        let hits = find(spans, "公文");
+        assert_eq!(hits.len(), 1);
+        assert!(!hits[0].rects.is_empty());
     }
 
     #[test]
@@ -463,6 +750,62 @@ mod tests {
         collect(&rx);
         // Only the failing page is extracted again.
         assert_eq!(d.extracted.load(Ordering::Relaxed), after_first + 1);
+    }
+
+    #[test]
+    fn search_text_is_cached_with_the_layer() {
+        let d = doc(6, 0);
+        let texts = Arc::new(TextCache::default());
+        let (_a, rx) = start(d.clone(), texts.clone(), "page", 0);
+        collect(&rx);
+        // The same pages without their search text weigh less.
+        let layers_only = TextCache::default();
+        for p in 0..6 {
+            let _ = layers_only.get_or_extract(
+                DocumentId::from_raw(1),
+                d.as_ref(),
+                PageIndex::new(p),
+                &CancelToken::new(),
+            );
+        }
+        assert!(texts.stats().bytes > layers_only.stats().bytes);
+        // The next query reads the cached text: same hits, and only the
+        // failing page is extracted again.
+        let extracted = d.extracted.load(Ordering::Relaxed);
+        let (_b, rx) = start(d.clone(), texts.clone(), "NEEDLE", 0);
+        let found: Vec<u32> = collect(&rx)
+            .into_iter()
+            .filter_map(|e| match e {
+                SearchEvent::Hits(h) => Some(h[0].page.get()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(found, vec![0, 3]);
+        assert_eq!(d.extracted.load(Ordering::Relaxed), extracted + 1);
+        // Case-sensitive searches make their own (unfolded) text.
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let _c = SearchSession::start(
+            DocumentId::from_raw(1),
+            d,
+            texts,
+            &SearchQuery {
+                text: "Needle".into(),
+                case_sensitive: true,
+            },
+            PageIndex::FIRST,
+            move |e| {
+                let _ = tx.lock().unwrap().send(e);
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            collect(&rx).last(),
+            Some(SearchEvent::Finished {
+                hits: 0,
+                cancelled: false
+            })
+        ));
     }
 
     #[test]

@@ -44,4 +44,4 @@ pub use nav::{Destination, DestinationView, Link, LinkTarget, OutlineItem};
 pub use pixmap::{PixelFormat, Pixmap, PixmapMut, Rgba8};
 pub use render::{ColorMode, RenderOutcome, RenderRequest};
 pub use source::{DocumentSource, FileOrigin, SharedBytes};
-pub use text::{TextLayer, TextSpan};
+pub use text::{CharPos, LaidText, LineBreak, TextLayer, TextSpan, is_cjk};
