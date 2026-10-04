@@ -1,0 +1,33 @@
+[package]
+name = "fastpdf-print"
+description = "Headless printing for FastPDF (Win32 GDI with banded rendering)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fastpdf-engine-api.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",       # CreateDCW, GetDeviceCaps, StretchDIBits, PatBlt
+    "Win32_Graphics_Printing",  # EnumPrintersW, GetDefaultPrinterW
+    "Win32_Security",           # required by PRINTER_INFO_2W (security descriptor)
+    "Win32_Storage_Xps",        # StartDocW / StartPage / EndPage / EndDoc / AbortDoc
+] }
+
+[dev-dependencies]
+# Opens fixtures and the PDFs produced by "Microsoft Print to PDF" in tests.
+fastpdf-engine-zpdf.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+# Process memory counters for the banding memory test.
+windows-sys = { workspace = true, features = [
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

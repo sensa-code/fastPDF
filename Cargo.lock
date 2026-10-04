@@ -1681,6 +1681,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastpdf-print"
+version = "0.0.1"
+dependencies = [
+ "fastpdf-engine-api",
+ "fastpdf-engine-zpdf",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "fastpdf-render"
 version = "0.0.1"
 dependencies = [

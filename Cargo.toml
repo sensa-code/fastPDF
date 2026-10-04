@@ -11,6 +11,7 @@ members = [
     "crates/fastpdf-ui",
     "crates/fastpdf-app",
     "crates/fastpdf-bench",
+    "crates/fastpdf-print",
 ]
 # Upstream clones are audit references only; they must never join this workspace.
 exclude = ["upstream"]
