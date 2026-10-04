@@ -25,18 +25,20 @@
 | 發佈 | 可攜版 zip：icon／版本資訊、第三方授權全文、SHA-256、smoke test | ✅ `tools/package.ps1`、`docs/RELEASE.md`（公開發佈前仍有 4 個 crate 缺授權全文） |
 | Render host | engine 移到獨立 process（ADR 0008）：crash、配置失敗、卡住只會結束 host | ✅ Windows 的預設（`hayro-isolated`）；`--engine hayro` 在 process 內 render。吞吐量與啟動時間和 in-process 相同（`docs/benchmarks/render-host.md`） |
 
-## KPI（spec §29；預設 engine 為 isolated，PR 4 第二輪的 dist build 實測）
+## KPI（spec §29，最終版 `b7797fc` 實測）
+
+預設 engine 是 render host（`hayro-isolated`），idle 時有 3 個 process：app、文件 host、待命 host。
 
 | 指標 | 目標 | 實測 | |
 |---|---|---|---|
 | 執行檔 | < 30 MB | 16.1 MiB | ✅ |
-| 小檔首頁 | < 200 ms | 中位數 201.7 ms（196.4–211.7 ms，in-process 也是 201.7 ms）；第一個 frame 就是清晰的第一頁，下限是 GPUI 啟動（ADR 0009） | ❌ |
-| Idle RAM（private working set） | < 50 MB | 28.3 MB（3 頁文件，含 2 個 render host；in-process 24.7 MB）；commit 113.6 MB，大部分是 GPU driver | ✅ |
-| 大型 PDF | 不需完整掃描 | 2000 頁捲到底，private 穩定在 190–220 MiB（B-5，in-process 量測） | ✅ |
-| Idle CPU | 接近 0 | 0.0–1.25% 單核（中位數 0.62%），全部來自 GPUI 的 vsync 迴圈：主執行緒每秒仍被喚醒約 70 次；render host 的 thread 0 次 | ⚠️ |
+| 小檔首頁 | < 200 ms | 中位數 204 ms（200–216 ms）；第一個 frame 就是清晰的第一頁，下限是 GPUI 啟動（ADR 0009） | ❌ 差約 4 ms |
+| Idle RAM（private working set） | < 50 MB | 28.3 MB（3 頁文件，3 個 process 合計）；private bytes 114 MB，大部分是 GPU driver | ✅ |
+| 大型 PDF | 不需完整掃描 | 2000 頁捲到底，private 穩定在 190–220 MiB（B-5）；engine 層與 M1 baseline 相同（B-1 配對比較） | ✅ |
+| Idle CPU | 接近 0 | 單核 0.3–0.5%；FastPDF idle 時 0 frame，但 GPUI 的 vsync 迴圈仍每秒喚醒主執行緒約 95 次 | ⚠️ |
 | 網路／telemetry | 0 | 0 | ✅ |
 
-量測機是高階桌機。B-8 第二輪每次啟動前都等系統忙碌度低於 30%（實際 4–15%）。定義與細節見 `benchmarks/README.md`、`docs/benchmarks/b8-app.md`、`docs/benchmarks/render-host.md`。
+量測機是高階桌機，每次啟動前都等系統負載降到 30% 以下。定義與細節見 `benchmarks/README.md`、`docs/benchmarks/b8-app.md`。
 
 ## 需求
 

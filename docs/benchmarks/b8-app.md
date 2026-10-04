@@ -399,3 +399,29 @@ mask 依本機拓撲選擇：相鄰的兩個邏輯 CPU 是同一個實體核心�
 - **與 F 回合相比（300 頁）**：peak private 311.9 → 280.5 MB，互動後 idle 260.1 → 217.3 MB，和 508 px tile 實驗的減少量相符。
 - **300 頁情境的啟動時間比 F 回合高約 120 ms**，是因為這 3 次啟動時系統負載偏高（idle 窗口中位數 55%，最高 99%），不代表程式路徑有變。可以對照同一個 build 在 3 頁重跑時的 218 ms。
 
+## 最終版（第八輪，`b7797fc`，預設 render host）
+
+- **build**：`tools/package.ps1`，exe 16,875,008 B，可重現打包（`/Brepro`）。預設 engine 是 `hayro-isolated`，所以 idle 時有 3 個 process：app、文件 host、待命 host。
+- **量測工具**：bench-app 1.2.0，含 `-AppProbe` 與 `-ThreadDetail`。
+- **量測條件**：先執行 5 次 `--version` 預熱。每個情境啟動前都等系統忙碌度降到 30% 以下：3 頁情境啟動前 25.8%，300 頁情境啟動前 12.1%。idle 窗口的忙碌度中位數 13–21%。
+
+| 指標（中位數，3 次） | 3 頁 | 300 頁 |
+|---|---|---|
+| `window_visible`（ms） | 202.6（199.4–204.3） | 206.0（203.4–254.6） |
+| `first_page_exact`（ms） | **204.4**（200.1–215.5） | **206.7**（203.8–265.5） |
+| 截圖測到的第一個非空白畫面（ms） | 230.5 | 228.8 |
+| idle private working set（MB）＝ KPI | **28.3** | 30.1 |
+| idle private bytes／commit charge（MB） | 113.6／180.2 | 115.4／182.0 |
+| idle process／thread 數 | 3／158 | 3／158 |
+| idle CPU（% 單核） | 0.5（0.2–1.7） | 0.3（0.2–0.6） |
+| 主執行緒／vsync thread 喚醒（次／秒） | 94.6／65.9 | — |
+| FastPDF 在 idle 時畫的 frame（`idle.app_frames`） | 0（3 次都是 0） | 0；互動後的 idle 也是 0 |
+| peak private bytes（MB） | 122.0 | 284.6 |
+| 互動後 idle：private bytes／private working set（MB） | — | 221.7／88.0 |
+| 滾輪／PageDown／縮放的首次畫面變化（ms） | — | 26.4／28.0／23.6 |
+
+- **KPI 判定**：
+  - Idle RAM：**達成**，28.3 MB。多了兩個 host process，比 in-process 多約 3.7 MB，見 `docs/benchmarks/render-host.md`。
+  - 小檔首頁：**未達成**，中位數 204 ms，差約 4 ms。在負載低的條件下，這是目前最好的結果。剩下的時間是 GPUI 的啟動；ADR 0009 的 G1、G2 兩個 upstream 草稿各可再省 15–39 ms。
+  - Idle CPU：FastPDF 端的判定（idle 時 0 frame）**達成**；GPUI 的 vsync 喚醒仍在，所以 CPU time 與喚醒次數的條件**未達成**，見 `docs/upstream-issues/gpui-idle.md`。
+

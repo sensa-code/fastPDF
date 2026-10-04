@@ -335,7 +335,9 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 
 ## 5. 本次（0.0.1）實測紀錄（2026-10-04，不是正式發佈）
 
-> **最新一次打包（2026-10-05，HEAD `21dd4da`）**：
+> **最新一次打包（2026-10-05，HEAD `b7797fc`，可重現）**：exe 16,875,008 bytes（SHA-256 `78bb4ba8…`），zip 625 個 entry，時間戳為 commit 時間。
+>
+> **前一次打包（2026-10-05，HEAD `21dd4da`）**：
 > - `package.ps1 -NoGuiSmoke`：exe 16,823,296 bytes，zip 8,634,700 bytes。
 > - zip 共 625 個 entry，其中 620 個在 `licenses/third-party/`，沒有目錄 entry。
 > - CLI smoke 通過。
