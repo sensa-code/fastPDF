@@ -11,6 +11,12 @@
 //! `FASTPDF_RECENT_FILE` (recent-files list location; empty disables it, so
 //! benchmarks and tests do not touch the user's list).
 //!
+//! Development switches, honored only in debug builds or together with
+//! `FASTPDF_DEV_OVERLAY=1`: `FASTPDF_PRINT_TO_FILE=<path>` (every print job
+//! writes into that file instead of reaching the printer; use it with the
+//! "Microsoft Print to PDF" queue) and `FASTPDF_DEV_SCRIPT` (steps that
+//! drive the reader without synthesized input; see `fastpdf_ui` devscript).
+//!
 //! Start-up order (spec §10): the command-line document starts opening on a
 //! background thread first thing in `main`, so engine work overlaps GPUI's
 //! platform initialization; the window appears as soon as GPUI is up and
@@ -85,6 +91,8 @@ struct Env {
     upload_budget_mb: Option<usize>,
     /// `Some(None)`: disabled; `Some(Some(path))`: custom location.
     recent_file: Option<Option<PathBuf>>,
+    print_to_file: Option<PathBuf>,
+    dev_script: Option<String>,
 }
 
 impl Env {
@@ -99,13 +107,23 @@ impl Env {
             upload_budget_mb: var("FASTPDF_UPLOAD_BUDGET_MB").and_then(|v| v.trim().parse().ok()),
             recent_file: std::env::var_os("FASTPDF_RECENT_FILE")
                 .map(|v| (!v.is_empty()).then(|| PathBuf::from(v))),
+            print_to_file: std::env::var_os("FASTPDF_PRINT_TO_FILE")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            dev_script: var("FASTPDF_DEV_SCRIPT"),
         }
+    }
+
+    /// Development switches apply to debug builds, or with the overlay on.
+    fn development(&self) -> bool {
+        cfg!(debug_assertions) || self.dev_overlay
     }
 }
 
 fn main() {
     let clock = bench::Clock::start();
     let env = Env::read();
+    let development = env.development();
     if env.log.is_some() || env.bench {
         console::attach_to_parent();
     }
@@ -121,7 +139,7 @@ fn main() {
     };
     if args.help {
         println!(
-            "{USAGE}\n\nengines: {}\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE",
+            "{USAGE}\n\nengines: {}\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE\ndevelopment: FASTPDF_PRINT_TO_FILE, FASTPDF_DEV_SCRIPT",
             engines::names().join(", ")
         );
         return;
@@ -161,6 +179,18 @@ fn main() {
     }
     if let Some(mb) = env.upload_budget_mb {
         options.upload_budget = mb.max(1).saturating_mul(1024 * 1024);
+    }
+    if development {
+        if let Some(path) = env.print_to_file {
+            let path = std::path::absolute(&path).unwrap_or(path);
+            log::warn!("development: printing goes into {}", path.display());
+            options.print_to_file = Some(path);
+        }
+        options.dev_script = env.dev_script;
+    } else if env.print_to_file.is_some() || env.dev_script.is_some() {
+        log::warn!(
+            "FASTPDF_PRINT_TO_FILE / FASTPDF_DEV_SCRIPT ignored: release build without FASTPDF_DEV_OVERLAY=1"
+        );
     }
 
     gpui_platform::application().run(move |cx| {

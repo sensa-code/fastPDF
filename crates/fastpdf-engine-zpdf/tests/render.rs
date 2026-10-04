@@ -440,6 +440,30 @@ fn trimming_memory_keeps_results_identical() {
 }
 
 #[test]
+fn memory_usage_follows_the_interpreted_pages() {
+    let bytes = pages_pdf(&[
+        ("/MediaBox [0 0 612 792]", &busy_content()),
+        ("/MediaBox [0 0 612 792]", &busy_content()),
+    ]);
+    let file = bytes.len() as u64;
+    let doc = open(bytes).expect("open");
+    // Only the adapter's copy of the file before anything is interpreted.
+    assert_eq!(doc.memory_usage(), Some(file));
+    render_full(&doc, 0, 0.5, Rotation::R0);
+    let one_page = doc.memory_usage().expect("estimate");
+    // The page's display list and inline image, plus its font program
+    // (Helvetica is substituted with a system font of a few hundred KiB).
+    assert!(one_page > file + 1024, "{one_page} vs file {file}");
+    render_full(&doc, 1, 0.5, Rotation::R0);
+    let two_pages = doc.memory_usage().expect("estimate");
+    // The second page adds its display list, but not its (shared) font.
+    assert!(two_pages > one_page);
+    assert!(two_pages - one_page < one_page - file, "font counted twice");
+    doc.trim_memory(MemoryPressure::Soft);
+    assert_eq!(doc.memory_usage(), Some(file));
+}
+
+#[test]
 fn regions_outside_the_page_are_rejected_by_the_guard() {
     let doc = open(pages_pdf(&[("/MediaBox [0 0 100 100]", b"".as_slice())])).expect("open");
     let request =

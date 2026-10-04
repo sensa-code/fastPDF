@@ -115,7 +115,7 @@ pub fn bind_keys(cx: &mut App) {
     bindings.extend(
         crate::text_input::bindings()
             .into_iter()
-            .filter_map(|(keys, action)| binding(keys, action, crate::text_input::INPUT_CONTEXT)),
+            .filter_map(|(keys, action)| binding(keys, action, crate::text_input::EDIT_CONTEXT)),
     );
     log::debug!("bound {} keystrokes", bindings.len());
     cx.bind_keys(bindings);
@@ -195,7 +195,7 @@ mod tests {
         }
         for (keys, action) in crate::text_input::bindings() {
             assert!(
-                binding(keys, action, crate::text_input::INPUT_CONTEXT).is_some(),
+                binding(keys, action, crate::text_input::EDIT_CONTEXT).is_some(),
                 "{keys} does not parse"
             );
         }

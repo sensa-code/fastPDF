@@ -79,6 +79,11 @@ impl<T: Weighted> PreparedCache<T> {
         self.entries.clear();
     }
 
+    /// The cached values, least recently used first.
+    pub(crate) fn values(&self) -> impl Iterator<Item = &Arc<T>> {
+        self.entries.iter().map(|(_, v)| v)
+    }
+
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()

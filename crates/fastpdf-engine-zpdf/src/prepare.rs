@@ -234,6 +234,21 @@ pub(crate) struct RasterParams<'a> {
 }
 
 impl PreparedPage {
+    /// The font programs this page's text uses, as (identity, bytes). The
+    /// identity is shared by every page holding the same program (zpdf hands
+    /// pages the same font allocations), so callers can count each once.
+    pub(crate) fn font_programs(&self) -> impl Iterator<Item = (usize, u64)> + '_ {
+        // zpdf numbers a cache's fonts 0, 1, 2, ... and never evicts them.
+        (0..self.fonts.len()).filter_map(|id| {
+            let font = self.fonts.get(u32::try_from(id).ok()?)?;
+            let identity = font.font_data.as_ref().map_or_else(
+                || std::ptr::from_ref(font) as usize,
+                |data| data.as_ptr() as usize,
+            );
+            Some((identity, font.estimated_cache_bytes()))
+        })
+    }
+
     /// The display-list-space rectangle of a raster whose top-left pixel is
     /// `(x, y)` (pixels of the rotated page at `scale`, may be negative) and
     /// whose size is `width` x `height` pixels.

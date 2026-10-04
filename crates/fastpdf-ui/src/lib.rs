@@ -26,12 +26,17 @@
 //! * Find (Ctrl+F), text selection and the sidebar (outline, thumbnails)
 //!   start their background work only when used: text is extracted through
 //!   one byte-budgeted `TextCache`, thumbnails render only while visible.
+//! * Print (Ctrl+P) opens a small panel; jobs run on their own thread
+//!   through `fastpdf_print` (Win32 GDI, banded) and report progress
+//!   through the same wake-up channel.
 
 mod actions;
 mod bench;
+mod devscript;
 mod document;
 mod find;
 mod overlay;
+mod print;
 mod reader;
 mod select;
 mod sidebar;

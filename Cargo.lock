@@ -1712,6 +1712,7 @@ dependencies = [
  "fastpdf-cache",
  "fastpdf-core",
  "fastpdf-engine-api",
+ "fastpdf-print",
  "fastpdf-render",
  "fastpdf-search",
  "futures",

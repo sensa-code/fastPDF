@@ -23,9 +23,12 @@ use gpui::{
     actions, div, fill, hsla, point, px, relative, size,
 };
 
-/// Key context of the field (the find bar, as named by the central keymap);
-/// its bindings take precedence over the reader's.
-pub(crate) const INPUT_CONTEXT: &str = fastpdf_core::keymap::FIND_BAR;
+/// Key context shared by every text field; the editing keys below are bound
+/// in it and take precedence over the reader's bindings.
+pub(crate) const EDIT_CONTEXT: &str = "TextInput";
+/// Full key context of the find bar's field: the editing keys plus the find
+/// bar's own bindings from the central keymap (`FIND_BAR`).
+const FIND_FIELD_CONTEXT: &str = "TextInput FindBar";
 
 actions!(
     fastpdf_input,
@@ -77,6 +80,8 @@ pub(crate) struct TextChanged(pub String);
 /// The field's state; render it as a child view.
 pub(crate) struct TextInput {
     focus: FocusHandle,
+    /// Key context of the field: [`EDIT_CONTEXT`] plus its role.
+    key_context: &'static str,
     text: String,
     placeholder: SharedString,
     selected: Range<usize>,
@@ -101,9 +106,21 @@ impl std::fmt::Debug for TextInput {
 impl EventEmitter<TextChanged> for TextInput {}
 
 impl TextInput {
+    /// The find bar's field.
     pub(crate) fn new(placeholder: impl Into<SharedString>, cx: &mut Context<'_, Self>) -> Self {
+        Self::with_context(placeholder, FIND_FIELD_CONTEXT, cx)
+    }
+
+    /// A field whose key context is `key_context`, which must contain
+    /// [`EDIT_CONTEXT`] for the editing keys to work.
+    pub(crate) fn with_context(
+        placeholder: impl Into<SharedString>,
+        key_context: &'static str,
+        cx: &mut Context<'_, Self>,
+    ) -> Self {
         Self {
             focus: cx.focus_handle(),
+            key_context,
             text: String::new(),
             placeholder: placeholder.into(),
             selected: 0..0,
@@ -121,6 +138,18 @@ impl TextInput {
 
     pub(crate) fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Replaces the whole text (not an edit by the user, e.g. a scripted or
+    /// restored value) and reports it like typing would.
+    pub(crate) fn set_text(&mut self, text: &str, cx: &mut Context<'_, Self>) {
+        let line = text.replace(['\r', '\n'], " ");
+        self.text = line;
+        self.selected = self.text.len()..self.text.len();
+        self.reversed = false;
+        self.marked = None;
+        cx.emit(TextChanged(self.text.clone()));
+        cx.notify();
     }
 
     /// Selects everything, so typing replaces the previous query.
@@ -473,7 +502,7 @@ impl EntityInputHandler for TextInput {
 impl Render for TextInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         div()
-            .key_context(INPUT_CONTEXT)
+            .key_context(self.key_context)
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
@@ -689,6 +718,14 @@ impl Element for TextField {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::KeyContext;
+
+    #[test]
+    fn find_field_context_has_editing_keys_and_find_bar_bindings() {
+        let context = KeyContext::parse(FIND_FIELD_CONTEXT).unwrap();
+        assert!(context.contains(EDIT_CONTEXT));
+        assert!(context.contains(fastpdf_core::keymap::FIND_BAR));
+    }
 
     #[test]
     fn utf16_offsets_round_trip_through_cjk_and_astral_text() {

@@ -12,6 +12,7 @@ fastpdf-render.workspace = true
 fastpdf-core.workspace = true
 fastpdf-cache.workspace = true
 fastpdf-search.workspace = true
+fastpdf-print.workspace = true
 gpui.workspace = true
 futures.workspace = true
 image.workspace = true

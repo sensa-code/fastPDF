@@ -28,6 +28,7 @@ use crate::bench::{BenchEvent, BenchHook};
 use crate::document::{OpenFailure, OpenedDocument, PendingOpen, open_document_blocking};
 use crate::find::{FindBar, SearchTarget};
 use crate::overlay::DevOverlay;
+use crate::print::PrintPanel;
 use crate::select::{PagePoint, TextSelection};
 use crate::sidebar::Sidebar;
 use crate::textures::{DEFAULT_UPLOAD_BUDGET, TileImage, TileTextures, to_render_image};
@@ -55,6 +56,12 @@ pub struct ReaderOptions {
     pub bench: Option<BenchHook>,
     /// Where the recent-files list lives; `None` disables it.
     pub recent_files: Option<PathBuf>,
+    /// Development only: every print job writes into this file instead of
+    /// reaching the printer (the app sets it from `FASTPDF_PRINT_TO_FILE`
+    /// in debug builds or with the development overlay).
+    pub print_to_file: Option<PathBuf>,
+    /// Development only: a script of steps to run (`crate::devscript`).
+    pub dev_script: Option<String>,
 }
 
 impl std::fmt::Debug for ReaderOptions {
@@ -64,6 +71,8 @@ impl std::fmt::Debug for ReaderOptions {
             .field("session", &self.session)
             .field("upload_budget", &self.upload_budget)
             .field("dev_overlay", &self.dev_overlay)
+            .field("print_to_file", &self.print_to_file)
+            .field("dev_script", &self.dev_script.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -78,6 +87,8 @@ impl ReaderOptions {
             memory: BudgetConfig::default(),
             bench: None,
             recent_files: RecentFiles::default_location(),
+            print_to_file: None,
+            dev_script: None,
         }
     }
 }
@@ -160,6 +171,7 @@ pub struct ReaderView {
     pub(crate) theme: Theme,
     pub(crate) sidebar: Sidebar,
     pub(crate) find: FindBar,
+    pub(crate) print: PrintPanel,
     pub(crate) selection: TextSelection,
     /// Extracted text for search and selection (budgeted, shared).
     pub(crate) texts: Arc<TextCache>,
@@ -175,6 +187,7 @@ pub struct ReaderView {
     pub(crate) waker: Waker,
     pub(crate) memory: MemoryMonitor,
     open_task: Option<Task<()>>,
+    pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
     _appearance: Subscription,
 }
@@ -220,6 +233,7 @@ impl ReaderView {
             textures: TileTextures::new(options.upload_budget),
             overlay: DevOverlay::new(options.dev_overlay),
             find: FindBar::new(cx),
+            print: PrintPanel::new(options.print_to_file.clone(), cx),
             options,
             focus,
             doc: DocState::Empty,
@@ -235,6 +249,7 @@ impl ReaderView {
             waker: Waker(tx),
             memory,
             open_task: None,
+            dev_script: None,
             _wake_task: wake_task,
             _appearance: appearance,
         };
@@ -244,6 +259,12 @@ impl ReaderView {
             view.begin_open(path, result, window, cx);
         } else {
             view.load_recent(cx);
+        }
+        if let Some(script) = view.options.dev_script.clone() {
+            match crate::devscript::parse(&script) {
+                Ok(steps) => view.start_dev_script(steps, window, cx),
+                Err(e) => log::warn!("dev script ignored: {e}"),
+            }
         }
         view
     }
@@ -287,6 +308,7 @@ impl ReaderView {
         if self.find.drain() {
             self.on_new_hits();
         }
+        self.print.drain();
         cx.notify();
     }
 
@@ -401,24 +423,37 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// Closes the current document and frees its GPU textures.
+    /// Closes the current document and frees its GPU textures, its cached
+    /// text and (once a running print job has stopped) the engine document.
     fn close_document(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.find.reset(cx);
         self.selection.reset();
         self.sidebar.reset_document();
+        // A print job keeps the document alive until it stops.
+        self.print.cancel_job();
         if let DocState::Open(open) = mem::replace(&mut self.doc, DocState::Empty) {
             let OpenDoc {
                 mut session, path, ..
             } = *open;
             log::info!("closing {}", path.display());
+            // The text cache is shared by all documents (spec §15).
+            self.texts.remove_document(session.id());
             // Cancel rendering and evict every tile and thumbnail (they
             // reach the retire queue), then release every texture.
             session.close();
             self.textures.release_all(window);
             // Dropping the session joins its render workers, which may wait
             // for a page that is still rasterizing: keep that off the UI thread.
+            // A text extraction that was running when the document closed
+            // (search thread, selection) may still have added its page;
+            // sweep once more after the workers are gone.
+            let document = session.id();
+            let texts = Arc::clone(&self.texts);
             cx.background_executor()
-                .spawn(async move { drop(session) })
+                .spawn(async move {
+                    drop(session);
+                    texts.remove_document(document);
+                })
                 .detach();
             window.set_window_title(APP_TITLE);
             self.load_recent(cx);
@@ -533,7 +568,7 @@ impl ReaderView {
             C::Copy => self.copy_selection(cx),
             C::SelectAll => self.select_current_page(cx),
             C::Cancel => self.cancel(window, cx),
-            C::Print => log::info!("printing is not available in this version"),
+            C::Print => self.toggle_print_panel(window, cx),
             C::ZoomIn
             | C::ZoomOut
             | C::ActualSize
@@ -557,9 +592,14 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// Esc: closes the find bar first, then clears the selection.
+    /// Esc: stops printing or closes the print panel, then closes the find
+    /// bar, then clears the selection.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if self.find.open {
+        if self.print.printing() {
+            self.print.cancel_job();
+        } else if self.print.open {
+            self.close_print_panel(window, cx);
+        } else if self.find.open {
             self.close_find(window, cx);
         } else {
             self.selection.clear();
@@ -948,6 +988,9 @@ impl ReaderView {
                 area.child(placeholder)
             })
             .when(self.find.open, |area| area.child(self.render_find_bar(cx)))
+            .when(self.print.open, |area| {
+                area.child(self.render_print_panel(cx))
+            })
     }
 
     /// Text shown instead of a document: the empty state with recent files,

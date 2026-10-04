@@ -213,6 +213,10 @@ impl ReaderView {
         let texture_stats = self.textures.stats();
         self.overlay
             .record_frame(now, frame_ms, session_stats, texture_stats, pending);
+        if self.overlay.wants_memory_sample(now) {
+            let memory = self.memory_breakdown();
+            self.overlay.set_memory(now, memory);
+        }
     }
 }
 

@@ -36,7 +36,7 @@ mod hairline;
 mod password;
 mod prepare;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -378,6 +378,27 @@ impl EngineDocument for ZpdfDocument {
         Ok(convert::links(&annotations, &geometry, &|p| {
             self.page_geometry(p).ok()
         }))
+    }
+
+    /// The adapter's copy of the file, the interpreted pages in the LRU
+    /// (display lists, decoded images, hairline replacements) and the font
+    /// programs they use, each counted once. zpdf's own object, object-stream
+    /// and shared-font caches cannot be observed from outside and are left
+    /// out, so this is a lower bound. Never waits for an interpretation.
+    fn memory_usage(&self) -> Option<u64> {
+        let prepared = lock(&self.prepared);
+        let mut fonts = HashSet::new();
+        let font_bytes: u64 = prepared
+            .values()
+            .flat_map(|page| page.font_programs())
+            .filter(|(identity, _)| fonts.insert(*identity))
+            .map(|(_, bytes)| bytes)
+            .sum();
+        Some(
+            (self.bytes.len() as u64)
+                .saturating_add(prepared.bytes())
+                .saturating_add(font_bytes),
+        )
     }
 
     fn trim_memory(&self, pressure: MemoryPressure) {
