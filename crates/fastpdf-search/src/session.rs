@@ -46,6 +46,10 @@ pub enum SearchEvent {
 /// Byte-budgeted cache of extracted text layers.
 pub struct TextCache {
     cache: Arc<SharedCache<PageId, Arc<TextLayer>>>,
+    /// Documents closed via `remove_document`; extractions still running
+    /// for them must not refill the cache. Grows by one id per closed
+    /// document, which is negligible.
+    closed: std::sync::Mutex<std::collections::HashSet<DocumentId>>,
 }
 
 impl fmt::Debug for TextCache {
@@ -63,6 +67,7 @@ impl TextCache {
     pub fn new(budget: usize) -> Self {
         Self {
             cache: Arc::new(SharedCache::new("text", budget, retention::TEXT)),
+            closed: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -85,7 +90,14 @@ impl TextCache {
         }
         let layer = Arc::new(doc.text_layer(page, cancel)?);
         let bytes = layer.heap_bytes() + std::mem::size_of::<TextLayer>();
-        self.cache.insert(key, Arc::clone(&layer), bytes);
+        let closed = self
+            .closed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&document);
+        if !closed {
+            self.cache.insert(key, Arc::clone(&layer), bytes);
+        }
         Ok(layer)
     }
 }
@@ -94,6 +106,12 @@ impl TextCache {
     /// Drops every cached text layer of `document` (call when it closes;
     /// the cache is shared by all open documents).
     pub fn remove_document(&self, document: DocumentId) {
+        // Mark first, so an extraction finishing in between cannot slip a
+        // layer back in after the purge.
+        self.closed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(document);
         self.cache.retain(|key, _| key.document != document);
     }
 
@@ -472,6 +490,17 @@ mod tests {
         ));
         assert!(texts.stats().entries > 0);
         texts.remove_document(DocumentId::from_raw(1));
+        assert_eq!(texts.stats().entries, 0);
+        // A late extraction for the closed document is not cached again.
+        let layer = texts
+            .get_or_extract(
+                DocumentId::from_raw(1),
+                d.as_ref(),
+                PageIndex::new(1),
+                &CancelToken::new(),
+            )
+            .unwrap();
+        assert_eq!(layer.page, PageIndex::new(1));
         assert_eq!(texts.stats().entries, 0);
     }
 
