@@ -1,0 +1,24 @@
+# Rust build output
+/target/
+**/target/
+
+# Upstream reference clones for audit (not part of FastPDF source)
+/upstream/
+
+# Generated / large benchmark fixtures (regenerate with tools/fixtures)
+/fixtures/generated/
+/fixtures/local/
+
+# Benchmark scratch output (committed baselines live in benchmarks/*.json)
+/benchmarks/runs/
+
+# Editor / OS noise
+.vs/
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Office lock files
+~$*

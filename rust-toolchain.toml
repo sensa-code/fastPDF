@@ -1,0 +1,6 @@
+# Pinned so benchmark numbers are comparable across runs (spec §30).
+# Bump deliberately and re-run the baseline when changing it.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
