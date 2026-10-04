@@ -34,6 +34,7 @@ fastpdf-render = { path = "crates/fastpdf-render" }
 fastpdf-search = { path = "crates/fastpdf-search" }
 fastpdf-core = { path = "crates/fastpdf-core" }
 fastpdf-ui = { path = "crates/fastpdf-ui" }
+fastpdf-print = { path = "crates/fastpdf-print" }
 
 # Third-party. Every entry here needs a reason (spec §36); see
 # THIRD_PARTY_LICENSES.md for the license review.
