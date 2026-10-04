@@ -227,7 +227,7 @@ Dependency policy（spec §36）的落實方式：
 | R11 | Windows Defender 隔離惡意 PDF 測試檔（zpdf repo 已實際發生） | 低 | 中 | 惡意語料不 commit，放 `fixtures/local/`，由使用者決定是否加入排除清單 |
 | R12 | 目前所有量測都在高階機器上（RTX 5090、60 Hz、100% 縮放） | 中（KPI 過度樂觀） | 確定 | B-8 需要在 iGPU 筆電、高更新率、混合 DPI 的環境補測 |
 | R13 | 列印：GPUI 沒有列印 API | 中（V0.1 功能） | 確定 | Win32 GDI／XPS 列印路徑，以 engine 直接 render 到印表機解析度；V0.1 可以延後（spec §8） |
-| R14 | 文字選取品質：zpdf 只到 span，Hayro 需要自建斷詞、分行 | 中 | 高 | V0.1 先做 span／glyph 層級選取與複製，版面分析後續再做 |
+| R14 | 文字選取品質：zpdf 只到 span，Hayro 需要自建斷詞、分行 | 中 | 中 | 已做（2026-10-05）：選取與高亮仍是 content order 的字元範圍，複製（Ctrl+C、Ctrl+A 後複製）改依字元幾何組字（`fastpdf-core` 的 `selection/copy_text.rs`）。依字形前進方向分出閱讀方向（旋轉頁、旋轉文字、直排都適用）；同一基線上、content order 相鄰的片段併成一行（表格欄位），不相鄰的片段只在一個字高以內才併入，所以欄與欄不會合併；同一欄由上往下，並排的欄與區塊照 content order，頁首頁尾排在最前、最後；有可見間距補一個空白，兩側都是 CJK 時要一個字寬以上才算分隔（表格），不到一個字寬的 ASCII 空白拿掉；行距明顯大於區塊平常行距時以空行分段。搜尋的組字不變。後續：連字號合併、逐列交錯繪製的多欄、表格結構、搜尋改用同一套組行 |
 
 ## Recommended Fork Strategy（Q1）
 

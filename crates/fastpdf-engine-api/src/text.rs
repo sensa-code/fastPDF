@@ -36,6 +36,20 @@ impl TextSpan {
         let x0 = self.bounds.x0 + w * index as f32;
         PageRect::new(x0, self.bounds.y0, x0 + w, self.bounds.y1)
     }
+
+    /// The boxes of all `char`s in order, exactly as [`Self::char_rect`]
+    /// gives them, without counting the text again for every `char`.
+    pub fn char_rects(&self) -> impl Iterator<Item = PageRect> + '_ {
+        let n = self.char_count();
+        let w = self.bounds.width() / n.max(1) as f32;
+        (0..n).map(move |index| match self.char_bounds.get(index) {
+            Some(r) => *r,
+            None => {
+                let x0 = self.bounds.x0 + w * index as f32;
+                PageRect::new(x0, self.bounds.y0, x0 + w, self.bounds.y1)
+            }
+        })
+    }
 }
 
 impl TextLayer {
@@ -67,5 +81,33 @@ impl TextLayer {
                     + s.char_bounds.capacity() * std::mem::size_of::<PageRect>()
             })
             .sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn char_rects_match_char_rect() {
+        let bounds = PageRect::new(10.0, 20.0, 47.5, 32.0);
+        let boxes = vec![
+            PageRect::new(10.0, 20.0, 19.0, 32.0),
+            PageRect::new(19.0, 20.0, 31.0, 32.0),
+        ];
+        for (text, char_bounds) in [
+            ("abc", boxes[..2].to_vec()), // partial: the rest is split evenly
+            ("ab", boxes.clone()),
+            ("政府公文", Vec::new()),
+            ("", Vec::new()),
+        ] {
+            let span = TextSpan {
+                text: text.into(),
+                bounds,
+                char_bounds,
+            };
+            let each: Vec<PageRect> = (0..span.char_count()).map(|i| span.char_rect(i)).collect();
+            assert_eq!(span.char_rects().collect::<Vec<_>>(), each, "{text:?}");
+        }
     }
 }

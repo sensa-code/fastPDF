@@ -5,6 +5,13 @@
 //! layer), which matches reading order for the vast majority of
 //! single-column documents. Points are in page space ([`PageRect`]
 //! coordinates), so selection is independent of zoom and rotation.
+//!
+//! Copy writes the selected characters by their geometry instead
+//! (`copy_text`): lines rebuilt from baselines, read in the text's own
+//! direction, top to bottom within a column, with word spaces and paragraph
+//! breaks where the layout shows them.
+
+mod copy_text;
 
 use fastpdf_engine_api::{PageIndex, PageRect, TextLayer};
 
@@ -97,45 +104,12 @@ pub fn select_all(layer: &TextLayer) -> PageSelection {
     select_to_end(layer, TextPos { span: 0, ch: 0 })
 }
 
-/// Text for the clipboard. Spans on a new line (baseline moved down by
-/// more than half a line) are separated by a line break, spans on the same
-/// line by a space when there is a visible gap.
+/// Text for the clipboard: the selected characters in reading order, one
+/// line per line of text, a space between words that are apart on the page
+/// (never between two CJK characters), and an empty line between
+/// paragraphs. See `copy_text` for how lines and their order are found.
 pub fn selected_text(layer: &TextLayer, sel: &PageSelection) -> String {
-    let mut out = String::new();
-    let mut prev: Option<PageRect> = None;
-    for si in sel.start.span..=sel.end.span.min(layer.spans.len().saturating_sub(1)) {
-        let Some(span) = layer.spans.get(si) else {
-            break;
-        };
-        let n = span.text.chars().count();
-        let from = if si == sel.start.span {
-            sel.start.ch
-        } else {
-            0
-        };
-        let to = if si == sel.end.span {
-            sel.end.ch.min(n)
-        } else {
-            n
-        };
-        if from >= to {
-            continue;
-        }
-        if let Some(p) = prev {
-            let line_height = (p.height()).max(span.bounds.height()).max(1.0);
-            if span.bounds.y0 > p.y0 + line_height / 2.0 {
-                out.push('\n');
-            } else if span.bounds.x0 > p.x1 + line_height * 0.15
-                && !out.ends_with(' ')
-                && !span.text.starts_with(' ')
-            {
-                out.push(' ');
-            }
-        }
-        out.extend(span.text.chars().skip(from).take(to - from));
-        prev = Some(span.bounds);
-    }
-    out
+    copy_text::copy_text(layer, sel.start, sel.end)
 }
 
 /// Text of a multi-page selection, pages separated by line breaks.

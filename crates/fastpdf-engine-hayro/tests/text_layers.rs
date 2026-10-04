@@ -92,7 +92,8 @@ fn text_layers_stay_compact_and_copy_cleanly() {
             "large-text/dense-300p-times.pdf",
             20.0,
             &[
-                "Chapter 1 - dense text page 1\nMeasure clip (height) stream catalog",
+                // Headings and titles stand apart: an empty line follows.
+                "Chapter 1 - dense text page 1\n\nMeasure clip (height) stream catalog",
                 "\nline small stroke kerning layout document width;",
             ],
         ),
@@ -100,7 +101,7 @@ fn text_layers_stay_compact_and_copy_cleanly() {
             "traditional-chinese/gov-letter-embedded-ttfsubset.pdf",
             18.0,
             &[
-                "虛構市政府環境保護局　函\n地址：",
+                "虛構市政府環境保護局　函\n\n地址：",
                 "電話：(00)0000-0000 分機123\n",
             ],
         ),

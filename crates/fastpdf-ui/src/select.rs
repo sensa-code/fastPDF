@@ -179,7 +179,8 @@ impl TextSelection {
             .flat_map(|s| s.rects.iter().copied())
     }
 
-    /// Text for the clipboard.
+    /// Text for the clipboard: the selected text of each page in reading
+    /// order (`fastpdf_core::selection::selected_text`), page after page.
     pub(crate) fn text(&self) -> String {
         let pairs: Vec<(&TextLayer, &PageSelection)> = self
             .selection
@@ -244,24 +245,40 @@ mod tests {
     use super::*;
     use fastpdf_engine_api::TextSpan;
 
+    /// Text at (x, y), every character 10 points square.
+    fn span(text: &str, x: f32, y: f32) -> TextSpan {
+        let n = text.chars().count();
+        TextSpan {
+            text: text.into(),
+            bounds: PageRect::new(x, y, x + 10.0 * n as f32, y + 10.0),
+            char_bounds: (0..n)
+                .map(|i| {
+                    let x0 = x + 10.0 * i as f32;
+                    PageRect::new(x0, y, x0 + 10.0, y + 10.0)
+                })
+                .collect(),
+        }
+    }
+
     /// A page with two lines: "Hello world" at y 10..20, "第二行" at y 30..40.
     fn layer(page: u32) -> Arc<TextLayer> {
-        let span = |text: &str, x: f32, y: f32| {
-            let n = text.chars().count();
-            TextSpan {
-                text: text.into(),
-                bounds: PageRect::new(x, y, x + 10.0 * n as f32, y + 10.0),
-                char_bounds: (0..n)
-                    .map(|i| {
-                        let x0 = x + 10.0 * i as f32;
-                        PageRect::new(x0, y, x0 + 10.0, y + 10.0)
-                    })
-                    .collect(),
-            }
-        };
         Arc::new(TextLayer {
             page: PageIndex::new(page),
             spans: vec![span("Hello world", 0.0, 10.0), span("第二行", 0.0, 30.0)],
+        })
+    }
+
+    /// Two columns of two lines on the same baselines, drawn column by
+    /// column.
+    fn columns(page: u32) -> Arc<TextLayer> {
+        Arc::new(TextLayer {
+            page: PageIndex::new(page),
+            spans: vec![
+                span("left one", 0.0, 10.0),
+                span("left two", 0.0, 22.0),
+                span("right one", 150.0, 10.0),
+                span("right two", 150.0, 22.0),
+            ],
         })
     }
 
@@ -320,6 +337,22 @@ mod tests {
         assert!(s.is_empty());
         s.clear();
         assert!(s.text().is_empty());
+    }
+
+    #[test]
+    fn select_all_and_drags_copy_columns_in_reading_order() {
+        // Ctrl+A, then copy: one column after the other, lines not merged
+        // across the gutter.
+        let mut s = TextSelection::default();
+        s.select_page(PageIndex::FIRST);
+        s.layer_loaded(PageIndex::FIRST, Some(columns(0)));
+        assert_eq!(s.text(), "left one\nleft two\nright one\nright two");
+        // A drag from the first column into the second selects (and
+        // highlights) the content-order range in between, copied the same way.
+        s.begin(pt(0, 1.0, 25.0));
+        s.extend(pt(0, 238.0, 15.0));
+        assert_eq!(s.text(), "left two\nright one");
+        assert_eq!(s.rects_on(PageIndex::FIRST).count(), 2);
     }
 
     #[test]
