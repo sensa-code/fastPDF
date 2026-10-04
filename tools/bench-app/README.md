@@ -42,9 +42,19 @@ pwsh -File tools/bench-app/bench-app.ps1 -Exe C:\path\viewer.exe -Args '{pdf}' -
 
 # 不重新啟動 app，只重算既有結果檔的 summary
 pwsh -File tools/bench-app/bench-app.ps1 -Resummarize -OutFile benchmarks/runs/app-edge.json
+
+# 1.1.0：idle 歸因（逐 thread 的 cycles 與喚醒次數、記憶體分類）
+pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated/small-text/three-pages-platypus-times.pdf `
+    -Runs 3 -ThreadDetail -MemoryDetail
+
+# 1.1.0：近似低核心機器（4 個實體核心，各取一個邏輯 CPU；本機 SMT 兄弟是相鄰編號）
+pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated/small-text/three-pages-platypus-times.pdf `
+    -Runs 3 -Affinity 0x55 -Label fastpdf-4core
 ```
 
 同一個 `-OutFile` 可以放多個 scenario。scenario 名稱相同的資料會被取代，名稱不同就附加。
+
+`-Affinity` 只限制 CPU 數，不會讓每個核心變慢；高階 CPU 的單核效能、快取與 GPU 都還在，所以只能近似低核心機器的平行度，不能代表低階筆電的絕對時間。選 mask 前先確認哪些邏輯 CPU 是同一個實體核心（SMT 兄弟）。
 
 ### Presets
 
@@ -74,6 +84,11 @@ pwsh -File tools/bench-app/bench-app.ps1 -Resummarize -OutFile benchmarks/runs/a
 | `-CacheState` | warm | 只用來標記（見〈Cold 與 warm〉） |
 | `-LaunchBudgetFile` / `-MaxLaunches` | 無 / 25 | 跨多次呼叫累計 GUI 啟動次數，超過上限就拒絕執行 |
 | `-NoScreenshots` | 關 | 預設會存第一個非空白畫面、穩定後畫面、每次互動後的截圖 |
+| `-Affinity <mask>` | 無 | 1.1.0。process 啟動後立刻設定 `ProcessorAffinity`（`0x55` 這類十六進位或十進位），用來近似核心數較少的機器。之後建立的 thread 與子 process 會繼承。只能指定第一個 processor group（前 64 個邏輯 CPU） |
+| `-ThreadDetail` | 關 | 1.1.0。idle 期間逐條 thread 的 CPU cycles 與 context switch（見〈Idle 診斷〉） |
+| `-MemoryDetail` | 關 | 1.1.0。idle 結束時以 `VirtualQueryEx` 分類 committed memory，並把 working set 依同樣的類別拆開（見〈Idle 診斷〉） |
+| `-AppProbe` | 關 | 1.1.0。idle 前後（有互動時再加一次互動後）通知 app 自報計數（見〈-AppProbe 協定〉），需要 `-CaptureStdout` |
+| `-TopThreads` | 20 | `-ThreadDetail` 列出的 thread 數 |
 
 ---
 
@@ -93,6 +108,13 @@ pwsh -File tools/bench-app/bench-app.ps1 -Resummarize -OutFile benchmarks/runs/a
 | `launch.t_stable_detected_ms` | 判定穩定的時刻，比視覺完成多出 QuietMs，只用於除錯 |
 | `open.*`（upstream） | 以按下 Open 那一刻為 0：`t_first_change_ms` 是畫面第一次變化，`t_visual_complete_ms` 是視覺完成 |
 | `idle.*` | 穩定後 1 秒開始的 `IdleSeconds` 秒：private bytes、working set、threads、handles、CPU 差值（`cpu_pct_of_one_core`），以及 GPU dedicated/shared（效能計數器 `GPU Process Memory`） |
+| `idle.private_ws_mb` | 1.1.0。private working set，即工作管理員「記憶體」欄（`PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize`） |
+| `idle.shared_commit_mb` | 1.1.0。`SharedCommitUsage`：算在這個 process 的共享 commit（pagefile-backed section） |
+| `idle.commit_charge_mb` | 1.1.0。`private_mb + shared_commit_mb`。`private_mb` 本身就是 `PrivateUsage`，也就是 Microsoft 文件中的 commit charge、工作管理員的「認可大小」 |
+| `idle.system_cpu_busy_pct` | 1.1.0。idle 期間整台機器所有邏輯 CPU 的忙碌比例（`GetSystemTimes`，含 app 自己），用來記錄背景負載 |
+| `peak.private_ws_mb_sum` / `peak.commit_charge_mb_sum` | 1.1.0。與 `peak.*` 同樣取樣方式下，上面兩個值的 tree 總和最大值 |
+| `post_interaction_idle.private_ws_mb` 等 | 1.1.0。互動後 idle 的同一組三個欄位 |
+| `affinity`、`config.affinity_mask` | 1.1.0。`-Affinity` 的 mask、邏輯 CPU 數、設定完成的時間點（ms） |
 | `peak.*` | 錄影期間約每 250 ms 取樣一次，加上各階段邊界的取樣，取 tree 總和的最大值 |
 | `capture_overhead` | 校正用：只截圖、不送輸入約 2.5 秒，期間目標 app 消耗的 CPU（ms/s）。互動的 `cpu_ms_net_of_capture` 已扣除這個量 |
 | `scroll/pagedown/zoom.*` | `latency_first_change_ms` 是第一個輸入送出到畫面第一次變化；`settle_after_last_input_ms` 是最後一個輸入到最後一次變化；`changed_frames_per_s_during_input` 是輸入期間每秒有變化的截圖數（上限約等於截圖頻率）；`effect=false` 表示輸入沒有造成任何畫面變化，**這類 run 不列入 summary**，但保留在原始資料中 |
@@ -121,6 +143,55 @@ app 以 `FASTPDF_BENCH=1` 啟動時，每個里程碑在 stdout 印一行 JSON�
 - 換算方式：`host_ms ≈ process_created_offset_ms + t_ms`。
 
 這樣可以拿 app 內部的 `first_page_exact` 對照外部截圖量到的 `launch.t_visual_complete_ms`，作為互相驗證。
+
+### Idle 診斷（1.1.0，`-ThreadDetail`、`-MemoryDetail`）
+
+兩者都只讀取目標 process（query／read 權限），不注入、不寫入；需要 64 位元的 PowerShell。
+
+**`-ThreadDetail` → `idle.threads_detail`、`idle.thread_census`**
+
+- idle 窗口開頭與結尾各取一次 snapshot：
+  - CPU cycles：`QueryThreadCycleTime`（精確，不受 15.6 ms 計時粒度影響）；
+  - CPU time 與 context switch 次數：`NtQuerySystemInformation(SystemProcessInformation)`。context switch／秒就是這條 thread 每秒被喚醒的次數；
+  - 名稱：`GetThreadDescription`（Rust 的具名 thread、GPUI 的 `VSyncProvider`、.NET 等都會設定）；
+  - 起點：`NtQueryInformationThread(ThreadQuerySetWin32StartAddress)`，再對照 module 清單寫成 `module.dll+0x偏移`。沒有名稱的 thread 以起點分組，例如 Windows thread pool 的 worker 都從同一個 `ntdll.dll` 位址開始。
+- 主執行緒：root process 中建立時間最早的 thread，標成 `main`。
+- 輸出：
+  - `total_mcycles_per_s`、`total_switches_per_s`：整個 tree 的合計；
+  - `main_*`、`vsync_*`：主執行緒與 `VSyncProvider`；
+  - `by_source`：依來源（名稱或起點）合計；
+  - `top`：cycles 最多的 `-TopThreads` 條 thread；
+  - `thread_census`：idle 結束時依來源（名稱，否則起點 module）統計的 thread 數。
+- `NtQuerySystemInformation` 的結構是以 64 位元版面讀取的。每次執行都會先用 PowerShell 自己的 thread 清單驗證版面，驗證失敗時只記錄錯誤，不輸出數字。
+
+**`-MemoryDetail` → `idle.memory_detail`**
+
+idle 結束時以 `VirtualQueryEx` 走過整個位址空間，把 committed 的 region 分類，再用 `QueryWorkingSet` 把 working set 的每一頁歸到同一個類別（PSAPI 的 Shared 位元為 0 即為 private）：
+
+| 類別 | 判定方式 | `committed_mb` 的意義 |
+|---|---|---|
+| `heap` | `MEM_PRIVATE`，allocation base 是 PEB 列出的 process heap，或帶有 NT heap segment 簽章（`0xFFEEFFEE`） | private commit |
+| `stack` | `MEM_PRIVATE`，allocation base 是某條 thread 的 stack（TEB 的 `NT_TIB.StackLimit`） | private commit（含 guard page） |
+| `teb_peb` | `MEM_PRIVATE`，含 TEB 或 PEB | private commit |
+| `other_private` | 其他所有 `MEM_PRIVATE`：GPU driver、D3D／DirectWrite runtime、segment heap 的 segment 與大型區塊等 | private commit |
+| `image` | `MEM_IMAGE` | 只計可寫入／copy-on-write 的頁（image 的 commit charge）；整段大小另見 `image_va_mb` |
+| `mapped_file` | `MEM_MAPPED` 且 `GetMappedFileName` 成功（檔案映射，例如字型、PDF） | 不佔 commit |
+| `mapped_pagefile` | `MEM_MAPPED` 且不是檔案（pagefile-backed section） | 共享 commit，不算在 `private_mb` |
+
+- `private_commit_mb` 是所有 `MEM_PRIVATE` 的合計；加上 `image` 的 commit 後，應接近 `idle.private_mb`。差額是 page table 等 kernel 端的 commit。
+- `private_ws_mb` 是 `QueryWorkingSet` 中 private 頁的合計，應接近 `idle.private_ws_mb`。
+- **限制：segment heap**。GPUI 的 manifest（gpui 的 `windows-manifest` feature）讓 process 使用 segment heap，FastPDF 也是。segment heap 的 segment 與大型區塊從外部無法和其他 `VirtualAlloc` 記憶體區分，所以會被歸到 `other_private`，`heap` 只剩 heap 本身的管理結構。要拆出 heap，需要 app 用 `-AppProbe` 自報 `HeapSummary`（見下一節）。
+- `largest_other_private`：`other_private` 中最大的 allocation（位址、大小、保護屬性），用來找來源。
+
+### -AppProbe 協定（1.1.0）
+
+- 想自報計數的 app 建立 auto-reset event `Local\FastPdfBenchProbe-<pid>`，每次被 signal 就在 stdout 印一行 JSON：`{"event":"probe","t_ms":...,"<名稱>":<數字>,...}`。
+- bench-app 在 idle 窗口開始前與結束後各 signal 一次，有互動時在互動與互動後 idle 結束時再 signal 一次。app 的回報工作因此落在 idle 窗口之外。
+- 輸出：
+  - `idle.app_probe.first`、`last`：idle 前後的兩行；
+  - `idle.app_probe.delta`：兩行之間每個數字欄位的差，例如 idle 期間 render 被呼叫的次數；
+  - `post_interaction_probe`：互動後的最後一行。
+- 沒有這個 event 的 app（例如目前的 FastPDF、競品）不受影響：`signalled_start = false`。
 
 ---
 
@@ -170,7 +241,7 @@ app 以 `FASTPDF_BENCH=1` 啟動時，每個里程碑在 stdout 印一行 JSON�
 2. **觀察者效應**：截圖期間目標 app 會多用 6–54 ms CPU/s（實測值，見 `capture_overhead`）。idle 取樣期間不截圖，所以 idle 數字不受影響。
 3. **多 process 的記憶體**：
    - working set 的總和會重複計算共用頁面，瀏覽器的 WS 總和偏高；
-   - 比較時以 private bytes 總和為主；
+   - Idle RAM 的 KPI 是 private working set 的總和（定義與理由見 `benchmarks/README.md`〈App 層 KPI 定義〉）；private bytes（commit）與 WS 一律一起列出；
    - GPU 記憶體只取自效能計數器（driver 層級）。
 4. **鍵盤輸入需要視窗在前景**：
    - Chromium 的視窗不在前景時，實測 PostMessage 的 PageDown 與 Ctrl+= 都**沒有效果**（推測是非前景時沒有 focused view）；
@@ -184,8 +255,14 @@ app 以 `FASTPDF_BENCH=1` 啟動時，每個里程碑在 stdout 印一行 JSON�
    - client 區：upstream 1536×864，Chromium 1520×856（含分頁列與工具列）；
    - 預設版面也不同：Edge 開啟大綱、Chrome 開啟縮圖列；
    - 這些都會影響 render 量。
-7. **樣本數少**：每個情境 3 次。機器同時有其他負載，每個 run 都記錄了 `cpu_load_pct_before`（本批量測 run 為 16–97%，warm-up 最高 100%）。
+7. **樣本數少**：每個情境 3 次。機器同時有其他負載，每個 run 都記錄了 `cpu_load_pct_before`（本批量測 run 為 16–97%，warm-up 最高 100%）。1.1.0 起另記錄 idle 窗口內的 `idle.system_cpu_busy_pct`。
 8. 只有 Windows。只量單一螢幕、100% DPI。
+9. **Idle 診斷的限制**（1.1.0）：
+   - CPU time 以 15.6 ms 為單位計數，10 秒窗口只能分辨約 0.16%；判斷「接近 0」要看 `threads_detail` 的 cycles 與 context switch；
+   - context switch 包含所有喚醒原因：使用者自己的滑鼠移到視窗上也會喚醒主執行緒，這是真實輸入，不是 app 的問題；
+   - `threads_detail` 只看 idle 結束時還活著的 thread；中途結束的 thread 只計入 `exited`；
+   - GPU driver 的 thread 數與記憶體依廠牌、版本而定（本機 NVIDIA D3D11 driver 自己就有 103 條 thread），不同機器的數字不能直接比較；
+   - `-MemoryDetail` 在 segment heap 下拆不出 heap（見〈Idle 診斷〉）。
 
 ---
 
@@ -212,8 +289,9 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Scenario launch-empty 
 - 結果寫入 `benchmarks/runs/app-fastpdf.json`。要看的欄位：
   - `fastpdf_bench.events_t_ms.first_page_exact`（app 自報）；
   - `launch.t_visual_complete_ms`（外部截圖）；
-  - `idle.private_mb`（KPI 目標 < 50 MB）；
-  - `idle.cpu_ms`（目標約 0）。
+  - `idle.private_ws_mb`（Idle RAM KPI，目標 < 50 MB），以及 `idle.private_mb`（commit）、`idle.ws_mb`；
+  - `idle.cpu_pct_of_one_core`（Idle CPU KPI，目標約 0），加上 `-ThreadDetail` 時的 `idle.threads_detail.*_switches_per_s`。
+  - KPI 的定義、量測時點與報告方式見 `benchmarks/README.md`〈App 層 KPI 定義〉。
 - 尚未驗證的部分：posted 的 `WM_KEYDOWN`（PageDown）與 Ctrl+滾輪在 FastPDF 視窗不在前景時是否有效。GPUI 會處理 posted 的滑鼠與鍵盤訊息，Ctrl 狀態由工具注入。如果 `effect=false`，請先確認 FastPDF 的 keybinding 是否已綁定。
 
 ---

@@ -51,11 +51,16 @@ param(
     [int]$MaxLaunches = 25,
     [switch]$NoScreenshots,
     [switch]$Detect,
-    [switch]$Resummarize                      # recompute the summaries of an existing -OutFile (no launches)
+    [switch]$Resummarize,                     # recompute the summaries of an existing -OutFile (no launches)
+    [string]$Affinity,                        # CPU mask (e.g. 0xF = 4 logical CPUs) set on the process right after launch
+    [switch]$ThreadDetail,                    # per-thread cycles / context switches over the idle window
+    [switch]$MemoryDetail,                    # VirtualQueryEx map of committed memory + working set at the end of idle
+    [switch]$AppProbe,                        # signal the app's probe event around the idle window (see README)
+    [int]$TopThreads = 20
 )
 
 $ErrorActionPreference = 'Stop'
-$ToolVersion = '1.0.0'
+$ToolVersion = '1.1.0'
 $Schema = 'fastpdf-bench-app/1'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
@@ -185,6 +190,19 @@ if (-not $Resummarize) {
         $running = Get-Process -Name $cfg.singleInstance -ErrorAction SilentlyContinue
         if ($running) { throw "$($cfg.singleInstance -join '/') is already running; a new launch would hand the file to that instance. Close it first." }
     }
+    $AffinityMask = $null
+    if ($Affinity) {
+        # 0x-prefixed hex or decimal; only the first processor group (64 logical CPUs) can be addressed.
+        $t = $Affinity.Trim()
+        $parsed = [int64]0
+        $ok = if ($t -match '^0[xX][0-9a-fA-F]{1,16}$') { [int64]::TryParse($t.Substring(2), [Globalization.NumberStyles]::HexNumber, $null, [ref]$parsed) } else { [int64]::TryParse($t, [ref]$parsed) }
+        if (-not $ok -or $parsed -eq 0) { throw "-Affinity '$Affinity' is not a non-zero CPU mask (use e.g. 0xF or 15)" }
+        $all = [int64]([Diagnostics.Process]::GetCurrentProcess().ProcessorAffinity)
+        if (($parsed -band $all) -ne $parsed) { throw ("-Affinity 0x{0:X} names CPUs this system does not have (available mask 0x{1:X})" -f $parsed, $all) }
+        $AffinityMask = $parsed
+        $AffinityCpus = 0; for ($bit = 0; $bit -lt 64; $bit++) { if ($parsed -band ([int64]1 -shl $bit)) { $AffinityCpus++ } }
+    }
+    if (($ThreadDetail -or $MemoryDetail) -and [IntPtr]::Size -ne 8) { Write-Warning '-ThreadDetail / -MemoryDetail need 64-bit PowerShell; skipped.'; $ThreadDetail = $false; $MemoryDetail = $false }
 
     if (-not $OutFile) { $OutFile = Join-Path $Repo "benchmarks\runs\app-$Label.json" }
     if (-not $ShotsDir) { $ShotsDir = Join-Path $Repo 'benchmarks\runs\app-shots' }
@@ -274,6 +292,114 @@ function Get-GpuMemory([int[]]$pids) {
 function Convert-Sample($s) {
     [ordered]@{ processes = $s.Count; private_mb = [math]::Round($s.Private / 1MB, 1); ws_mb = [math]::Round($s.WorkingSet / 1MB, 1)
         threads = $s.Threads; handles = $s.Handles; cpu_ms_total = [math]::Round($s.Cpu100ns / 1e4, 1); names = $s.Names }
+}
+
+# Fields added in 1.1.0 (appended after the 1.0.0 ones; null where the system lacks PROCESS_MEMORY_COUNTERS_EX2):
+#   private_ws_mb    private working set (Task Manager "Memory" column), summed over the tree
+#   shared_commit_mb SharedCommitUsage, summed over the tree
+#   commit_charge_mb private_mb + shared_commit_mb
+function Add-MemoryFields($dict, $s, [string]$suffix = '') {
+    $ok = $s.PrivateWs -ge 0
+    $dict["private_ws_mb$suffix"] = if ($ok) { [math]::Round($s.PrivateWs / 1MB, 1) } else { $null }
+    $dict["shared_commit_mb$suffix"] = if ($ok) { [math]::Round($s.SharedCommit / 1MB, 1) } else { $null }
+    $dict["commit_charge_mb$suffix"] = if ($ok) { [math]::Round(($s.Private + $s.SharedCommit) / 1MB, 1) } else { $null }
+}
+
+function Convert-MB([long]$bytes) { [math]::Round($bytes / 1MB, 2) }
+
+function Convert-MemoryReport($rep) {
+    $buckets = [ordered]@{}
+    foreach ($name in 'heap', 'stack', 'teb_peb', 'other_private', 'image', 'mapped_file', 'mapped_pagefile') {
+        $b = $null
+        if ($rep.Buckets.TryGetValue($name, [ref]$b)) {
+            $buckets[$name] = [ordered]@{ committed_mb = Convert-MB $b.Committed; private_ws_mb = Convert-MB $b.PrivateWs; shared_ws_mb = Convert-MB $b.SharedWs; regions = $b.Regions }
+        }
+    }
+    [ordered]@{
+        private_commit_mb = Convert-MB $rep.PrivateCommitted; image_va_mb = Convert-MB $rep.ImageVa
+        ws_mb = Convert-MB $rep.WsTotal; private_ws_mb = Convert-MB $rep.WsPrivate; ws_unmatched_mb = Convert-MB $rep.WsUnmatched
+        heaps = $rep.Heaps; nt_heaps = $rep.NtHeaps; segment_heaps = $rep.SegmentHeaps; nt_heap_segments = $rep.NtHeapSegments
+        threads = $rep.Threads; stacks = $rep.Stacks
+        buckets = $buckets
+        largest_other_private = @($rep.LargestOther)
+        top_images = @($rep.TopImages)
+        error = $rep.Error
+    }
+}
+
+function Get-ThreadDetail($rowsA, $rowsB, [double]$seconds, [int]$rootPid) {
+    $exited = 0
+    $deltas = [FastPdfBench.ThreadDiff]::Compute($rowsA, $rowsB, $seconds, [ref]$exited)
+    # The root process' oldest thread is its main (UI) thread.
+    $mainTid = $null; $oldest = [long]::MaxValue
+    foreach ($r in $rowsB) { if ($r.Pid -eq $rootPid -and $r.Create -lt $oldest) { $oldest = $r.Create; $mainTid = $r.Tid } }
+    $label = { param($d) if ($d.Tid -eq $mainTid -and $d.Pid -eq $rootPid) { 'main' + $(if ($d.Name) { " ($($d.Name))" }) } elseif ($d.Name) { $d.Name } else { $d.Start } }
+    $groups = [ordered]@{}
+    $totCycles = 0.0; $totSwitches = 0.0; $totCpu = 0.0
+    foreach ($d in $deltas) {
+        $src = & $label $d
+        if (-not $d.Name -and $src -ne 'main') { $src = 'start ' + $src }
+        $totCycles += $d.CyclesPerS; $totSwitches += $d.SwitchesPerS; $totCpu += $d.CpuMs
+        if (-not $groups.Contains($src)) { $groups[$src] = [ordered]@{ threads = 0; mcycles_per_s = 0.0; switches_per_s = 0.0; cpu_ms = 0.0 } }
+        $g = $groups[$src]; $g.threads++; $g.mcycles_per_s += $d.CyclesPerS / 1e6; $g.switches_per_s += $d.SwitchesPerS; $g.cpu_ms += $d.CpuMs
+    }
+    $bySource = @(foreach ($k in $groups.Keys) {
+            $g = $groups[$k]
+            [ordered]@{ source = $k; threads = $g.threads; mcycles_per_s = [math]::Round($g.mcycles_per_s, 3); switches_per_s = [math]::Round($g.switches_per_s, 2); cpu_ms = [math]::Round($g.cpu_ms, 1) }
+        }) | Sort-Object { - $_.mcycles_per_s }, { - $_.switches_per_s }
+    $top = @($deltas | Select-Object -First $TopThreads | ForEach-Object {
+            [ordered]@{ pid = $_.Pid; tid = $_.Tid; name = $_.Name; start = $_.Start; main = ($_.Tid -eq $mainTid -and $_.Pid -eq $rootPid); born = $_.Born
+                mcycles_per_s = [math]::Round($_.CyclesPerS / 1e6, 3); switches_per_s = [math]::Round($_.SwitchesPerS, 2); cpu_ms = [math]::Round($_.CpuMs, 1) }
+        })
+    $main = @($deltas | Where-Object { $_.Tid -eq $mainTid -and $_.Pid -eq $rootPid } | Select-Object -First 1)
+    $vsync = @($deltas | Where-Object { $_.Name -eq 'VSyncProvider' })
+    [ordered]@{
+        seconds = [math]::Round($seconds, 2); threads = @($rowsB).Count; exited = $exited
+        total_mcycles_per_s = [math]::Round($totCycles / 1e6, 3); total_switches_per_s = [math]::Round($totSwitches, 2); total_cpu_ms = [math]::Round($totCpu, 1)
+        main_mcycles_per_s = if ($main) { [math]::Round($main[0].CyclesPerS / 1e6, 3) } else { $null }
+        main_switches_per_s = if ($main) { [math]::Round($main[0].SwitchesPerS, 2) } else { $null }
+        vsync_mcycles_per_s = if ($vsync) { [math]::Round((($vsync | Measure-Object CyclesPerS -Sum).Sum) / 1e6, 3) } else { $null }
+        vsync_switches_per_s = if ($vsync) { [math]::Round(($vsync | Measure-Object SwitchesPerS -Sum).Sum, 2) } else { $null }
+        by_source = @($bySource)
+        top = $top
+    }
+}
+
+function Get-ProbeLines($collector) {
+    @(foreach ($line in $collector.SnapshotLines()) {
+            $o = $null; try { $o = $line | ConvertFrom-Json -ErrorAction Stop } catch { }
+            if ($o -and $o.event -eq 'probe') { $o }
+        })
+}
+
+function Get-AppProbeResult($collector, [bool]$start, [bool]$end) {
+    # Probe lines are JSON with "event":"probe" (see README, "-AppProbe"); the last two bracket the idle window.
+    $res = [ordered]@{ signalled_start = $start; signalled_end = $end }
+    if (-not ($start -or $end)) { $res.note = 'no probe event (Local\FastPdfBenchProbe-<pid>) in the app'; return $res }
+    $probes = @(Get-ProbeLines $collector)
+    if ($probes.Count -eq 0) { $res.note = 'no probe lines on stdout (needs -CaptureStdout)'; return $res }
+    $res.last = $probes[-1]
+    if ($probes.Count -ge 2) {
+        $first = $probes[-2]; $res.first = $first
+        $delta = [ordered]@{}
+        foreach ($pp in $probes[-1].PSObject.Properties) {
+            $old = $first.PSObject.Properties[$pp.Name]
+            $isNum = { param($v) $v -is [long] -or $v -is [int] -or $v -is [double] -or $v -is [decimal] }
+            if ($old -and (& $isNum $pp.Value) -and (& $isNum $old.Value)) { $delta[$pp.Name] = [math]::Round([double]$pp.Value - [double]$old.Value, 3) }
+        }
+        $res.delta = $delta
+    }
+    return $res
+}
+
+function Get-ThreadCensus($rows, [int]$rootPid) {
+    # Thread count by source (description, else start module), e.g. for idle RAM attribution.
+    $groups = [ordered]@{}
+    foreach ($r in $rows) {
+        $src = if ($r.Name) { $r.Name } elseif ($r.StartModule) { $r.StartModule } else { $r.Start }
+        if ($groups.Contains($src)) { $groups[$src]++ } else { $groups[$src] = 1 }
+    }
+    @(foreach ($k in $groups.Keys) { [ordered]@{ source = $k; threads = $groups[$k] } }) | Sort-Object { - $_.threads }, { $_.source }
 }
 
 function Get-RecordOptions([int]$quiet, [int]$waitChange, [double]$notBefore) {
@@ -398,6 +524,18 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
     $clock.Start()
     $p = [System.Diagnostics.Process]::Start($psi)
     $run.t_process_start_returned_ms = [math]::Round($clock.Elapsed.TotalMilliseconds, 1)
+    if ($null -ne $AffinityMask) {
+        # Restrict the app right after launch to approximate a machine with fewer cores (threads created
+        # later inherit the mask; so do child processes). Recorded per run; a failure fails the run.
+        try {
+            $p.ProcessorAffinity = [IntPtr]$AffinityMask
+            $run.affinity = [ordered]@{ mask = ('0x{0:X}' -f $AffinityMask); logical_cpus = $AffinityCpus; applied_at_ms = [math]::Round($clock.Elapsed.TotalMilliseconds, 1) }
+        } catch {
+            try { $p.Kill() } catch { }
+            throw "cannot set the processor affinity: $_"
+        }
+    }
+    [FastPdfBench.ThreadProbe]::Reset()
     $collector = New-Object FastPdfBench.StdoutCollector
     if ($cfg.capture) { $collector.Attach($p, $clock) } else { $collector.AttachDiscard($p) }
     $collector.AttachStderr($p)
@@ -438,15 +576,51 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
         }
 
         Start-Sleep -Milliseconds 1000
+        # -AppProbe: the app reports its counters now and again after the window (its work stays outside it).
+        $probeStart = $false; $probeEnd = $false
+        if ($AppProbe) { $probeStart = [FastPdfBench.AppProbe]::Signal($p.Id); Start-Sleep -Milliseconds 200 }
         $a = $s.Sample()
+        $sysA = [FastPdfBench.SysCpu]::Now()
+        # Diagnostics never fail the run: their errors are recorded next to their results.
+        $thrA = $null; $thrB = $null; $thrError = $null
+        if ($ThreadDetail) { try { $thrA = [FastPdfBench.ThreadProbe]::Snapshot([Collections.Generic.HashSet[int]]@($s.RefreshTree())) } catch { $thrError = "$_" } }
         Start-Sleep -Seconds $IdleSeconds
         $b = $s.Sample()
+        $sysB = [FastPdfBench.SysCpu]::Now()
+        if ($ThreadDetail -and $thrA) { try { $thrB = [FastPdfBench.ThreadProbe]::Snapshot([Collections.Generic.HashSet[int]]@($s.RefreshTree())) } catch { $thrError = "$_" } }
         $run.idle = Convert-Sample $b
         $run.idle.seconds = $IdleSeconds
         $run.idle.cpu_ms = [math]::Round(($b.Cpu100ns - $a.Cpu100ns) / 1e4, 1)
         $run.idle.cpu_pct_of_one_core = [math]::Round((($b.Cpu100ns - $a.Cpu100ns) / 1e4) / ($IdleSeconds * 10), 2)
         $gm = Get-GpuMemory @($s.RefreshTree()); foreach ($k in $gm.Keys) { $run.idle[$k] = $gm[$k] }
         if ($b.Unreadable) { $run.idle.unreadable_pids = $b.Unreadable }
+        Add-MemoryFields $run.idle $b
+        # Background load: share of all logical CPUs busy during the window (the app's own share included).
+        $run.idle.system_cpu_busy_pct = [math]::Round([FastPdfBench.SysCpu]::BusyPct($sysA, $sysB), 1)
+        if ($ThreadDetail) {
+            if ($thrA -and $thrB) {
+                try {
+                    $run.idle.threads_detail = Get-ThreadDetail $thrA $thrB (($b.T - $a.T) / 1000) $p.Id
+                    $run.idle.thread_census = @(Get-ThreadCensus $thrB $p.Id)
+                } catch { $run.idle.threads_detail = [ordered]@{ error = "$_" } }
+            } else {
+                $why = if ($thrError) { $thrError } else { "$([FastPdfBench.ThreadProbe]::SelfCheck())" }
+                $run.idle.threads_detail = [ordered]@{ error = $why }
+            }
+        }
+        # Read the memory map before the app's probe runs (its heap walk allocates a little).
+        if ($MemoryDetail) {
+            try {
+                $reports = @(foreach ($tp in @($s.RefreshTree())) { [FastPdfBench.MemoryMap]::Classify($tp) })
+                if ($reports.Count -eq 1) { $run.idle.memory_detail = Convert-MemoryReport $reports[0] }
+                else { $run.idle.memory_detail = [ordered]@{ processes = @($reports | ForEach-Object { Convert-MemoryReport $_ }) } }
+            } catch { $run.idle.memory_detail = [ordered]@{ error = "$_" } }
+        }
+        if ($AppProbe) {
+            $probeEnd = [FastPdfBench.AppProbe]::Signal($p.Id)
+            Start-Sleep -Milliseconds 300
+            $run.idle.app_probe = Get-AppProbeResult $collector $probeStart $probeEnd
+        }
 
         # Observer-effect calibration: capture only (same cadence as the interaction recordings), no input.
         $cw = 0; $ch = 0
@@ -471,10 +645,22 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
             Start-Sleep -Milliseconds 500
             $c0 = $s.Sample(); Start-Sleep -Seconds $PostIdleSeconds; $c1 = $s.Sample()
             $run.post_interaction_idle = [ordered]@{ seconds = $PostIdleSeconds; cpu_ms = [math]::Round(($c1.Cpu100ns - $c0.Cpu100ns) / 1e4, 1); private_mb = [math]::Round($c1.Private / 1MB, 1); ws_mb = [math]::Round($c1.WorkingSet / 1MB, 1) }
+            Add-MemoryFields $run.post_interaction_idle $c1
+        }
+        if ($AppProbe -and $doInput -and ($ScrollNotches + $PageDowns + $ZoomSteps) -gt 0) {
+            # One more report after the interactions (e.g. the app's frame pacing during them).
+            if ([FastPdfBench.AppProbe]::Signal($p.Id)) {
+                Start-Sleep -Milliseconds 300
+                $after = @(Get-ProbeLines $collector)
+                if ($after.Count -gt 0) { $run.post_interaction_probe = $after[-1] }
+            }
         }
         $last = $s.Sample()
         $run.peak = [ordered]@{ private_mb_sum = [math]::Round($s.PeakPrivateSum / 1MB, 1); ws_mb_sum = [math]::Round($s.PeakWsSum / 1MB, 1)
             peak_ws_single_process_mb = [math]::Round($last.PeakWorkingSetMax / 1MB, 1); max_processes = $s.PeakProcessCount; note = 'sampled every ~250 ms while recording + at idle/interaction boundaries' }
+        # 1.1.0: peaks of the tree sums of the PROCESS_MEMORY_COUNTERS_EX2 values (same sampling as above).
+        $run.peak.private_ws_mb_sum = if ($s.PeakPrivateWsSum -ge 0) { [math]::Round($s.PeakPrivateWsSum / 1MB, 1) } else { $null }
+        $run.peak.commit_charge_mb_sum = if ($s.PeakCommitSum -ge 0) { [math]::Round($s.PeakCommitSum / 1MB, 1) } else { $null }
     } catch {
         $run.error = "$_"
     } finally {
@@ -588,7 +774,7 @@ try {
             try { Remove-Item -Recurse -Force $profileDir -ErrorAction Stop } catch { Write-Warning "could not remove temp profile $profileDir : $_" }
         }
         $msg = if ($r.error) { "  error: $($r.error)" } else {
-            "  window {0} ms, first non-blank {1} ms, visually complete {2} ms, idle private {3} MB, idle CPU {4} ms" -f $r.t_window_ms, $r.launch.t_first_nonblank_ms, $r.launch.t_visual_complete_ms, $r.idle.private_mb, $r.idle.cpu_ms
+            "  window {0} ms, first non-blank {1} ms, visually complete {2} ms, idle private {3} MB (private WS {5} MB), idle CPU {4} ms" -f $r.t_window_ms, $r.launch.t_first_nonblank_ms, $r.launch.t_visual_complete_ms, $r.idle.private_mb, $r.idle.cpu_ms, $r.idle.private_ws_mb
         }
         Write-Host $msg
         Start-Sleep -Seconds 2
@@ -611,7 +797,8 @@ $scenarioObj = [ordered]@{
     name = $Scenario; generated = (Get-Date).ToString('o'); app = $appInfo
     pdf = if ($PdfPath) { [ordered]@{ path = (Get-RelPath $PdfPath); bytes = (Get-Item $PdfPath).Length } } else { $null }
     config = [ordered]@{ runs = $Runs; warmup_runs = $WarmupRuns; idle_seconds = $IdleSeconds; stable_frames = $StableFrames; quiet_ms = $QuietMs
-        scroll_notches = $ScrollNotches; pagedowns = $PageDowns; zoom_steps = $ZoomSteps; cache_state = $CacheState; capture = 'PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT), 4px grid' }
+        scroll_notches = $ScrollNotches; pagedowns = $PageDowns; zoom_steps = $ZoomSteps; cache_state = $CacheState; capture = 'PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT), 4px grid'
+        affinity_mask = if ($null -ne $AffinityMask) { '0x{0:X}' -f $AffinityMask } else { $null }; thread_detail = [bool]$ThreadDetail; memory_detail = [bool]$MemoryDetail; app_probe = [bool]$AppProbe }
     summary = Get-Summary $results.ToArray()
     runs = $results.ToArray()
 }
@@ -626,7 +813,7 @@ $doc.scenarios = @($doc.scenarios) + @($scenarioObj)
 $doc | ConvertTo-Json -Depth 14 | Set-Content $OutFile -Encoding utf8
 Write-Host "wrote $OutFile"
 $sum = $scenarioObj.summary
-foreach ($k in 't_window_ms', 'launch.t_first_nonblank_ms', 'launch.t_visual_complete_ms', 'open.t_visual_complete_ms', 'idle.private_mb', 'idle.ws_mb', 'idle.cpu_ms', 'peak.private_mb_sum', 'scroll.latency_first_change_ms', 'scroll.settle_after_last_input_ms', 'zoom.latency_first_change_ms') {
+foreach ($k in 't_window_ms', 'launch.t_first_nonblank_ms', 'launch.t_visual_complete_ms', 'open.t_visual_complete_ms', 'idle.private_mb', 'idle.ws_mb', 'idle.private_ws_mb', 'idle.commit_charge_mb', 'idle.cpu_ms', 'idle.system_cpu_busy_pct', 'idle.threads_detail.main_switches_per_s', 'idle.threads_detail.vsync_switches_per_s', 'peak.private_mb_sum', 'scroll.latency_first_change_ms', 'scroll.settle_after_last_input_ms', 'zoom.latency_first_change_ms') {
     if ($sum.Contains($k)) { Write-Host ("  {0,-36} median {1,8}  [{2} .. {3}] n={4}" -f $k, $sum[$k].median, $sum[$k].min, $sum[$k].max, $sum[$k].n) }
 }
 Remove-Item ($OutFile + '.lastruns.tmp.json') -ErrorAction SilentlyContinue

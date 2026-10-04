@@ -8,7 +8,9 @@
 //   * frame-difference recorder (first non-blank frame, last visual change, quiet-period stability)
 //   * input playback with PostMessage to windows of the tree only (wheel / keys, optional Ctrl via
 //     AttachThreadInput + SetKeyboardState on the target thread's shared input state)
-//   * memory / CPU / thread sampling summed over the tree
+//   * memory / CPU / thread sampling summed over the tree (incl. private working set and shared commit)
+//   * opt-in idle diagnostics: per-thread cycles / context switches (ThreadProbe), a VirtualQueryEx
+//     map of committed memory by kind (MemoryMap), and a cooperative probe event (AppProbe)
 //   * minimal PNG writer (no System.Drawing dependency)
 using System;
 using System.Collections.Generic;
@@ -133,6 +135,8 @@ namespace FastPdfBench
     {
         public double T; public int Count; public long WorkingSet; public long Private; public long PeakWorkingSetMax; public long PeakWorkingSetSum;
         public long Cpu100ns; public int Threads; public long Handles; public string Names; public string Unreadable;
+        // PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809+); -1 when the system does not report them.
+        public long PrivateWs = -1; public long SharedCommit = -1;
     }
 
     public static class Procs
@@ -439,6 +443,8 @@ namespace FastPdfBench
         public readonly Dictionary<int, string> Names = new Dictionary<int, string>();
         public WinInfo Win;
         public long PeakPrivateSum, PeakWsSum;
+        // -1 until a sample reported PROCESS_MEMORY_COUNTERS_EX2 values.
+        public long PeakPrivateWsSum = -1, PeakCommitSum = -1;
         public int PeakProcessCount;
         readonly Capturer cap = new Capturer();
         readonly Dictionary<int, IntPtr> handles = new Dictionary<int, IntPtr>(); // held open so exited processes keep their final CPU time
@@ -584,6 +590,7 @@ namespace FastPdfBench
             var s = new TreeSample { T = Clock.Elapsed.TotalMilliseconds };
             var names = new Dictionary<string, int>();
             var bad = new StringBuilder();
+            bool ex2 = true; long privateWs = 0, sharedCommit = 0;
             foreach (var kv in handles)
             {
                 int pid = kv.Key; IntPtr h = kv.Value;
@@ -592,13 +599,13 @@ namespace FastPdfBench
                 s.Cpu100ns += k + u;
                 uint code;
                 if (!Native.GetExitCodeProcess(h, out code) || code != Native.STILL_ACTIVE) continue;
-                Native.PROCESS_MEMORY_COUNTERS_EX m;
-                if (Native.K32GetProcessMemoryInfo(h, out m, Marshal.SizeOf(typeof(Native.PROCESS_MEMORY_COUNTERS_EX))))
+                long ws, priv, pk, pws, shc;
+                if (MemCounters.Read(h, out ws, out priv, out pk, out pws, out shc))
                 {
-                    s.WorkingSet += (long)m.WorkingSetSize.ToUInt64();
-                    s.Private += (long)m.PrivateUsage.ToUInt64();
-                    long pk = (long)m.PeakWorkingSetSize.ToUInt64();
+                    s.WorkingSet += ws;
+                    s.Private += priv;
                     s.PeakWorkingSetSum += pk; if (pk > s.PeakWorkingSetMax) s.PeakWorkingSetMax = pk;
+                    if (pws >= 0) { privateWs += pws; sharedCommit += shc; } else ex2 = false;
                 }
                 else bad.Append(pid).Append("(mem) ");
                 uint hc; if (Native.GetProcessHandleCount(h, out hc)) s.Handles += hc;
@@ -611,6 +618,12 @@ namespace FastPdfBench
             var nb = new StringBuilder();
             foreach (var kv in names) { if (nb.Length > 0) nb.Append(", "); nb.Append(kv.Key).Append(':').Append(kv.Value); }
             s.Names = nb.ToString(); s.Unreadable = bad.ToString().Trim();
+            if (ex2 && s.Count > 0)
+            {
+                s.PrivateWs = privateWs; s.SharedCommit = sharedCommit;
+                if (privateWs > PeakPrivateWsSum) PeakPrivateWsSum = privateWs;
+                if (s.Private + sharedCommit > PeakCommitSum) PeakCommitSum = s.Private + sharedCommit;
+            }
             if (s.Private > PeakPrivateSum) PeakPrivateSum = s.Private;
             if (s.WorkingSet > PeakWsSum) PeakWsSum = s.WorkingSet;
             if (s.Count > PeakProcessCount) PeakProcessCount = s.Count;
@@ -876,6 +889,598 @@ namespace FastPdfBench
             var sb = new StringBuilder();
             foreach (var kv in Names) { if (sb.Length > 0) sb.Append(", "); sb.Append(kv.Value).Append('#').Append(kv.Key); }
             return sb.ToString();
+        }
+    }
+
+    // =====================================================================================
+    // Idle diagnostics. Everything below only reads the target (query / read-memory rights
+    // on the process tree bench-app launched); nothing is injected or written into it.
+    // The thread and memory probes need a 64-bit bench host (IntPtr.Size == 8).
+    // =====================================================================================
+
+    public static class NativeEx
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PROCESS_MEMORY_COUNTERS_EX2
+        {
+            public int cb; public int PageFaultCount; public UIntPtr PeakWorkingSetSize; public UIntPtr WorkingSetSize;
+            public UIntPtr QuotaPeakPagedPoolUsage; public UIntPtr QuotaPagedPoolUsage; public UIntPtr QuotaPeakNonPagedPoolUsage;
+            public UIntPtr QuotaNonPagedPoolUsage; public UIntPtr PagefileUsage; public UIntPtr PeakPagefileUsage; public UIntPtr PrivateUsage;
+            public UIntPtr PrivateWorkingSetSize; public ulong SharedCommitUsage;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MEMORY_BASIC_INFORMATION
+        {
+            public IntPtr BaseAddress; public IntPtr AllocationBase; public uint AllocationProtect; public ushort PartitionId;
+            public UIntPtr RegionSize; public uint State; public uint Protect; public uint Type;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MODULEINFO { public IntPtr lpBaseOfDll; public int SizeOfImage; public IntPtr EntryPoint; }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct THREADENTRY32 { public int dwSize; public int cntUsage; public int th32ThreadID; public int th32OwnerProcessID; public int tpBasePri; public int tpDeltaPri; public int dwFlags; }
+
+        [DllImport("kernel32.dll", EntryPoint = "K32GetProcessMemoryInfo")]
+        public static extern bool GetProcessMemoryInfoEx2(IntPtr h, out PROCESS_MEMORY_COUNTERS_EX2 c, int cb);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern UIntPtr VirtualQueryEx(IntPtr h, IntPtr addr, out MEMORY_BASIC_INFORMATION mbi, UIntPtr len);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, UIntPtr size, out UIntPtr read);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool K32QueryWorkingSet(IntPtr h, IntPtr buf, int cb);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern int K32GetMappedFileNameW(IntPtr h, IntPtr addr, StringBuilder name, int size);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool K32EnumProcessModulesEx(IntPtr h, IntPtr[] mods, int cb, out int needed, uint filter);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool K32GetModuleInformation(IntPtr h, IntPtr mod, out MODULEINFO info, int cb);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern int K32GetModuleBaseNameW(IntPtr h, IntPtr mod, StringBuilder name, int size);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenThread(uint access, bool inherit, int tid);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool QueryThreadCycleTime(IntPtr h, out ulong cycles);
+        [DllImport("kernel32.dll")] public static extern int GetThreadDescription(IntPtr h, out IntPtr desc);
+        [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr p);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr OpenEventW(uint access, bool inherit, string name);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetEvent(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool Thread32First(IntPtr snap, ref THREADENTRY32 e);
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool Thread32Next(IntPtr snap, ref THREADENTRY32 e);
+        [DllImport("ntdll.dll")] public static extern int NtQuerySystemInformation(int cls, IntPtr buf, int len, out int retLen);
+        [DllImport("ntdll.dll")] public static extern int NtQueryInformationThread(IntPtr h, int cls, IntPtr buf, int len, IntPtr retLen);
+        [DllImport("ntdll.dll")] public static extern int NtQueryInformationProcess(IntPtr h, int cls, IntPtr buf, int len, IntPtr retLen);
+
+        public const uint PROCESS_QUERY_INFORMATION = 0x0400, PROCESS_VM_READ = 0x0010;
+        public const uint THREAD_QUERY_INFORMATION = 0x0040, THREAD_QUERY_LIMITED_INFORMATION = 0x0800;
+        public const uint EVENT_MODIFY_STATE = 0x0002;
+        public const uint MEM_COMMIT = 0x1000, MEM_PRIVATE = 0x20000, MEM_MAPPED = 0x40000, MEM_IMAGE = 0x1000000;
+        public const uint PAGE_READWRITE = 0x04, PAGE_WRITECOPY = 0x08, PAGE_EXECUTE_READWRITE = 0x40, PAGE_EXECUTE_WRITECOPY = 0x80;
+
+        public static long ReadInt64(IntPtr h, long addr)
+        {
+            var b = new byte[8]; UIntPtr n;
+            if (!ReadProcessMemory(h, new IntPtr(addr), b, new UIntPtr(8), out n) || n.ToUInt64() != 8) return 0;
+            return BitConverter.ToInt64(b, 0);
+        }
+        public static int ReadInt32(IntPtr h, long addr)
+        {
+            var b = new byte[4]; UIntPtr n;
+            if (!ReadProcessMemory(h, new IntPtr(addr), b, new UIntPtr(4), out n) || n.ToUInt64() != 4) return 0;
+            return BitConverter.ToInt32(b, 0);
+        }
+    }
+
+    /// Process memory counters, preferring PROCESS_MEMORY_COUNTERS_EX2 (private working set, shared commit).
+    public static class MemCounters
+    {
+        static bool ex2Unsupported;
+
+        /// privateWs / sharedCommit are -1 when the system does not support PROCESS_MEMORY_COUNTERS_EX2.
+        public static bool Read(IntPtr h, out long ws, out long priv, out long peakWs, out long privateWs, out long sharedCommit)
+        {
+            ws = priv = peakWs = 0; privateWs = sharedCommit = -1;
+            bool triedEx2 = false;
+            if (!ex2Unsupported)
+            {
+                triedEx2 = true;
+                NativeEx.PROCESS_MEMORY_COUNTERS_EX2 m2;
+                int cb = Marshal.SizeOf(typeof(NativeEx.PROCESS_MEMORY_COUNTERS_EX2));
+                if (NativeEx.GetProcessMemoryInfoEx2(h, out m2, cb) && m2.cb >= cb)
+                {
+                    ws = (long)m2.WorkingSetSize.ToUInt64(); priv = (long)m2.PrivateUsage.ToUInt64(); peakWs = (long)m2.PeakWorkingSetSize.ToUInt64();
+                    privateWs = (long)m2.PrivateWorkingSetSize.ToUInt64(); sharedCommit = (long)m2.SharedCommitUsage;
+                    return true;
+                }
+            }
+            Native.PROCESS_MEMORY_COUNTERS_EX m;
+            if (!Native.K32GetProcessMemoryInfo(h, out m, Marshal.SizeOf(typeof(Native.PROCESS_MEMORY_COUNTERS_EX)))) return false;
+            // EX works where EX2 did not: an older Windows. Use EX for the rest of the session.
+            if (triedEx2) ex2Unsupported = true;
+            ws = (long)m.WorkingSetSize.ToUInt64(); priv = (long)m.PrivateUsage.ToUInt64(); peakWs = (long)m.PeakWorkingSetSize.ToUInt64();
+            return true;
+        }
+    }
+
+    /// System-wide CPU busy share between two GetSystemTimes readings (background load during a window).
+    public sealed class SysCpu
+    {
+        public long Idle, Kernel, User;
+        public static SysCpu Now() { var s = new SysCpu(); NativeEx.GetSystemTimes(out s.Idle, out s.Kernel, out s.User); return s; }
+        /// Percent of all logical processors busy (kernel time includes idle time, hence the subtraction).
+        public static double BusyPct(SysCpu a, SysCpu b)
+        {
+            long total = (b.Kernel - a.Kernel) + (b.User - a.User);
+            long idle = b.Idle - a.Idle;
+            return total <= 0 ? 0 : 100.0 * (total - idle) / total;
+        }
+    }
+
+    /// Cooperative probe: an app that wants to report its own counters creates the auto-reset event
+    /// "Local\FastPdfBenchProbe-<pid>" and prints a JSON line on stdout whenever it is signalled.
+    public static class AppProbe
+    {
+        public static bool Signal(int pid)
+        {
+            IntPtr h = NativeEx.OpenEventW(NativeEx.EVENT_MODIFY_STATE, false, "Local\\FastPdfBenchProbe-" + pid);
+            if (h == IntPtr.Zero) return false;
+            try { return NativeEx.SetEvent(h); } finally { Native.CloseHandle(h); }
+        }
+    }
+
+    /// Loaded modules of a process, for naming thread start addresses.
+    public sealed class ModuleMap
+    {
+        readonly List<long> bases = new List<long>(); readonly List<long> ends = new List<long>(); readonly List<string> names = new List<string>();
+
+        public static ModuleMap Load(IntPtr h)
+        {
+            var map = new ModuleMap();
+            var mods = new IntPtr[2048]; int needed;
+            if (!NativeEx.K32EnumProcessModulesEx(h, mods, mods.Length * IntPtr.Size, out needed, 0x03 /*LIST_MODULES_ALL*/)) return map;
+            int n = Math.Min(mods.Length, needed / IntPtr.Size);
+            var rows = new List<KeyValuePair<long, KeyValuePair<long, string>>>();
+            for (int i = 0; i < n; i++)
+            {
+                NativeEx.MODULEINFO mi;
+                if (!NativeEx.K32GetModuleInformation(h, mods[i], out mi, Marshal.SizeOf(typeof(NativeEx.MODULEINFO)))) continue;
+                var sb = new StringBuilder(260); NativeEx.K32GetModuleBaseNameW(h, mods[i], sb, sb.Capacity);
+                long b = mi.lpBaseOfDll.ToInt64();
+                rows.Add(new KeyValuePair<long, KeyValuePair<long, string>>(b, new KeyValuePair<long, string>(b + mi.SizeOfImage, sb.ToString())));
+            }
+            rows.Sort(delegate (KeyValuePair<long, KeyValuePair<long, string>> x, KeyValuePair<long, KeyValuePair<long, string>> y) { return x.Key.CompareTo(y.Key); });
+            foreach (var r in rows) { map.bases.Add(r.Key); map.ends.Add(r.Value.Key); map.names.Add(r.Value.Value); }
+            return map;
+        }
+
+        /// "module.dll+0x1a2b0", or the raw address when it is in no module.
+        public string Describe(long addr, out string module)
+        {
+            module = null;
+            if (addr == 0) return "?";
+            int lo = 0, hi = bases.Count - 1, found = -1;
+            while (lo <= hi) { int mid = (lo + hi) / 2; if (bases[mid] <= addr) { found = mid; lo = mid + 1; } else hi = mid - 1; }
+            if (found >= 0 && addr < ends[found]) { module = names[found]; return names[found] + "+0x" + (addr - bases[found]).ToString("x"); }
+            return "0x" + addr.ToString("x");
+        }
+    }
+
+    public sealed class ThreadRow
+    {
+        public int Pid, Tid; public long Create, Kernel100ns, User100ns; public ulong Cycles; public uint ContextSwitches; public int State, WaitReason;
+        public string Name = ""; public string Start = "?"; public string StartModule;
+    }
+
+    /// Per-thread CPU cycles (QueryThreadCycleTime), CPU time and context switches of a set of processes.
+    /// Context switches come from NtQuerySystemInformation(SystemProcessInformation); the 64-bit layout
+    /// used here is checked against this process' own thread list before it is trusted (SelfCheck).
+    public static class ThreadProbe
+    {
+        const int SPI_THREADS = 0x100, STI_SIZE = 0x50; // x64 SYSTEM_PROCESS_INFORMATION / SYSTEM_THREAD_INFORMATION
+        // Name + start address, cached per (pid, tid, creation time): thread ids are reused.
+        static readonly Dictionary<string, ThreadRow> statics = new Dictionary<string, ThreadRow>();
+        static readonly Dictionary<int, ModuleMap> moduleMaps = new Dictionary<int, ModuleMap>();
+        static string selfCheck;
+
+        static byte[] QueryProcesses()
+        {
+            int size = 1 << 21;
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                IntPtr buf = Marshal.AllocHGlobal(size);
+                try
+                {
+                    int ret;
+                    int status = NativeEx.NtQuerySystemInformation(5 /*SystemProcessInformation*/, buf, size, out ret);
+                    if (status == unchecked((int)0xC0000004)) { size = Math.Max(size * 2, ret + (1 << 16)); continue; }
+                    if (status != 0) return null;
+                    var data = new byte[ret > 0 && ret <= size ? ret : size];
+                    Marshal.Copy(buf, data, 0, data.Length);
+                    return data;
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+            return null;
+        }
+
+        /// null when the probe can be used, else why not.
+        public static string SelfCheck()
+        {
+            if (selfCheck != null) return selfCheck.Length == 0 ? null : selfCheck;
+            selfCheck = "";
+            if (IntPtr.Size != 8) { selfCheck = "needs a 64-bit host"; return selfCheck; }
+            int me = Process.GetCurrentProcess().Id;
+            var mine = new HashSet<int>();
+            foreach (ProcessThread t in Process.GetCurrentProcess().Threads) mine.Add(t.Id);
+            var rows = Snapshot(new HashSet<int> { me }, false);
+            if (rows == null) { selfCheck = "NtQuerySystemInformation failed"; return selfCheck; }
+            int hits = 0;
+            foreach (var r in rows) if (mine.Contains(r.Tid)) hits++;
+            if (rows.Count == 0 || hits < Math.Min(rows.Count, mine.Count) / 2) selfCheck = "unexpected SYSTEM_PROCESS_INFORMATION layout";
+            return selfCheck.Length == 0 ? null : selfCheck;
+        }
+
+        public static List<ThreadRow> Snapshot(HashSet<int> pids) { return SelfCheck() != null ? null : Snapshot(pids, true); }
+
+        static List<ThreadRow> Snapshot(HashSet<int> pids, bool details)
+        {
+            var data = QueryProcesses();
+            if (data == null) return null;
+            var rows = new List<ThreadRow>();
+            int off = 0;
+            while (off + SPI_THREADS <= data.Length)
+            {
+                int next = BitConverter.ToInt32(data, off);
+                int nThreads = BitConverter.ToInt32(data, off + 4);
+                int pid = (int)BitConverter.ToInt64(data, off + 0x50);
+                if (pids.Contains(pid))
+                {
+                    for (int i = 0; i < nThreads; i++)
+                    {
+                        int t = off + SPI_THREADS + i * STI_SIZE;
+                        if (t + STI_SIZE > data.Length) break;
+                        var r = new ThreadRow
+                        {
+                            Pid = pid, Tid = (int)BitConverter.ToInt64(data, t + 0x30), Create = BitConverter.ToInt64(data, t + 0x10),
+                            Kernel100ns = BitConverter.ToInt64(data, t), User100ns = BitConverter.ToInt64(data, t + 8),
+                            ContextSwitches = BitConverter.ToUInt32(data, t + 0x40),
+                            State = BitConverter.ToInt32(data, t + 0x44), WaitReason = BitConverter.ToInt32(data, t + 0x48)
+                        };
+                        if (details) Fill(r);
+                        rows.Add(r);
+                    }
+                }
+                if (next <= 0) break;
+                off += next;
+            }
+            return rows;
+        }
+
+        static void Fill(ThreadRow r)
+        {
+            IntPtr h = NativeEx.OpenThread(NativeEx.THREAD_QUERY_INFORMATION | NativeEx.THREAD_QUERY_LIMITED_INFORMATION, false, r.Tid);
+            if (h == IntPtr.Zero) h = NativeEx.OpenThread(NativeEx.THREAD_QUERY_LIMITED_INFORMATION, false, r.Tid);
+            if (h == IntPtr.Zero) return;
+            try
+            {
+                ulong cycles; if (NativeEx.QueryThreadCycleTime(h, out cycles)) r.Cycles = cycles;
+                string key = r.Pid + ":" + r.Tid + ":" + r.Create;
+                ThreadRow known;
+                if (statics.TryGetValue(key, out known)) { r.Name = known.Name; r.Start = known.Start; r.StartModule = known.StartModule; return; }
+                try
+                {
+                    IntPtr desc;
+                    if (NativeEx.GetThreadDescription(h, out desc) >= 0 && desc != IntPtr.Zero)
+                    {
+                        r.Name = Marshal.PtrToStringUni(desc) ?? "";
+                        NativeEx.LocalFree(desc);
+                    }
+                }
+                catch (EntryPointNotFoundException) { }
+                IntPtr buf = Marshal.AllocHGlobal(8);
+                try
+                {
+                    Marshal.WriteInt64(buf, 0);
+                    if (NativeEx.NtQueryInformationThread(h, 9 /*ThreadQuerySetWin32StartAddress*/, buf, 8, IntPtr.Zero) == 0)
+                    {
+                        long start = Marshal.ReadInt64(buf);
+                        ModuleMap map;
+                        if (!moduleMaps.TryGetValue(r.Pid, out map))
+                        {
+                            IntPtr hp = Native.OpenProcess(NativeEx.PROCESS_QUERY_INFORMATION | NativeEx.PROCESS_VM_READ, false, r.Pid);
+                            map = hp == IntPtr.Zero ? new ModuleMap() : ModuleMap.Load(hp);
+                            if (hp != IntPtr.Zero) Native.CloseHandle(hp);
+                            moduleMaps[r.Pid] = map;
+                        }
+                        string module; r.Start = map.Describe(start, out module); r.StartModule = module;
+                    }
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+                statics[key] = new ThreadRow { Name = r.Name, Start = r.Start, StartModule = r.StartModule };
+            }
+            finally { Native.CloseHandle(h); }
+        }
+
+        /// Forgets cached module maps (call when a new process tree is measured).
+        public static void Reset() { statics.Clear(); moduleMaps.Clear(); }
+
+        /// Where a thread comes from: its description if it has one, else its start address.
+        public static string Source(ThreadRow r) { return r.Name.Length > 0 ? r.Name : r.Start; }
+    }
+
+    public sealed class ThreadDelta
+    {
+        public int Pid, Tid; public string Name, Start, StartModule; public double CyclesPerS, SwitchesPerS, CpuMs; public bool Born;
+    }
+
+    public static class ThreadDiff
+    {
+        /// Per-thread rates between two snapshots `seconds` apart; threads created in between count from zero.
+        public static List<ThreadDelta> Compute(List<ThreadRow> a, List<ThreadRow> b, double seconds, out int exited)
+        {
+            exited = 0;
+            var before = new Dictionary<long, ThreadRow>();
+            foreach (var r in a) before[((long)r.Pid << 32) | (uint)r.Tid] = r;
+            var seen = new HashSet<long>();
+            var list = new List<ThreadDelta>();
+            double s = Math.Max(0.001, seconds);
+            foreach (var r in b)
+            {
+                long key = ((long)r.Pid << 32) | (uint)r.Tid;
+                ThreadRow p; bool born = !before.TryGetValue(key, out p) || p.Create != r.Create; // a reused id is a new thread
+                if (!born) seen.Add(key);
+                ulong c0 = born ? 0 : p.Cycles; uint w0 = born ? 0 : p.ContextSwitches; long t0 = born ? 0 : p.Kernel100ns + p.User100ns;
+                list.Add(new ThreadDelta
+                {
+                    Pid = r.Pid, Tid = r.Tid, Name = r.Name, Start = r.Start, StartModule = r.StartModule, Born = born,
+                    CyclesPerS = (r.Cycles >= c0 ? r.Cycles - c0 : 0) / s,
+                    SwitchesPerS = (r.ContextSwitches >= w0 ? r.ContextSwitches - w0 : 0) / s,
+                    CpuMs = Math.Max(0, (r.Kernel100ns + r.User100ns) - t0) / 1e4
+                });
+            }
+            foreach (var r in a) if (!seen.Contains(((long)r.Pid << 32) | (uint)r.Tid)) exited++;
+            list.Sort(delegate (ThreadDelta x, ThreadDelta y) { int c = y.CyclesPerS.CompareTo(x.CyclesPerS); return c != 0 ? c : y.SwitchesPerS.CompareTo(x.SwitchesPerS); });
+            return list;
+        }
+    }
+
+    public sealed class MemBucket { public long Committed; public long PrivateWs; public long SharedWs; public int Regions; }
+
+    public sealed class MemoryReport
+    {
+        public readonly Dictionary<string, MemBucket> Buckets = new Dictionary<string, MemBucket>();
+        public long ImageVa;            // committed MEM_IMAGE address space (mostly shareable code/data)
+        public long PrivateCommitted;   // committed MEM_PRIVATE
+        public long WsTotal, WsPrivate, WsUnmatched;
+        public int Heaps, NtHeaps, SegmentHeaps, Threads, Stacks, NtHeapSegments;
+        public string Error;
+        public List<string> LargestOther = new List<string>();
+        /// Images with the largest commit charge: "name charged MB / private WS MB".
+        public List<string> TopImages = new List<string>();
+        public MemBucket Get(string name) { MemBucket b; if (!Buckets.TryGetValue(name, out b)) { b = new MemBucket(); Buckets[name] = b; } return b; }
+    }
+
+    /// Classifies a process' committed memory with VirtualQueryEx, and its working set (QueryWorkingSet)
+    /// by the same regions:
+    ///   stack       MEM_PRIVATE allocations holding a thread stack (NT_TIB.StackLimit from each TEB)
+    ///   heap        MEM_PRIVATE allocations that are a process heap (PEB.ProcessHeaps) or one of its NT-heap
+    ///               segments (0xFFEEFFEE signature). Segment-heap segments and large blocks cannot be told
+    ///               apart from other VirtualAlloc memory from outside, so with the segment heap they land in
+    ///               "other_private" (see the README).
+    ///   teb_peb     MEM_PRIVATE allocations holding a TEB or the PEB
+    ///   other_private  every other committed MEM_PRIVATE allocation (VirtualAlloc: GPU driver, runtimes, ...)
+    ///   image       MEM_IMAGE; Committed counts only writable/copy-on-write pages (the commit charge of images)
+    ///   mapped_file / mapped_pagefile  MEM_MAPPED views of a file / of a pagefile-backed section (shared commit)
+    public static class MemoryMap
+    {
+        sealed class Region { public long Base, End; public string Bucket; public long Image; public long Alloc; }
+
+        public static MemoryReport Classify(int pid)
+        {
+            var rep = new MemoryReport();
+            if (IntPtr.Size != 8) { rep.Error = "needs a 64-bit host"; return rep; }
+            IntPtr h = Native.OpenProcess(NativeEx.PROCESS_QUERY_INFORMATION | NativeEx.PROCESS_VM_READ, false, pid);
+            if (h == IntPtr.Zero) { rep.Error = "cannot open the process for query/read"; return rep; }
+            try
+            {
+                var stackBases = new HashSet<long>(); var tebs = new List<long>();
+                ThreadStacks(h, pid, stackBases, tebs, rep);
+                long peb = PebAddress(h);
+                if (peb != 0) tebs.Add(peb);
+                var heapBases = new HashSet<long>();
+                if (peb != 0)
+                {
+                    int n = NativeEx.ReadInt32(h, peb + 0xE8);      // PEB.NumberOfHeaps (x64)
+                    long arr = NativeEx.ReadInt64(h, peb + 0xF0);   // PEB.ProcessHeaps (x64)
+                    for (int i = 0; i < n && i < 512 && arr != 0; i++)
+                    {
+                        long hb = NativeEx.ReadInt64(h, arr + 8L * i);
+                        if (hb == 0) continue;
+                        heapBases.Add(hb); rep.Heaps++;
+                        uint sig = (uint)NativeEx.ReadInt32(h, hb + 0x10);
+                        if (sig == 0xFFEEFFEE) rep.NtHeaps++; else if (sig == 0xDDEEDDEE) rep.SegmentHeaps++;
+                    }
+                }
+                var regions = new List<Region>();
+                var mappedName = new Dictionary<long, bool>();
+                var heapSegments = new HashSet<long>();
+                var other = new Dictionary<long, long>(); var otherProt = new Dictionary<long, uint>();
+                var imageCharged = new Dictionary<long, long>();
+                long addr = 0x10000, limit = 0x7FFFFFFF0000L;
+                int mbiSize = Marshal.SizeOf(typeof(NativeEx.MEMORY_BASIC_INFORMATION));
+                while (addr < limit)
+                {
+                    NativeEx.MEMORY_BASIC_INFORMATION m;
+                    if (NativeEx.VirtualQueryEx(h, new IntPtr(addr), out m, new UIntPtr((uint)mbiSize)).ToUInt64() == 0) break;
+                    long b = m.BaseAddress.ToInt64(), size = (long)m.RegionSize.ToUInt64();
+                    if (size <= 0) break;
+                    if (m.State == NativeEx.MEM_COMMIT)
+                    {
+                        long ab = m.AllocationBase.ToInt64();
+                        string bucket; long charged = size;
+                        if (m.Type == NativeEx.MEM_IMAGE)
+                        {
+                            bucket = "image"; rep.ImageVa += size;
+                            uint p = m.Protect & 0xFF;
+                            if (p != NativeEx.PAGE_READWRITE && p != NativeEx.PAGE_WRITECOPY && p != NativeEx.PAGE_EXECUTE_READWRITE && p != NativeEx.PAGE_EXECUTE_WRITECOPY) charged = 0;
+                            long cur; imageCharged.TryGetValue(ab, out cur); imageCharged[ab] = cur + charged;
+                        }
+                        else if (m.Type == NativeEx.MEM_MAPPED)
+                        {
+                            bool isFile;
+                            if (!mappedName.TryGetValue(ab, out isFile))
+                            {
+                                var sb = new StringBuilder(520);
+                                isFile = NativeEx.K32GetMappedFileNameW(h, new IntPtr(b), sb, sb.Capacity) > 0;
+                                mappedName[ab] = isFile;
+                            }
+                            bucket = isFile ? "mapped_file" : "mapped_pagefile";
+                        }
+                        else
+                        {
+                            rep.PrivateCommitted += size;
+                            if (stackBases.Contains(ab)) bucket = "stack";
+                            else if (heapBases.Contains(ab) || heapSegments.Contains(ab)) bucket = "heap";
+                            else if (IsNtHeapSegment(h, ab, heapBases)) { heapSegments.Add(ab); rep.NtHeapSegments++; bucket = "heap"; }
+                            else if (ContainsAny(tebs, b, b + size)) bucket = "teb_peb";
+                            else
+                            {
+                                bucket = "other_private";
+                                long cur; other.TryGetValue(ab, out cur); other[ab] = cur + size;
+                                if (!otherProt.ContainsKey(ab)) otherProt[ab] = m.Protect;
+                            }
+                        }
+                        var bk = rep.Get(bucket); bk.Committed += charged; bk.Regions++;
+                        regions.Add(new Region { Base = b, End = b + size, Bucket = bucket, Image = m.Type == NativeEx.MEM_IMAGE ? ab : 0, Alloc = bucket == "other_private" ? ab : 0 });
+                    }
+                    long nextAddr = b + size;
+                    if (nextAddr <= addr) break;
+                    addr = nextAddr;
+                }
+                var imagePrivateWs = new Dictionary<long, long>();
+                var otherPrivateWs = new Dictionary<long, long>();
+                WorkingSet(h, regions, rep, imagePrivateWs, otherPrivateWs);
+                var top = new List<KeyValuePair<long, long>>(other);
+                top.Sort(delegate (KeyValuePair<long, long> x, KeyValuePair<long, long> y) { return y.Value.CompareTo(x.Value); });
+                for (int i = 0; i < top.Count && i < 12; i++)
+                {
+                    long opws; otherPrivateWs.TryGetValue(top[i].Key, out opws);
+                    rep.LargestOther.Add("0x" + top[i].Key.ToString("x") + " " + (top[i].Value / 1048576.0).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " MB prot=0x" + otherProt[top[i].Key].ToString("x")
+                        + " private WS " + (opws / 1048576.0).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " MB");
+                }
+                var modules = ModuleMap.Load(h);
+                var images = new List<KeyValuePair<long, long>>(imageCharged);
+                images.Sort(delegate (KeyValuePair<long, long> x, KeyValuePair<long, long> y) { return y.Value.CompareTo(x.Value); });
+                var inv = System.Globalization.CultureInfo.InvariantCulture;
+                for (int i = 0; i < images.Count && i < 10; i++)
+                {
+                    string module; modules.Describe(images[i].Key, out module);
+                    long pws; imagePrivateWs.TryGetValue(images[i].Key, out pws);
+                    rep.TopImages.Add((module ?? ("0x" + images[i].Key.ToString("x"))) + " charged " + (images[i].Value / 1048576.0).ToString("0.00", inv) + " MB, private WS " + (pws / 1048576.0).ToString("0.00", inv) + " MB");
+                }
+            }
+            catch (Exception ex) { rep.Error = ex.GetType().Name + ": " + ex.Message; }
+            finally { Native.CloseHandle(h); }
+            return rep;
+        }
+
+        static bool ContainsAny(List<long> points, long start, long end)
+        {
+            foreach (var p in points) if (p >= start && p < end) return true;
+            return false;
+        }
+
+        /// NT heap segment header: SegmentSignature 0xFFEEFFEE at +0x10, owning heap at +0x28 (x64 _HEAP_SEGMENT).
+        static bool IsNtHeapSegment(IntPtr h, long allocBase, HashSet<long> heaps)
+        {
+            if (heaps.Count == 0) return false;
+            var buf = new byte[0x30]; UIntPtr n;
+            if (!NativeEx.ReadProcessMemory(h, new IntPtr(allocBase), buf, new UIntPtr((uint)buf.Length), out n) || n.ToUInt64() != (ulong)buf.Length) return false;
+            return BitConverter.ToUInt32(buf, 0x10) == 0xFFEEFFEE && heaps.Contains(BitConverter.ToInt64(buf, 0x28));
+        }
+
+        static long PebAddress(IntPtr h)
+        {
+            IntPtr buf = Marshal.AllocHGlobal(48);
+            try
+            {
+                if (NativeEx.NtQueryInformationProcess(h, 0 /*ProcessBasicInformation*/, buf, 48, IntPtr.Zero) != 0) return 0;
+                return Marshal.ReadInt64(buf, 8); // PROCESS_BASIC_INFORMATION.PebBaseAddress
+            }
+            finally { Marshal.FreeHGlobal(buf); }
+        }
+
+        static void ThreadStacks(IntPtr hp, int pid, HashSet<long> stackBases, List<long> tebs, MemoryReport rep)
+        {
+            IntPtr snap = Native.CreateToolhelp32Snapshot(4 /*TH32CS_SNAPTHREAD*/, 0);
+            if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return;
+            var tids = new List<int>();
+            try
+            {
+                var e = new NativeEx.THREADENTRY32(); e.dwSize = Marshal.SizeOf(typeof(NativeEx.THREADENTRY32));
+                if (NativeEx.Thread32First(snap, ref e))
+                    do { if (e.th32OwnerProcessID == pid) tids.Add(e.th32ThreadID); } while (NativeEx.Thread32Next(snap, ref e));
+            }
+            finally { Native.CloseHandle(snap); }
+            rep.Threads = tids.Count;
+            IntPtr tbi = Marshal.AllocHGlobal(48);
+            try
+            {
+                foreach (int tid in tids)
+                {
+                    IntPtr th = NativeEx.OpenThread(NativeEx.THREAD_QUERY_INFORMATION | NativeEx.THREAD_QUERY_LIMITED_INFORMATION, false, tid);
+                    if (th == IntPtr.Zero) continue;
+                    try
+                    {
+                        if (NativeEx.NtQueryInformationThread(th, 0 /*ThreadBasicInformation*/, tbi, 48, IntPtr.Zero) != 0) continue;
+                        long teb = Marshal.ReadInt64(tbi, 8); // THREAD_BASIC_INFORMATION.TebBaseAddress
+                        if (teb == 0) continue;
+                        tebs.Add(teb);
+                        long stackLimit = NativeEx.ReadInt64(hp, teb + 0x10); // NT_TIB.StackLimit
+                        if (stackLimit == 0) continue;
+                        NativeEx.MEMORY_BASIC_INFORMATION m;
+                        if (NativeEx.VirtualQueryEx(hp, new IntPtr(stackLimit), out m, new UIntPtr((uint)Marshal.SizeOf(typeof(NativeEx.MEMORY_BASIC_INFORMATION)))).ToUInt64() == 0) continue;
+                        if (stackBases.Add(m.AllocationBase.ToInt64())) rep.Stacks++;
+                    }
+                    finally { Native.CloseHandle(th); }
+                }
+            }
+            finally { Marshal.FreeHGlobal(tbi); }
+        }
+
+        /// Splits the working set by region bucket; a page is private when its PSAPI "Shared" bit is clear.
+        static void WorkingSet(IntPtr h, List<Region> regions, MemoryReport rep, Dictionary<long, long> imagePrivateWs, Dictionary<long, long> otherPrivateWs)
+        {
+            int entries = 65536;
+            for (int attempt = 0; attempt < 6; attempt++)
+            {
+                int cb = 8 + entries * 8;
+                IntPtr buf = Marshal.AllocHGlobal(cb);
+                try
+                {
+                    if (!NativeEx.K32QueryWorkingSet(h, buf, cb))
+                    {
+                        long need = Marshal.ReadInt64(buf);
+                        if (Marshal.GetLastWin32Error() == 24 /*ERROR_BAD_LENGTH*/ && need > 0 && need < (1L << 26)) { entries = (int)need + 8192; continue; }
+                        rep.Error = "QueryWorkingSet failed (" + Marshal.GetLastWin32Error() + ")";
+                        return;
+                    }
+                    long count = Math.Min(Marshal.ReadInt64(buf), (long)entries);
+                    for (long i = 0; i < count; i++)
+                    {
+                        long block = Marshal.ReadInt64(buf, (int)(8 + i * 8));
+                        long va = block & ~0xFFFL;
+                        bool shared = (block & 0x100) != 0;
+                        rep.WsTotal += 4096; if (!shared) rep.WsPrivate += 4096;
+                        int lo = 0, hi = regions.Count - 1, found = -1;
+                        while (lo <= hi) { int mid = (lo + hi) / 2; if (regions[mid].Base <= va) { found = mid; lo = mid + 1; } else hi = mid - 1; }
+                        if (found < 0 || va >= regions[found].End) { rep.WsUnmatched += 4096; continue; }
+                        var bk = rep.Get(regions[found].Bucket);
+                        if (shared) bk.SharedWs += 4096; else bk.PrivateWs += 4096;
+                        if (!shared && regions[found].Image != 0)
+                        {
+                            long cur; imagePrivateWs.TryGetValue(regions[found].Image, out cur); imagePrivateWs[regions[found].Image] = cur + 4096;
+                        }
+                        if (!shared && regions[found].Alloc != 0)
+                        {
+                            long cur; otherPrivateWs.TryGetValue(regions[found].Alloc, out cur); otherPrivateWs[regions[found].Alloc] = cur + 4096;
+                        }
+                    }
+                    return;
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+            rep.Error = "QueryWorkingSet: working set kept growing";
         }
     }
 }

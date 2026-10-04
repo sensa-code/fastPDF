@@ -66,7 +66,7 @@ Q1–Q7 的答案（細節見〈Answers to Q1–Q7〉）：
 | 取消 | 無 | 無（#1052 open） | 無 API；adapter 只能在 command 之間檢查 |
 | 文字 | 未接上的原型 | glyph 層級 Unicode + transform 可得（自訂 Device） | span 層級 |
 
-FastPDF 的設計：tile grid（預設 512 px）+ 26 個 scale bucket + P0–P5 scheduler + progressive stand-in（[ADR 0003](adr/0003-tile-rendering.md)）。engine 差異由 adapter 吸收：Hayro adapter 合併可見 tile 的區域一次 render，zpdf adapter 快取 display list 並做 bbox culling。
+FastPDF 的設計：tile grid（預設 508 px，加上 gutter 剛好對齊 512 px 的 atlas）+ 26 個 scale bucket + P0–P5 scheduler + progressive stand-in（[ADR 0003](adr/0003-tile-rendering.md)）。engine 差異由 adapter 吸收：Hayro adapter 合併可見 tile 的區域一次 render，zpdf adapter 快取 display list 並做 bbox culling。
 
 ## Threading
 
@@ -221,8 +221,8 @@ Dependency policy（spec §36）的落實方式：
 | R5 | zpdf 成熟度：bus factor 約 1、大量 AI 生成程式碼、API 每週變動、README 與實作不符 | 中 | 高 | pin 已 audit 的 rev；Hayro fallback；M4 用數據決定 |
 | R6 | Hayro 1.0 前的 breaking change（0.8） | 中 | 高 | pin git rev；adapter 隔離；升級時跑 corpus |
 | R7 | **非內嵌 CJK 字型**（台灣政府文件常見）顯示成 Helvetica 或空白 | 高（台灣使用場景） | 高 | adapter 實作 Windows 系統字型 resolver（MingLiU／JhengHei 等），並用 `fixtures/generated/cjk`、`traditional-chinese` 驗證 |
-| R8 | KPI 定義不清：GPUI 本身到第一個 frame 就要 205–228 ms，「首頁 < 200 ms」從 process 啟動起算做不到；idle RAM 依指標而定：private WS 約 16 MiB，working set 約 68 MiB | 中 | 確定 | 在 benchmark plan 定義起點與指標；讀檔、開檔與 GPUI 初始化平行進行 |
-| R9 | idle CPU 無法到 0：GPUI vsync thread 以 refresh rate 喚醒 | 低到中 | 確定 | 需要時對 GPUI 打 vsync park patch（`[patch]`）；以 WPA 驗證 |
+| R8 | KPI 定義不清：GPUI 本身到第一個 frame 就要 205–228 ms，「首頁 < 200 ms」從 process 啟動起算做不到；idle RAM 依指標而定：private WS 約 16 MiB，working set 約 68 MiB | 中 | 確定 | **已定義**（`benchmarks/README.md`〈App 層 KPI 定義〉）：Idle RAM 以 private working set 判定，commit 與 working set 一起報告，且不得修剪 working set。實測開著 3 頁文件為 24.9 MB，達成 < 50 MB；commit 107 MB 主要是 GPU driver。讀檔、開檔與 GPUI 初始化已平行進行 |
+| R9 | idle CPU 無法到 0：GPUI vsync thread 以 refresh rate 喚醒 | 低到中 | 確定 | **已確認並試做**：idle 時 FastPDF 不 render，CPU 全部來自 GPUI 的 vsync 迴圈（主執行緒每秒被喚醒 139 次）。vsync park patch 在 scratch 驗證後降為 0 次，CPU 1.41% → 0.08% 單核，草稿在 `docs/upstream-issues/gpui-idle.md`。套用到 FastPDF 需要另一份 ADR（ADR 0001 不 fork），建議走 upstream |
 | R10 | 網路磁碟上的 mmap 在斷線時讓 process crash | 中 | 低 | 已做：UNC 路徑與 `DRIVE_REMOTE` 磁碟機上的檔案一律讀取、不 mmap（`loader::is_network_path`，ADR 0006）；render host 模式下由 host 讀取網路上的檔案，同樣不 mmap |
 | R11 | Windows Defender 隔離惡意 PDF 測試檔（zpdf repo 已實際發生） | 低 | 中 | 惡意語料不 commit，放 `fixtures/local/`，由使用者決定是否加入排除清單 |
 | R12 | 目前所有量測都在高階機器上（RTX 5090、60 Hz、100% 縮放） | 中（KPI 過度樂觀） | 確定 | B-8 需要在 iGPU 筆電、高更新率、混合 DPI 的環境補測 |
@@ -419,10 +419,10 @@ zpdf audit 已粗測：9 份文件中 8 份 GPU tile 比 CPU 慢，且必須 rea
 | 指標 | 目標 | 量法 |
 |---|---|---|
 | 執行檔大小 | < 30 MB | `cargo build --profile dist` 後的 exe |
-| Idle RAM | < 50 MB | B-8 idle private bytes |
+| Idle RAM | < 50 MB | B-8 idle **private working set**（工作管理員的「記憶體」欄）；commit 與 working set 一起報告（`benchmarks/README.md`） |
 | 小 PDF 首頁 | < 200 ms | B-8 time to first visible page；engine 部分看 B-1 的 `time_to_first_page_ms` |
 | 大 PDF | 不需完整 scan 即可顯示 | B-1 large-file 的 `open_ms` 與 `rss_peak_mb` 不隨檔案大小成長 |
-| Idle CPU | ≈ 0% | B-8 CPU time 增量；WPA CPU Precise 沒有週期性喚醒 |
+| Idle CPU | ≈ 0% | B-8 idle CPU time ≤ 0.1% 單核，且主執行緒與 vsync thread 每秒喚醒 ≤ 2 次（bench-app `-ThreadDetail`） |
 | Network／Telemetry | 0 | 依賴審查（`THIRD_PARTY_LICENSES.md` 與 feature 審查）＋執行時以防火牆紀錄驗證 |
 
 達不到就照實紀錄（spec §29：不要作弊）。
@@ -445,7 +445,7 @@ zpdf audit 已粗測：9 份文件中 8 份 GPU tile 比 CPU 慢，且必須 rea
 | **M2 Engine isolation** | `fastpdf-engine-api` + `GuardedDocument`；只有 adapter 依賴 engine | `tools/check_engine_isolation.py` 在 CI 通過 | ✅（以新 workspace 的設計達成） |
 | **M3 zpdf PoC** | `fastpdf-engine-zpdf`（feature `engine-zpdf`）：open、page count、page size、render | bench 以 `--engine zpdf` 跑完 corpus | ✅（另含 text／outline／links） |
 | **M4 Renderer comparison** | 同一 corpus 比較 correctness、open、first page、CPU、memory、render latency | `docs/engine-comparison.md`；不預設誰贏 | ✅（Hayro 為 V0.1 預設，ADR 0007） |
-| **M5 Tile renderer** | `TileGrid`／`TileCache`／`RenderScheduler`（✅ 已完成並有測試）；GPUI viewport element、texture 生命週期、upload 預算；B-3、B-4 | 600% zoom 只 render 相交 tile；捲動不空白；VRAM churn 測試穩定 | ✅（gutter 消除接縫；B-3／B-4：tile 512、2 workers，`docs/benchmarks/b3-b4-tiles-workers.md`） |
+| **M5 Tile renderer** | `TileGrid`／`TileCache`／`RenderScheduler`（✅ 已完成並有測試）；GPUI viewport element、texture 生命週期、upload 預算；B-3、B-4 | 600% zoom 只 render 相交 tile；捲動不空白；VRAM churn 測試穩定 | ✅（gutter 消除接縫；B-3／B-4：tile 512、2 workers，之後為了 atlas 對齊改為 508，`docs/benchmarks/b3-b4-tiles-workers.md`） |
 | **M6 Memory budget** | `MemoryBudgetManager`（✅）、`MemoryMonitor`（✅）接進 app；development overlay；B-5 | 捲過 2000 頁 RSS 有上限；overlay 顯示各 cache 統計 | ✅（B-5：private 穩定在 190–220 MiB，與頁數無關；`docs/benchmarks/b5-memory.md`） |
 | **M7 UX** | toolbar、sidebar（outline、縮圖：只 render 可見列）、搜尋 UI、文字選取與複製、recent files、設定、dark mode、列印（Win32）、檔案關聯 | V0.1 功能清單（spec §8） | 大部分完成：spec §8 的功能都已可用；繁體中文介面、平滑捲動、提前開檔（第一個 frame 就是清晰的第一頁）完成；檔案關聯目前只有命令列（`fastpdf --register-file-types`）；安裝程式待做。小檔首頁 < 200 ms 尚未達成（最終版中位數 213–219 ms，下限是 GPUI 啟動，`docs/benchmarks/b8-app.md`） |
 
