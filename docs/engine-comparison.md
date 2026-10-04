@@ -39,8 +39,12 @@
 
 ### 1.3 其他已知正確性問題（來自 audit 與 adapter 實作）
 
-- zpdf：`/Rotate` 搭配非零原點 box 的位移與 annotation 消失（adapter 已 workaround）、細線 tile 接縫（adapter 已修正，代價見下）、超過 64 MP 時默默降低 scale、shading 解析度固定、文字只有 span 等級。
-- Hayro：knockout group 未支援、alpha soft mask 錯誤（本次發現）、R2–R4 只接受 user password。
+- zpdf：
+  - `/Rotate` 搭配非零原點 box 的位移與 annotation 消失（adapter 已 workaround）。
+  - WinAnsi 未使用碼（0x7F 等）沒有對應到 bullet，ReportLab 的項目符號被畫成「ù」；`Times-Bold`／`-Italic`／`-BoldItalic` 在 Windows 上都用到正體（adapter 已 workaround，見 `docs/upstream-issues/zpdf.md` #2、#3）。
+  - 細線 tile 接縫（adapter 已修正，代價見下）。
+  - 超過 64 MP 時默默降低 scale；shading 解析度固定；文字只有 span 等級。
+- Hayro：knockout group 未支援、alpha soft mask 錯誤（本次發現）、R2–R4 只接受 user password（見 `docs/upstream-issues/hayro.md`）。
 
 ## 2. 效能
 
