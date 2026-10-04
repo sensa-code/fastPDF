@@ -6,6 +6,8 @@
 //! fastpdf-bench full    <file.pdf>
 //! fastpdf-bench corpus  <manifest.json | dir> [--out results.json]
 //! fastpdf-bench compare <baseline.json> <candidate.json> [--threshold 10]
+//! fastpdf-bench diff    <file.pdf> --engine hayro,zpdf [--out dir]
+//! fastpdf-bench diff-corpus <manifest.json | dir> --engine hayro,zpdf
 //! fastpdf-bench engines
 //! ```
 //!
@@ -15,6 +17,7 @@
 mod args;
 mod compare;
 mod corpus;
+mod diff;
 mod engines;
 mod measure;
 mod metrics;
@@ -81,6 +84,8 @@ fn run(args: &Args) -> Result<ExitCode, String> {
             baseline,
             candidate,
         } => compare::run(baseline, candidate, args),
+        Command::Diff(file) => diff::run(file, args),
+        Command::DiffCorpus(input) => diff::run_corpus(input, args),
     }
 }
 

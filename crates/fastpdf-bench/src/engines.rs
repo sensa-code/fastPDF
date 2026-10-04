@@ -16,6 +16,23 @@ pub(crate) fn all() -> Vec<Box<dyn PdfEngine>> {
     engines
 }
 
+type EnginePair = (Box<dyn PdfEngine>, Box<dyn PdfEngine>);
+
+/// Two engines for `diff`: `spec` is `"a,b"`; without it, the first two
+/// compiled-in engines.
+pub(crate) fn select_pair(spec: Option<&str>) -> Result<EnginePair, String> {
+    match spec.and_then(|s| s.split_once(',')) {
+        Some((a, b)) => Ok((select(Some(a.trim()))?, select(Some(b.trim()))?)),
+        None => {
+            let mut engines = all().into_iter();
+            match (engines.next(), engines.next()) {
+                (Some(a), Some(b)) => Ok((a, b)),
+                _ => Err("diff needs two engines; build with --features engine-zpdf".into()),
+            }
+        }
+    }
+}
+
 /// The engine named `name`, or the first compiled-in engine.
 pub(crate) fn select(name: Option<&str>) -> Result<Box<dyn PdfEngine>, String> {
     let mut engines = all();

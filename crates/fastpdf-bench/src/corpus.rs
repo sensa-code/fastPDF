@@ -14,13 +14,13 @@ use crate::metrics;
 use crate::report::{CorpusReport, FileReport, SCHEMA, Stats, Status};
 
 #[derive(Debug, Clone, PartialEq)]
-struct Entry {
-    path: PathBuf,
+pub(crate) struct Entry {
+    pub(crate) path: PathBuf,
     /// Stable identifier: path relative to the corpus root, `/`-separated.
-    id: String,
-    password: Option<String>,
-    category: Option<String>,
-    expect: Option<String>,
+    pub(crate) id: String,
+    pub(crate) password: Option<String>,
+    pub(crate) category: Option<String>,
+    pub(crate) expect: Option<String>,
 }
 
 pub(crate) fn run(input: &Path, args: &Args) -> Result<ExitCode, String> {
@@ -96,7 +96,7 @@ fn fmt_opt(v: Option<f64>, unit: &str) -> String {
 
 /// Entries from a JSON manifest (an array, or an object holding one under
 /// `files`/`entries`/`fixtures`) or every `*.pdf` below a directory.
-fn discover(input: &Path) -> Result<Vec<Entry>, String> {
+pub(crate) fn discover(input: &Path) -> Result<Vec<Entry>, String> {
     if input.is_dir() {
         let mut paths = Vec::new();
         walk(input, &mut paths).map_err(|e| format!("{}: {e}", input.display()))?;
@@ -202,13 +202,16 @@ fn run_child(exe: &Path, entry: &Entry, engine: &str, args: &Args) -> FileReport
     report
 }
 
-struct ChildOutput {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    status: Option<std::process::ExitStatus>,
+pub(crate) struct ChildOutput {
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) status: Option<std::process::ExitStatus>,
 }
 
-fn spawn_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ChildOutput, ChildOutput> {
+pub(crate) fn spawn_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Result<ChildOutput, ChildOutput> {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {

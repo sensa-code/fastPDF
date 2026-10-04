@@ -13,6 +13,8 @@ USAGE:
   fastpdf-bench full    <file.pdf>   [options]
   fastpdf-bench corpus  <manifest.json|dir> [--out results.json] [--timeout SECS] [--repeat N]
   fastpdf-bench compare <baseline.json> <candidate.json> [--threshold PERCENT]
+  fastpdf-bench diff    <file.pdf>   --engine A,B [--page N] [--tolerance T] [--out DIR]
+  fastpdf-bench diff-corpus <manifest.json|dir> --engine A,B [--images DIR] [--out results.json]
   fastpdf-bench engines
 
 OPTIONS:
@@ -28,6 +30,8 @@ OPTIONS:
   --out PATH         render: write PNG; corpus: write JSON results
   --timeout SECS     corpus: per-file timeout (default 120)
   --threshold PCT    compare: regression threshold in percent (default 10)
+  --tolerance T      diff: per-channel delta (0-255) above which a pixel differs (default 16)
+  --images DIR       diff-corpus: write per-page PNGs and diff images to DIR
 ";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +46,8 @@ pub(crate) enum Command {
         baseline: PathBuf,
         candidate: PathBuf,
     },
+    Diff(PathBuf),
+    DiffCorpus(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +56,8 @@ pub(crate) struct Args {
     pub(crate) engine: Option<String>,
     pub(crate) scale: f32,
     pub(crate) page: u32,
+    /// True when `--page` was given explicitly.
+    pub(crate) page_given: bool,
     pub(crate) tile: Option<u32>,
     pub(crate) viewport: Option<(u32, u32)>,
     pub(crate) workers: Option<usize>,
@@ -59,6 +67,8 @@ pub(crate) struct Args {
     pub(crate) out: Option<PathBuf>,
     pub(crate) timeout_secs: u64,
     pub(crate) threshold: f64,
+    pub(crate) tolerance: u8,
+    pub(crate) out_images: Option<PathBuf>,
 }
 
 impl Args {
@@ -68,6 +78,7 @@ impl Args {
             engine: None,
             scale: 1.0,
             page: 1,
+            page_given: false,
             tile: None,
             viewport: None,
             workers: None,
@@ -77,6 +88,8 @@ impl Args {
             out: None,
             timeout_secs: 120,
             threshold: 10.0,
+            tolerance: 16,
+            out_images: None,
         }
     }
 }
@@ -121,6 +134,8 @@ pub(crate) fn parse(raw: impl IntoIterator<Item = OsString>) -> Result<Args, Str
             baseline: path("a baseline JSON")?,
             candidate: path("a candidate JSON")?,
         },
+        "diff" => Command::Diff(path("a PDF file")?),
+        "diff-corpus" => Command::DiffCorpus(path("a manifest or directory")?),
         other => return Err(format!("unknown command `{other}`")),
     };
     if let Some(extra) = pos.next() {
@@ -144,6 +159,7 @@ pub(crate) fn parse(raw: impl IntoIterator<Item = OsString>) -> Result<Args, Str
                 if args.page == 0 {
                     return Err(bad(&"pages are 1-based"));
                 }
+                args.page_given = true;
             }
             "tile" => args.tile = Some(value.parse().map_err(|e| bad(&e))?),
             "viewport" => {
@@ -162,6 +178,8 @@ pub(crate) fn parse(raw: impl IntoIterator<Item = OsString>) -> Result<Args, Str
             "out" => args.out = Some(PathBuf::from(value)),
             "timeout" => args.timeout_secs = value.parse().map_err(|e| bad(&e))?,
             "threshold" => args.threshold = value.parse().map_err(|e| bad(&e))?,
+            "tolerance" => args.tolerance = value.parse().map_err(|e| bad(&e))?,
+            "images" => args.out_images = Some(PathBuf::from(value)),
             _ => return Err(format!("unknown option --{name}")),
         }
     }

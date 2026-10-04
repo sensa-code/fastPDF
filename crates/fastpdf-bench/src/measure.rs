@@ -223,7 +223,7 @@ pub(crate) fn full(engine: &dyn PdfEngine, file: &Path, args: &Args) -> FileRepo
     report
 }
 
-fn render_full(
+pub(crate) fn render_full(
     doc: &GuardedDocument,
     page: PageIndex,
     scale: RenderScale,
