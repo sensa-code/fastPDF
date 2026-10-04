@@ -214,7 +214,7 @@ Dependency policy（spec §36）的落實方式：
 
 | # | 風險 | 影響 | 機率 | 對策 |
 |---|---|---|---|---|
-| R1 | **Hostile PDF 造成無法攔截的失敗**：Hayro 的 10,000 層 `/Indexed` 鏈會 stack overflow，`catch_unwind` 無效；1 KB 檔可配置 1–2 GB；form XObject DAG 可讓 interpret 執行 30 秒以上 | 高（crash 或卡死） | 中 | adapter 端預掃深度與尺寸的 guardrail；向 upstream 提出深度上限、取消與預算 callback；中期把 render 移到獨立 process（benchmark 已經是每檔一個 process） |
+| R1 | **Hostile PDF 造成無法攔截的失敗**：Hayro 的 10,000 層 `/Indexed` 鏈會 stack overflow，`catch_unwind` 無效；1 KB 檔可配置 1–2 GB；form XObject DAG 可讓 interpret 執行 30 秒以上 | 高（crash 或卡死） | 中 | 已做：Hayro adapter 的靜態掃描、有預算的預先解譯與 bomb 預解壓（`LimitExceeded` 取代 crash）。已設計：render host process + Job Object 記憶體上限（[ADR 0008](adr/0008-out-of-process-rendering.md)，原型實測成本約為 0，分 5 個 PR 實作）；upstream issue 草稿在 `docs/upstream-issues/` |
 | R2 | GPU texture 洩漏或碎片化 | 高（VRAM、commit 持續成長） | 中 | 用 main 版 GPUI；tile cache eviction hook 一律 `drop_image`；CI churn 測試 |
 | R3 | GPUI API 變動與 git pin 的維護成本 | 中 | 高 | GPUI 只出現在 `fastpdf-ui`；每 4–8 週評估升級一次；用 probe 與 bench 當升級門檻 |
 | R4 | 依賴授權回歸（例如再度引入 GPL crate） | 高（商業化受阻） | 低 | `license_report.py --check` 放進 CI；升級 GPUI 或 engine 時必跑 |
