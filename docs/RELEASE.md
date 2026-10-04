@@ -89,13 +89,14 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
     - `alloc-stdlib` 0.2.4（BSD-3-Clause）：使用同一個 repository 的 `alloc-no-stdlib` 2.0.4 套件內的 `LICENSE`（Copyright (c) 2016 Dropbox, Inc.）；
     - `pulp-wasm-simd-flag` 0.1.1（MIT）：使用同一個 repository、同一個 commit 的 `pulp` 0.22.3 套件內的 `LICENSE`（Copyright (c) 2021 sarah）；
     - 兩者的來源判斷（`repository` 欄位、`.cargo_vcs_info.json` 的 commit 與子目錄）和 SHA-256 記錄在 `licenses/overrides/SOURCES.md`。
-  - **仍有缺口（公開發佈前必須補上）**：下列 crate 沒有附授權檔，授權也不能選 Apache-2.0，本機也找不到來源明確的全文。
-    - `seahash` 4.1.0（MIT）：本機只有這個版本；
-    - `taffy` 0.13.0（MIT）：本機的 0.9.0、0.10.1、0.13.0 都沒有附授權檔；
-    - `simd_helpers` 0.1.0（MIT）也列在缺漏中，但它只經由 `rav1e` 進入範圍，`cargo tree -p fastpdf-app -e normal` 顯示它沒有連結進 exe。實際連結的缺口是 `seahash` 與 `taffy`。
-    - 已搜尋：cargo registry 的 `src` 與 `cache`、cargo git checkouts、`upstream/` 的 clone、其他 crate 內附的授權檔。
-    - 需要由 owner 從 upstream 取得含 copyright 的授權全文，依 `licenses/overrides/README.md` 的步驟補上。
-  - 這些缺口不會讓 `package.ps1` 失敗，只會顯示警告。清單在 zip 內的 `licenses/third-party/MISSING.md`。
+  - **2026-10-05：缺漏已經全部補上。**
+    - `seahash` 4.1.0、`taffy` 0.13.0、`simd_helpers` 0.1.0 在本機找不到全文，經 owner 同意後，從各自的 upstream repository 下載，並固定在特定 commit：
+      - `taffy`：發佈 commit 的 `LICENSE`；
+      - `seahash`、`simd_helpers`：發佈後由 upstream 補上的 `LICENSE`。
+    - 網址、commit 與 SHA-256 記錄在 `licenses/overrides/SOURCES.md`。
+    - `seahash` 的 upstream 授權檔沒有 copyright 行，照原樣收錄，不自行補寫。
+    - `--bundle` 結果：362 個 crate，344 個有自己的授權全文，5 個由 override 補上，13 個由共用的 `Apache-2.0.txt` 涵蓋，**0 個缺漏**。
+    - 仍會出現 1 行警告：`sval_nested` 有 2 個 symlink stub 指向套件外，無法跟隨，但它的授權可選 Apache-2.0，已由共用全文涵蓋。
 - [ ] 確認 exe 中的資產授權：
   - app icon 是 `tools/icon/make_icon.py` 原創繪製，沒有使用第三方素材；
   - 內嵌字型（hayro 的 `embed-fonts` 標準字型）要確認授權已列在 THIRD_PARTY 中。

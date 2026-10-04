@@ -4,7 +4,10 @@
 Walks the resolved dependency graph of the workspace members (normal and
 build dependencies; dev-dependencies are excluded because they never ship)
 and lists every third-party crate with its license. Licenses outside the
-permissive allowlist are flagged for manual review.
+permissive allowlist are flagged for manual review. Path dependencies outside
+the workspace are third-party code vendored into the repository (e.g.
+vendor/gpui_windows, built through [patch], ADR 0011): they are listed like
+any other crate, with the folder they are vendored in.
 
 --bundle DIR copies each crate's own license files into DIR/<crate>-<version>/
 for the release zip (tools/package.ps1): MIT / BSD / ISC / Zlib need the
@@ -175,13 +178,26 @@ def ported_lines() -> list[str]:
     return lines
 
 
+def repository(p: dict) -> str:
+    """The crate's repository; a path dependency (only vendored third-party code
+    is one: workspace members are never listed) also names its folder."""
+    repo = p.get("repository") or ""
+    if p.get("source") is not None:
+        return repo
+    folder = Path(p["manifest_path"]).parent
+    try:
+        where = f"vendored in `{folder.relative_to(ROOT).as_posix()}`"
+    except ValueError:
+        where = f"path dependency outside the repository: `{folder.as_posix()}`"
+    return f"{where} ({repo})" if repo else where
+
+
 def render(packages: list[dict], args: argparse.Namespace) -> tuple[str, int]:
     review = []
     rows = []
     for p in packages:
         needs, note = classify(p.get("license"))
-        repo = p.get("repository") or ""
-        rows.append(f"| {p['name']} | {p['version']} | {p.get('license') or '—'} | {repo} |")
+        rows.append(f"| {p['name']} | {p['version']} | {p.get('license') or '—'} | {repository(p)} |")
         if needs:
             review.append(f"| {p['name']} | {p['version']} | {p.get('license') or '—'} | {note} |")
     feature_note = "all features" if args.all_features else (args.features or "default features")
@@ -377,7 +393,7 @@ def render_missing(scope: str, without_text: list[dict], shared_apache: list[dic
         if not packages:
             return ["None."]
         return ["| Crate | Version | License | Repository |", "|---|---|---|---|", *(
-            f"| {p['name']} | {p['version']} | {p.get('license') or '—'} | {p.get('repository') or '—'} |"
+            f"| {p['name']} | {p['version']} | {p.get('license') or '—'} | {repository(p) or '—'} |"
             for p in packages)]
 
     lines = [
@@ -405,8 +421,9 @@ def render_missing(scope: str, without_text: list[dict], shared_apache: list[dic
         "",
         f"## Filled in from licenses/overrides ({len(overridden)})",
         "",
-        "These crates ship no license file. Their texts were found in another version of the same",
-        "crate or in another package of the same repository (see `licenses/overrides/SOURCES.md`).",
+        "These crates ship no license file. Their texts come from another version of the same crate,",
+        "another package of the same repository, or the crate's upstream repository at a recorded",
+        "commit (see `licenses/overrides/SOURCES.md`).",
         "",
     ]
     if overridden:
@@ -529,8 +546,15 @@ def write_bundle(packages: list[dict], dest: Path, scope: str) -> list[str]:
         print(f"  same name and version twice: {', '.join(renamed)}")
     for folder, reason in override_problems:
         print(f"  WARNING: override {folder}: {reason}")
-    if without_text or unresolved:
+    # A link that could not be followed matters only when its crate ended up
+    # without any license text; a crate covered by its own text, an override
+    # or the shared Apache-2.0 text is complete.
+    uncovered = [u for u in unresolved if any(u[0] is p for p in without_text)]
+    if without_text or uncovered:
         print("  WARNING: license texts are incomplete; resolve MISSING.md before a public release")
+    elif unresolved:
+        print(f"  note: {len(unresolved)} link(s) not followed, all in crates whose license text is "
+              "covered (see MISSING.md)")
     return sorted(written)
 
 

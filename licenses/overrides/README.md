@@ -4,23 +4,24 @@
 
 ## 規則
 
-- 只收錄**同一個 crate 的其他版本**或**同一個 repository 的其他套件**所附的授權全文，逐位元組複製。
+- 只收錄以下來源的授權全文，逐位元組複製：同一個 crate 的其他版本、同一個 repository 的其他套件，或該 crate upstream repository 中固定在某個 commit 的授權檔（在 SOURCES.md 記錄網址與 commit）。
 - **不可自行撰寫或拼湊 copyright 行。** 找不到全文的 crate 維持缺漏，列在 bundle 的 `MISSING.md`。
 - 資料夾名稱是 `<crate>-<version>`，版本必須和 `Cargo.lock` 完全相同。依賴升級後，舊資料夾不會被沿用：該 crate 會列為缺漏，bundle 也會顯示警告。
 - 每個檔案都要在 [SOURCES.md](SOURCES.md) 登記來源與 SHA-256。只要有一個檔案沒有登記或 SHA-256 不符，整個資料夾都不會被使用。
 - 只有在 crate 自己沒有任何授權全文時才會使用 override。
 - `.gitattributes` 讓這些檔案保持原本的位元組（不轉換換行），SHA-256 才會一致。
 
-## 目前狀態（2026-10-04）
+## 目前狀態（2026-10-05）
 
 | Crate | 授權 | 狀態 |
 |---|---|---|
 | `alloc-stdlib` 0.2.4 | BSD-3-Clause | 已補上：同一個 repository 的 `alloc-no-stdlib` 2.0.4 的 `LICENSE` |
 | `pulp-wasm-simd-flag` 0.1.1 | MIT | 已補上：同一個 repository、同一個 commit 的 `pulp` 0.22.3 的 `LICENSE` |
-| `seahash` 4.1.0 | MIT | **缺漏**：本機只有這個版本，套件沒有附授權檔，也找不到同一個 repository 的副本 |
-| `taffy` 0.13.0 | MIT | **缺漏**：本機的 0.9.0、0.10.1、0.13.0 都沒有附授權檔，也找不到同一個 repository 的副本 |
+| `seahash` 4.1.0 | MIT | 已補上：upstream repository 在 4.1.0 之後補上的 `LICENSE`（commit `3088c5c9`）。upstream 的檔案沒有 copyright 行，原樣收錄 |
+| `taffy` 0.13.0 | MIT | 已補上：upstream repository 在 0.13.0 發佈 commit 的 `LICENSE` |
+| `simd_helpers` 0.1.0 | MIT | 已補上：upstream repository 在 0.1.0 之後補上的 `LICENSE`（commit `82040194`）。只經由 weak 依賴進入範圍，沒有連結進 exe |
 
-已搜尋的位置：cargo registry 的 `src` 與 `cache`（含 `.crate`）、cargo git checkouts、`upstream/` 的 clone、其他 crate 內附的授權檔。
+本機搜尋的位置：cargo registry 的 `src` 與 `cache`（含 `.crate`）、cargo git checkouts、`upstream/` 的 clone、其他 crate 內附的授權檔。`seahash`、`taffy`、`simd_helpers` 在本機找不到，2026-10-05 經 owner 同意後，從 upstream repository 下載。
 
 ## owner 如何補上缺漏
 
