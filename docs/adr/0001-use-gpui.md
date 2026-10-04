@@ -31,6 +31,16 @@
    - idle 時 vsync thread 仍以 refresh rate 喚醒（約 0.5–1% of 1 core）、持續按鍵時 present 會飢餓（#61469）。先在 FastPDF 層合併 notify、不做常駐動畫。量測證明需要時，再以 `[patch]` 套用小 patch（vsync park、key dispatch 後 present）。
    - 列印走 Win32。
 
+### 例外：本地套用 gpui_windows 的 patch（2026-10-05，ADR 0011）
+
+- `gpui_windows`（GPUI 的 Windows platform crate）改用 `vendor/gpui_windows`：pin rev 的原始碼，加上三個本地 patch：
+  - 啟動時平行建立 DirectX device；
+  - 啟動時不做字型 update check；
+  - idle 時 park vsync thread。
+- 經由 root `Cargo.toml` 的 `[patch]` 取代 upstream 的 crate；其餘 GPUI crate 仍是第 2 點的 git pin。第 7 點「量測證明需要時，再以 `[patch]` 套用小 patch」的條件，已由 B-8 配對量測滿足。
+- 範圍只限這一個 crate。patch 另有 upstream 草稿；upstream 合併、FastPDF 升級 pin 之後就移除，見 ADR 0011 的退出計畫。
+- 升級 GPUI 時，多一個步驟：`python tools/vendor_gpui_windows.py`。這一步會重新產生 vendored crate，並確認 patch 還能套用。
+
 ## Consequences
 
 - 能拿到 0.2.2 之後的重要修正：atlas 空間回收（VRAM 630 → 333 MiB）、D3D11 upload 加速約 2 倍、觸控板 pinch 與像素捲動、多螢幕與 DPI 修正、IME 修正、關閉時的 deadlock 修正。啟動也快了約 2 倍（first frame 205–228 ms vs 403–489 ms）。

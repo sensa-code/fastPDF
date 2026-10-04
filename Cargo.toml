@@ -16,7 +16,9 @@ members = [
     "crates/fastpdf-shell",
 ]
 # Upstream clones are audit references only; they must never join this workspace.
-exclude = ["upstream"]
+# vendor/gpui_windows is upstream code built through [patch] below (ADR 0011):
+# not a member, so FastPDF's lints, clippy and rustfmt leave it as it is.
+exclude = ["upstream", "vendor/gpui_windows"]
 
 [workspace.package]
 version = "0.0.1"
@@ -66,6 +68,13 @@ embed-resource = "3.0.11"
 # --check` guards every bump.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", default-features = false, features = ["windows-manifest"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", default-features = false }
+
+# GPUI's Windows platform crate with three local patches (faster start-up,
+# no vsync wake-ups while idle): ADR 0011, vendor/gpui_windows/FASTPDF-PATCHES.md.
+# Regenerate or verify with `python tools/vendor_gpui_windows.py [--check]`;
+# drop this entry once the patches are upstream at the pinned rev.
+[patch."https://github.com/zed-industries/zed"]
+gpui_windows = { path = "vendor/gpui_windows" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

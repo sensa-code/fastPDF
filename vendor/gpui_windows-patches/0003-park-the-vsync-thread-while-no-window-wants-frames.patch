@@ -1,0 +1,512 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: FastPDF contributor <replace-me@example.invalid>
+Date: Sun, 4 Oct 2026 22:33:00 +0800
+Subject: [PATCH] gpui_windows: Park the vsync thread while no window wants
+ frames
+
+The VSyncProvider thread invalidated every window on every vblank, so an idle
+window woke the UI thread at the refresh rate only for `request_frame` to find
+nothing to draw. Implement `PlatformWindow::frame_waker` on Windows and let the
+vsync thread park once no window has requested a frame for one second; a request
+unparks it and windows are invalidated right away. While parked it wakes once a
+second to detect a lost device. Direct Manipulation contacts, running gestures
+and draws deferred by the DrawCoordinator also request frames.
+
+FastPDF's local copy of
+docs/upstream-issues/patches/gpui-idle-0001-park-vsync-thread-when-idle.patch,
+rebased onto 0001: in WindowsPlatform::new the `frame_demand` field now
+follows 0001's `early_devices` field. Nothing else differs.
+---
+ .../gpui_windows/src/direct_manipulation.rs   |  15 ++
+ crates/gpui_windows/src/events.rs             |  10 +-
+ crates/gpui_windows/src/platform.rs           |  57 ++++++-
+ crates/gpui_windows/src/vsync.rs              | 139 +++++++++++++++++-
+ crates/gpui_windows/src/window.rs             |  16 ++
+ 5 files changed, 227 insertions(+), 10 deletions(-)
+
+diff --git a/crates/gpui_windows/src/direct_manipulation.rs b/crates/gpui_windows/src/direct_manipulation.rs
+index 9adcbed..a12afeb 100644
+--- a/crates/gpui_windows/src/direct_manipulation.rs
++++ b/crates/gpui_windows/src/direct_manipulation.rs
+@@ -26,6 +26,8 @@ pub(crate) struct DirectManipulationHandler {
+     window: HWND,
+     scale_factor: Rc<Cell<f32>>,
+     pending_events: Rc<RefCell<Vec<PlatformInput>>>,
++    /// A gesture (or its inertia) is in progress and needs per-frame updates.
++    gesture_active: Rc<Cell<bool>>,
+ }
+ 
+ impl DirectManipulationHandler {
+@@ -65,12 +67,14 @@ impl DirectManipulationHandler {
+ 
+             let scale_factor = Rc::new(Cell::new(scale_factor));
+             let pending_events = Rc::new(RefCell::new(Vec::new()));
++            let gesture_active = Rc::new(Cell::new(false));
+ 
+             let event_handler: IDirectManipulationViewportEventHandler =
+                 DirectManipulationEventHandler::new(
+                     window,
+                     Rc::clone(&scale_factor),
+                     Rc::clone(&pending_events),
++                    Rc::clone(&gesture_active),
+                 )
+                 .into();
+ 
+@@ -86,6 +90,7 @@ impl DirectManipulationHandler {
+                 window,
+                 scale_factor,
+                 pending_events,
++                gesture_active,
+             })
+         }
+     }
+@@ -94,6 +99,11 @@ impl DirectManipulationHandler {
+         self.scale_factor.set(scale_factor);
+     }
+ 
++    /// Whether a gesture or its inertia is running (it is advanced by `update`).
++    pub fn is_gesture_active(&self) -> bool {
++        self.gesture_active.get()
++    }
++
+     pub fn on_pointer_hit_test(&self, wparam: WPARAM) {
+         unsafe {
+             let pointer_id = wparam.loword() as u32;
+@@ -143,6 +153,7 @@ struct DirectManipulationEventHandler {
+     last_y_offset: Cell<f32>,
+     scroll_phase: Cell<TouchPhase>,
+     pending_events: Rc<RefCell<Vec<PlatformInput>>>,
++    gesture_active: Rc<Cell<bool>>,
+ }
+ 
+ impl DirectManipulationEventHandler {
+@@ -150,6 +161,7 @@ impl DirectManipulationEventHandler {
+         window: HWND,
+         scale_factor: Rc<Cell<f32>>,
+         pending_events: Rc<RefCell<Vec<PlatformInput>>>,
++        gesture_active: Rc<Cell<bool>>,
+     ) -> Self {
+         Self {
+             window,
+@@ -160,6 +172,7 @@ impl DirectManipulationEventHandler {
+             last_y_offset: Cell::new(0.0),
+             scroll_phase: Cell::new(TouchPhase::Started),
+             pending_events,
++            gesture_active,
+         }
+     }
+ 
+@@ -213,6 +226,8 @@ impl IDirectManipulationViewportEventHandler_Impl for DirectManipulationEventHan
+         if current == previous {
+             return Ok(());
+         }
++        self.gesture_active
++            .set(current == DIRECTMANIPULATION_RUNNING || current == DIRECTMANIPULATION_INERTIA);
+ 
+         // A new gesture interrupted inertia, so end the old sequence.
+         if current == DIRECTMANIPULATION_RUNNING && previous == DIRECTMANIPULATION_INERTIA {
+diff --git a/crates/gpui_windows/src/events.rs b/crates/gpui_windows/src/events.rs
+index 4a9b18b..0054d99 100644
+--- a/crates/gpui_windows/src/events.rs
++++ b/crates/gpui_windows/src/events.rs
+@@ -1322,6 +1322,9 @@ impl WindowsWindowInner {
+ 
+     fn handle_dm_pointer_hit_test(&self, wparam: WPARAM) -> Option<isize> {
+         self.state.direct_manipulation.on_pointer_hit_test(wparam);
++        // Direct Manipulation is polled from `draw_window`, so a touchpad
++        // gesture needs vsync ticks even before it changes anything.
++        self.state.frame_demand.request();
+         None
+     }
+ 
+@@ -1337,13 +1340,18 @@ impl WindowsWindowInner {
+             // loop until the in-progress draw unwinds. The vsync thread
+             // re-invalidates every window on each vsync (see
+             // `begin_vsync_thread`), so the deferred frame still gets drawn,
+-            // at most one vsync late.
++            // at most one vsync late; the demand keeps that thread awake.
+             unsafe { ValidateRect(Some(handle), None).ok().log_err() };
++            self.state.frame_demand.request();
+             return Some(0);
+         };
+         let mut request_frame = self.state.callbacks.request_frame.take()?;
+ 
+         self.state.direct_manipulation.update();
++        if self.state.direct_manipulation.is_gesture_active() {
++            // Gestures and their inertia are polled once per frame.
++            self.state.frame_demand.request();
++        }
+ 
+         let events = self.state.direct_manipulation.drain_events();
+         if !events.is_empty() {
+diff --git a/crates/gpui_windows/src/platform.rs b/crates/gpui_windows/src/platform.rs
+index 1100332..b07278e 100644
+--- a/crates/gpui_windows/src/platform.rs
++++ b/crates/gpui_windows/src/platform.rs
+@@ -73,6 +73,8 @@ pub struct WindowsPlatform {
+     /// Flag to instruct the `VSyncProvider` thread to invalidate the directx devices
+     /// as resizing them has failed, causing us to have lost at least the render target.
+     invalidate_devices: Arc<AtomicBool>,
++    /// Frame demand of all windows; the `VSyncProvider` thread parks without it.
++    frame_demand: Arc<FrameDemand>,
+     handle: HWND,
+     suspend_resume_notification: RefCell<Option<HPOWERNOTIFY>>,
+     disable_direct_composition: bool,
+@@ -297,6 +299,7 @@ impl WindowsPlatform {
+             drop_target_helper,
+             early_devices: RefCell::new(early_devices),
+             invalidate_devices: Arc::new(AtomicBool::new(false)),
++            frame_demand: Arc::new(FrameDemand::new()),
+             app_identity: RefCell::new(None),
+             system_notifications: RefCell::new(SystemNotificationState::new()),
+         })
+@@ -334,6 +337,7 @@ impl WindowsPlatform {
+             directx_devices: self.inner.state.directx_devices.borrow().clone().unwrap(),
+             invalidate_devices: self.invalidate_devices.clone(),
+             draw_coordinator: self.inner.state.draw_coordinator.clone(),
++            frame_demand: self.frame_demand.clone(),
+         }
+     }
+ 
+@@ -457,6 +461,8 @@ impl WindowsPlatform {
+             // Not joined: the thread can be sending this thread a message. It exits after its
+             // next vsync, and drops its reference to the devices then.
+             stop.store(true, Ordering::Release);
++            // A parked thread only sees the flag once woken.
++            self.frame_demand.wake();
+         }
+         if let Some(text_system) = &self.direct_write_text_system {
+             text_system.release_gpu();
+@@ -479,22 +485,18 @@ impl WindowsPlatform {
+         let all_windows = Arc::downgrade(&self.raw_window_handles);
+         let text_system = Arc::downgrade(direct_write_text_system);
+         let invalidate_devices = self.invalidate_devices.clone();
++        let frame_demand = self.frame_demand.clone();
+ 
+-        std::thread::Builder::new()
++        let vsync_thread = std::thread::Builder::new()
+             .name("VSyncProvider".to_owned())
+             .spawn(move || {
+                 let vsync_provider = VSyncProvider::new();
+-                loop {
+-                    let signal_source = vsync_provider.wait_for_vsync();
+-                    let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
+-                    if stop.load(Ordering::Acquire) {
+-                        break;
+-                    }
++                let recover_if_device_lost = |directx_device: &mut DirectXDevices| {
+                     if check_device_lost(&directx_device.device)
+                         || invalidate_devices.fetch_and(false, Ordering::Acquire)
+                     {
+                         if let Err(err) = handle_gpu_device_lost(
+-                            &mut directx_device,
++                            directx_device,
+                             platform_window.as_raw(),
+                             validation_number,
+                             &all_windows,
+@@ -503,6 +505,40 @@ impl WindowsPlatform {
+                             panic!("Device lost: {err}");
+                         }
+                     }
++                };
++                let mut idle = IdleTracker::new(std::time::Instant::now(), IDLE_FRAME_LINGER);
++                loop {
++                    let mut woke_from_idle = false;
++                    if idle.should_park(frame_demand.take(), std::time::Instant::now()) {
++                        // No window has wanted a frame for a while: sleep until one does,
++                        // instead of invalidating every window at the refresh rate.
++                        loop {
++                            if stop.load(Ordering::Acquire) {
++                                return;
++                            }
++                            if frame_demand.take() {
++                                break;
++                            }
++                            std::thread::park_timeout(IDLE_DEVICE_CHECK_INTERVAL);
++                            if !stop.load(Ordering::Acquire) {
++                                recover_if_device_lost(&mut directx_device);
++                            }
++                        }
++                        idle.should_park(true, std::time::Instant::now());
++                        woke_from_idle = true;
++                    }
++                    // Coming out of idle the last frame is long done: invalidate right away
++                    // instead of first waiting a whole vsync.
++                    let signal_source = if woke_from_idle {
++                        FrameRequestSource::LocalSchedule
++                    } else {
++                        vsync_provider.wait_for_vsync()
++                    };
++                    let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
++                    if stop.load(Ordering::Acquire) {
++                        break;
++                    }
++                    recover_if_device_lost(&mut directx_device);
+                     let Some(all_windows) = all_windows.upgrade() else {
+                         break;
+                     };
+@@ -526,6 +562,8 @@ impl WindowsPlatform {
+                 }
+             })
+             .unwrap();
++        self.frame_demand
++            .set_vsync_thread(vsync_thread.thread().clone());
+     }
+ }
+ 
+@@ -1401,6 +1439,7 @@ impl Drop for WindowsPlatform {
+     fn drop(&mut self) {
+         if let Some(stop) = self.vsync_stop.borrow_mut().take() {
+             stop.store(true, Ordering::Release);
++            self.frame_demand.wake();
+         }
+         unsafe {
+             if let Some(notification) = self.suspend_resume_notification.borrow_mut().take() {
+@@ -1431,6 +1470,8 @@ pub(crate) struct WindowCreationInfo {
+     pub(crate) invalidate_devices: Arc<AtomicBool>,
+     /// Shared with [`WindowsPlatformState::draw_coordinator`] and every other window.
+     pub(crate) draw_coordinator: Rc<DrawCoordinator>,
++    /// Shared with the `VSyncProvider` thread, which parks while no window wants frames.
++    pub(crate) frame_demand: Arc<FrameDemand>,
+ }
+ 
+ struct PlatformWindowCreateContext {
+diff --git a/crates/gpui_windows/src/vsync.rs b/crates/gpui_windows/src/vsync.rs
+index 5121c41..c47d3bb 100644
+--- a/crates/gpui_windows/src/vsync.rs
++++ b/crates/gpui_windows/src/vsync.rs
+@@ -1,5 +1,9 @@
+ use std::{
+-    sync::LazyLock,
++    sync::{
++        LazyLock, Mutex,
++        atomic::{AtomicBool, Ordering},
++    },
++    thread::Thread,
+     time::{Duration, Instant},
+ };
+ 
+@@ -23,6 +27,91 @@ static QPC_TICKS_PER_SECOND: LazyLock<u64> = LazyLock::new(|| {
+ const VSYNC_INTERVAL_THRESHOLD: Duration = Duration::from_millis(1);
+ const DEFAULT_VSYNC_INTERVAL: Duration = Duration::from_micros(16_666); // ~60Hz
+ 
++/// How long the vsync thread keeps ticking after the last frame demand before it
++/// parks. It covers GPUI's one-second "keep presenting after high-rate input"
++/// window and every place that relies on the next vsync to re-invalidate a
++/// window (deferred re-entrant draws, presents of frames drawn during input).
++pub(crate) const IDLE_FRAME_LINGER: Duration = Duration::from_secs(1);
++/// While parked, the vsync thread still wakes this often to notice a lost GPU
++/// device, so an idle window recovers after a driver reset without input.
++pub(crate) const IDLE_DEVICE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
++
++/// Whether any window wants frames, shared by the windows (UI thread) and the
++/// vsync thread.
++///
++/// Windows report demand through GPUI's frame waker (a view was invalidated,
++/// next-frame callbacks are pending) and for platform work that needs vsync
++/// ticks (Direct Manipulation gestures, deferred draws). The vsync thread
++/// consumes the demand on every tick and parks once there was none for
++/// [`IDLE_FRAME_LINGER`], so an idle app stops waking up at the refresh rate.
++pub(crate) struct FrameDemand {
++    requested: AtomicBool,
++    vsync_thread: Mutex<Option<Thread>>,
++}
++
++impl FrameDemand {
++    pub(crate) fn new() -> Self {
++        Self {
++            requested: AtomicBool::new(false),
++            vsync_thread: Mutex::new(None),
++        }
++    }
++
++    /// Asks for frames, waking the vsync thread if it is parked.
++    pub(crate) fn request(&self) {
++        self.requested.store(true, Ordering::Release);
++        self.wake();
++    }
++
++    /// Takes the pending demand; true if frames were requested since the last call.
++    pub(crate) fn take(&self) -> bool {
++        self.requested.swap(false, Ordering::AcqRel)
++    }
++
++    /// Wakes the vsync thread without asking for frames (e.g. to let it see its stop flag).
++    pub(crate) fn wake(&self) {
++        if let Some(thread) = self
++            .vsync_thread
++            .lock()
++            .unwrap_or_else(|e| e.into_inner())
++            .as_ref()
++        {
++            thread.unpark();
++        }
++    }
++
++    /// Records the thread that [`Self::request`] wakes (the current vsync thread).
++    pub(crate) fn set_vsync_thread(&self, thread: Thread) {
++        *self.vsync_thread.lock().unwrap_or_else(|e| e.into_inner()) = Some(thread);
++    }
++}
++
++/// Decides when the vsync thread may park: once there has been no frame demand
++/// for `linger`.
++pub(crate) struct IdleTracker {
++    last_demand: Instant,
++    linger: Duration,
++}
++
++impl IdleTracker {
++    pub(crate) fn new(now: Instant, linger: Duration) -> Self {
++        Self {
++            last_demand: now,
++            linger,
++        }
++    }
++
++    /// Notes whether frames were requested at `now`; returns true when the
++    /// thread should park.
++    pub(crate) fn should_park(&mut self, demanded: bool, now: Instant) -> bool {
++        if demanded {
++            self.last_demand = now;
++            return false;
++        }
++        now.saturating_duration_since(self.last_demand) >= self.linger
++    }
++}
++
+ pub(crate) struct VSyncProvider {
+     interval: Duration,
+     f: Box<dyn Fn() -> bool>,
+@@ -116,4 +205,52 @@ mod tests {
+ 
+         assert_eq!(provider.wait_for_vsync(), FrameRequestSource::LocalSchedule);
+     }
++
++    #[test]
++    fn idle_tracker_parks_only_after_the_linger() {
++        let start = Instant::now();
++        let mut idle = IdleTracker::new(start, Duration::from_millis(100));
++        assert!(!idle.should_park(false, start + Duration::from_millis(50)));
++        assert!(!idle.should_park(true, start + Duration::from_millis(90)));
++        assert!(
++            !idle.should_park(false, start + Duration::from_millis(150)),
++            "demand at 90 ms restarts the linger"
++        );
++        assert!(idle.should_park(false, start + Duration::from_millis(190)));
++        assert!(!idle.should_park(true, start + Duration::from_millis(500)));
++    }
++
++    #[test]
++    fn frame_demand_is_taken_once() {
++        let demand = FrameDemand::new();
++        assert!(!demand.take());
++        demand.request();
++        demand.request();
++        assert!(demand.take());
++        assert!(!demand.take());
++    }
++
++    #[test]
++    fn frame_demand_wakes_a_parked_vsync_thread() {
++        let demand = std::sync::Arc::new(FrameDemand::new());
++        let (registered_tx, registered_rx) = std::sync::mpsc::channel();
++        let (woke_tx, woke_rx) = std::sync::mpsc::channel();
++        let thread_demand = demand.clone();
++        let handle = std::thread::spawn(move || {
++            thread_demand.set_vsync_thread(std::thread::current());
++            registered_tx.send(()).unwrap();
++            // Same shape as the vsync thread's park loop.
++            while !thread_demand.take() {
++                std::thread::park_timeout(Duration::from_secs(10));
++            }
++            woke_tx.send(Instant::now()).unwrap();
++        });
++        registered_rx.recv().unwrap();
++        std::thread::sleep(Duration::from_millis(20));
++        let requested = Instant::now();
++        demand.request();
++        let woke = woke_rx.recv_timeout(Duration::from_secs(5)).unwrap();
++        assert!(woke.duration_since(requested) < Duration::from_secs(1));
++        handle.join().unwrap();
++    }
+ }
+diff --git a/crates/gpui_windows/src/window.rs b/crates/gpui_windows/src/window.rs
+index 8a5327d..a668d42 100644
+--- a/crates/gpui_windows/src/window.rs
++++ b/crates/gpui_windows/src/window.rs
+@@ -86,6 +86,9 @@ pub struct WindowsWindowState {
+     pub invalidate_devices: Arc<AtomicBool>,
+     /// Shared with [`WindowsPlatformState::draw_coordinator`] and every other window.
+     pub(crate) draw_coordinator: Rc<DrawCoordinator>,
++    /// Shared with the platform's `VSyncProvider` thread, which parks while no window
++    /// wants frames.
++    pub(crate) frame_demand: Arc<FrameDemand>,
+     fullscreen: Cell<Option<StyleAndBounds>>,
+     initial_placement: Cell<Option<WindowOpenStatus>>,
+     hwnd: HWND,
+@@ -123,6 +126,7 @@ impl WindowsWindowState {
+         disable_direct_composition: bool,
+         invalidate_devices: Arc<AtomicBool>,
+         draw_coordinator: Rc<DrawCoordinator>,
++        frame_demand: Arc<FrameDemand>,
+     ) -> Result<Self> {
+         let scale_factor = {
+             let monitor_dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
+@@ -189,6 +193,7 @@ impl WindowsWindowState {
+             hwnd,
+             invalidate_devices,
+             draw_coordinator,
++            frame_demand,
+             direct_manipulation,
+             a11y: RefCell::new(None),
+         })
+@@ -280,6 +285,7 @@ impl WindowsWindowInner {
+             context.disable_direct_composition,
+             context.invalidate_devices.clone(),
+             context.draw_coordinator.clone(),
++            context.frame_demand.clone(),
+         )?;
+ 
+         Ok(Rc::new(Self {
+@@ -430,6 +436,7 @@ struct WindowCreateContext {
+     directx_devices: DirectXDevices,
+     invalidate_devices: Arc<AtomicBool>,
+     draw_coordinator: Rc<DrawCoordinator>,
++    frame_demand: Arc<FrameDemand>,
+     parent_hwnd: Option<HWND>,
+ }
+ 
+@@ -458,6 +465,7 @@ impl WindowsWindow {
+             directx_devices,
+             invalidate_devices,
+             draw_coordinator,
++            frame_demand,
+         } = creation_info;
+         register_window_class(icon);
+         let parent_hwnd = if params.kind == WindowKind::Dialog {
+@@ -543,6 +551,7 @@ impl WindowsWindow {
+             directx_devices,
+             invalidate_devices,
+             draw_coordinator,
++            frame_demand,
+             parent_hwnd,
+         };
+         let creation_result = unsafe {
+@@ -967,6 +976,13 @@ impl PlatformWindow for WindowsWindow {
+         self.state.is_fullscreen()
+     }
+ 
++    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
++        // GPUI calls this when the window becomes dirty or has next-frame callbacks;
++        // it restarts the vsync thread, which parks while no window wants frames.
++        let frame_demand = self.state.frame_demand.clone();
++        Some(Rc::new(move || frame_demand.request()))
++    }
++
+     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+         self.state.callbacks.request_frame.set(Some(callback));
+     }
+-- 
+2.55.0.windows.3
+

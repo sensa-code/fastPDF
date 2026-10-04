@@ -29,6 +29,9 @@ jobs:
         run: cargo test --workspace --locked
       - name: Engine isolation (spec §42)
         run: python tools/check_engine_isolation.py
+      - name: Vendored gpui_windows matches the pinned zed rev + patches (ADR 0011)
+        # After the cargo steps above, so cargo has checked out the zed rev.
+        run: python tools/vendor_gpui_windows.py --check
       - name: License review (spec §37)
         # All features: the committed list also covers optional engines.
         run: python tools/license_report.py --all-features --check --out ${{ runner.temp }}/licenses.md

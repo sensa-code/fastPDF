@@ -2,6 +2,8 @@
 
 對應 spec §28–§29、benchmark plan B-8。從 app **外部**量測：啟動到視窗出現、第一頁完全清晰、idle RAM／CPU、捲動與縮放的反應。Engine 層的數字（open、render、text）見 B-1（`benchmarks/baseline.json`）。
 
+> 這份文件依回合累積。最新的 KPI 判定在最後一節〈第九輪〉；下面的〈結論〉是 R2–F 回合當時的結果。
+
 ## 結論
 
 - **第一個 frame 就是完全清晰的第一頁。** UI 第五輪把開檔和第 1 頁的 render 提前到 GPUI 啟動期間（`crates/fastpdf-ui/src/startup.rs`）。`first_paint` 到 `first_page_exact` 的差距從 33–38 ms 降到 0–0.1 ms。
@@ -424,4 +426,162 @@ mask 依本機拓撲選擇：相鄰的兩個邏輯 CPU 是同一個實體核心�
   - Idle RAM：**達成**，28.3 MB。多了兩個 host process，比 in-process 多約 3.7 MB，見 `docs/benchmarks/render-host.md`。
   - 小檔首頁：**未達成**，中位數 204 ms，差約 4 ms。在負載低的條件下，這是目前最好的結果。剩下的時間是 GPUI 的啟動；ADR 0009 的 G1、G2 兩個 upstream 草稿各可再省 15–39 ms。
   - Idle CPU：FastPDF 端的判定（idle 時 0 frame）**達成**；GPUI 的 vsync 喚醒仍在，所以 CPU time 與喚醒次數的條件**未達成**，見 `docs/upstream-issues/gpui-idle.md`。
+
+## 第九輪：本地套用 GPUI patch（2026-10-05，ADR 0011）
+
+這一輪只比較 GPUI 的差別：A 是 HEAD（`3f4d104`），B 是 A 加上 vendored `gpui_windows`，也就是 ADR 0011 的 3 個 patch。FastPDF 自己的程式碼完全相同。
+
+### 結論
+
+- **小檔首頁 < 200 ms：達成。** 3 頁 `first_page_exact` 中位數 196.1 → 170.7 ms。6 對都是 B 比較快，每對快 5.9–63.0 ms，中位數 28.1 ms。300 頁是 199.8 → 169.7 ms。
+- **Idle CPU：達成**（定義見 `benchmarks/README.md`）。主執行緒喚醒 77 → 0 次／秒，vsync thread 64 → 1 次／秒，CPU time 中位數 0.78% → 0% 單核（10 秒內 0–15.6 ms）。
+- **沒有退步**：
+  - idle private working set 28.3 → 28.0 MB，peak private bytes 不變。
+  - 300 頁的捲動、PageDown、縮放：差異在截圖的解析度（約 15 ms）與背景負載的範圍內，方向不一致。補充量測每次啟動做 8 輪輸入，B 的首次反應反而比較快，捲動的 CPU cycles 也沒有增加。
+  - bench-app 的截圖：多數 run 逐位元組相同。不同的時候最多差 94 個像素、每個通道只差 1，A 與 B 都會發生，是 run 之間的不確定性。
+  - vsync thread park 之後的重畫檢查：最小化／還原、最大化／還原、滾輪、深淺色切換都立刻正確重畫。
+
+### 方法
+
+- **build**：
+  - A 是 `git archive HEAD` 的匯出；B 是同一份匯出，加上本輪的 `vendor/`、root `Cargo.toml` 與 `Cargo.lock`。
+  - 兩者都用 `cargo build --offline --locked --profile dist -p fastpdf-app`，linker 加 `/Brepro`，和 `tools/package.ps1 -NoRemapPaths` 相同。
+  - 各用自己的 target dir（`target/agent-gpui-a`、`target/agent-gpui-b`），避開第六輪〈量測上的注意事項〉的 fingerprint 問題。build log 確認 A 編譯的是 zed git 的 `gpui_windows`，B 是 `vendor/gpui_windows`。
+  - exe：A 16,881,664 B，B 16,892,416 B（多 10,752 B）。量測前各執行 5 次 `--version` 預熱。
+- **工具**：bench-app 1.2.0，preset `fastpdf`（含 `-AppProbe`），加上 `-ThreadDetail -MemoryDetail`，每次啟動量 1 次。
+- **配對**：A、B 交替，奇數對先 A、偶數對先 B。每次啟動前等系統忙碌度（3 次取樣的平均）降到 30% 以下，最多等 5 分鐘。
+- **情境**：
+  - 3 頁：6 對，量啟動與 idle 10 秒。
+  - 300 頁：6 對，再加 20 格滾輪（50 ms 間隔）、5 次 PageDown、3 次 Ctrl+滾輪（150 ms 間隔），以及互動後的 idle 5 秒。原本量 4 對；p2 的 B 量測期間，其他 agent 開始編譯（idle 窗口忙碌 98.9%），所以多量 2 對。
+- **背景負載**：其他 agent 的編譯、使用者的 WSL VM 等都還在跑。
+  - 等待後的啟動前負載：3 頁 8–28%；300 頁 6–29%，只有 p6 的 B 等滿 5 分鐘，在 77% 時啟動。
+  - bench-app 自己在啟動瞬間的取樣有 3 次超過 30%：3 頁 p4 的 A（68%）與 p6 的 B（90%），300 頁 p6 的 B（80%）。
+
+### 結果：3 頁（6 對，中位數與範圍）
+
+| 指標 | A（HEAD） | B（patch） | B − A（每對差的中位數） |
+|---|---|---|---|
+| `window_visible`（ms） | 195.7（185.3–212.5） | 164.7（156.5–168.3） | −33.0 |
+| `first_page_exact`（ms） | 196.1（185.7–227.3） | **170.7**（164.2–179.8） | −28.1 |
+| 截圖測到的第一個非空白畫面（ms） | 229.6 | 205.3 | −23.5 |
+| idle CPU（% 單核） | 0.78（0.16–2.34） | **0**（0–0.16） | −0.78 |
+| idle 主執行緒喚醒（次／秒） | 77.1（67.0–95.7） | **0**（6 次都是 0） | −77.1 |
+| idle vsync thread 喚醒（次／秒） | 63.6（61.6–65.6） | **0.99**（0.99–1.09） | −62.6 |
+| idle process tree cycles（Mcycles／秒） | 26.7（19.0–39.6） | 3.3（2.2–4.5） | −23.4 |
+| FastPDF 在 idle 時畫的 frame | 0 | 0 | 0 |
+| idle private working set（MB） | 28.3 | **28.0** | −0.35 |
+| idle private bytes（MB） | 113.4 | 113.2 | −0.2 |
+| peak private bytes（MB） | 121.9 | 121.6 | −0.2 |
+
+- `first_page_exact`：p4 的 A 啟動瞬間負載 68%。排除這一對，每對差的中位數仍是 −27.3 ms。
+- 省下的時間都在視窗出現之前：B 的視窗早 33 ms 出現。第一個 frame 仍然就是清晰的第一頁（12 次都是 `first_paint` = `first_page_exact`）。
+- **下一個瓶頸**：B 的第一頁在視窗出現後，中位數 4.1 ms 才畫出（A 是 3.3 ms）；300 頁是 10.3 ms（A 是 0.4 ms）。GPUI 變快之後，render host 開檔與 render 第 1 頁的時間開始出現在關鍵路徑上。
+- idle 時剩下的喚醒來自 NVIDIA driver：`nvwgf2umx.dll` 的 103 條 thread，合計約 61 次／秒、2–3 Mcycles／秒，A 與 B 相同。依 KPI 定義不列入判定。
+
+### 結果：300 頁（6 對，中位數）
+
+| 指標 | A | B | B − A（每對差的中位數） |
+|---|---|---|---|
+| `window_visible`（ms） | 199.0（188.3–255.6） | 162.3（146.8–186.5） | −43.5 |
+| `first_page_exact`（ms） | 199.8（191.3–268.8） | 169.7（147.5–192.1） | −38.1 |
+| 截圖測到的第一個非空白畫面（ms） | 237.8 | 208.9 | −32.4 |
+| idle CPU（% 單核） | 1.25（0.31–2.03） | 0（0–0.16） | −1.17 |
+| idle 主執行緒／vsync thread 喚醒（次／秒） | 85.6／63.6 | 0／0.99 | — |
+| idle private working set（MB） | 30.2 | 29.8 | −0.4 |
+| peak private bytes（MB） | 284.9 | 283.9 | −0.65 |
+| 滾輪：首次畫面變化（ms） | 22.3（7.8–23.1） | 23.5（19.9–38.3） | +7.6 |
+| 滾輪：最後一次輸入到畫面穩定（ms） | 141.5 | 140.0 | +5.5 |
+| 滾輪：輸入期間每秒變化的 frame | 52.7 | 50.1 | −2.6 |
+| PageDown：首次畫面變化（ms） | 22.8 | 22.1 | 0 |
+| PageDown：最後一次輸入到畫面穩定（ms） | 22.0 | 22.5 | −4.0 |
+| 縮放：首次畫面變化（ms） | 23.2 | 23.9 | +3.4 |
+| 縮放：最後一次輸入到畫面穩定（ms） | 40.0 | 47.5 | +4.5 |
+| 互動期間 FastPDF 畫的 frame（滾輪／PageDown／縮放） | 177.5／14／10 | 175／13.5／10 | — |
+| 互動後 idle 5 秒：FastPDF 畫的 frame | 0 | 0 | 0 |
+| 互動後 idle 5 秒：CPU time（ms） | 23.4 | 0 | −15.6 |
+| 互動後 idle：private working set（MB） | 89.3 | 88.8 | −0.3 |
+
+- 截圖每張約 15 ms，首次變化與穩定時間的解析度大約也是 15 ms。每對的差有正有負：
+  - 滾輪首次變化：−0.7、+3.0、+12.1、−1.3、+19.4、+15.2 ms；
+  - 縮放畫面穩定：−2、+40、−6、+11、−12、+16 ms。
+  - B 特別慢的幾次都有負載：p2 的 B 量測時有編譯在跑，p6 的 B 在負載 80% 時啟動。
+- 滾輪期間 process tree 的 CPU time，B 在 6 對中有 5 對比較高（中位數 133 → 219 ms）。但有 frame 需求時，B 的 vsync thread 和 A 走完全相同的程式路徑，差別只在 park 與喚醒。所以另外做了下面的補充量測。
+
+### 補充量測：每次啟動多輪輸入
+
+bench-app 每次啟動只做一輪滾輪與縮放，CPU time 又以 15.6 ms 為單位累計，單次結果受背景負載的影響很大。補充量測的做法：
+
+- 每次啟動做 8 輪輸入，每輪之間 idle 3 秒，讓 B 的 vsync thread park；
+- 用 `QueryProcessCycleTime` 量 process tree 的 cycles；
+- 輸入方式和 bench-app 相同：PostMessage 到 FastPDF 自己的視窗。
+
+腳本只在 scratch，沒有放進 repo。
+
+- **滾輪**：300 頁，每輪 20 格、50 ms 間隔，量 2.0 秒。啟動 4 次，順序 A、B、B、A。單數輪同時截圖（量首次變化），雙數輪不截圖（只量 CPU）。
+
+  | | A | B |
+  |---|---|---|
+  | 每輪 cycles：不截圖、系統忙碌 ≤ 31%（Mcycles） | 425–490（3 輪，平均 449） | 404–436（5 輪，平均 420） |
+  | 每輪 cycles：截圖、系統忙碌 ≤ 31%（Mcycles） | 933–971（3 輪） | 730–904（6 輪） |
+  | 首次畫面變化（ms，8 輪的中位數） | 24.4 | 18.8 |
+  | 兩輪之間的 idle：app process（Mcycles／秒） | 29–66 | 2.6–5.3 |
+
+  - 系統忙碌時，兩者的 cycles 都會上升。第二次 A 啟動時系統忙碌 52–99%，每輪 544–1,525 Mcycles。所以 bench-app 裡 B 較高的 CPU time 來自個別 run 的背景負載，不是 patch 的成本。
+  - CPU time 不適合比較 2 秒的窗口。例如同一輪記到 62.5 ms 的 CPU time，cycles 卻是 425 M。
+  - B 的首次變化比較快，符合預期：從 park 醒來時立刻 invalidate，第一個 frame 不必等下一個 vsync。
+  - B 在兩輪之間剩下的 cycles，大部分是 NVIDIA driver 的 thread（見前面 idle 的拆解）。
+- **縮放**：每輪 3 次 Ctrl+滾輪、150 ms 間隔，放大、縮小交替。啟動 2 次（A、B）。Ctrl 鍵的狀態和 bench-app 一樣，只對 FastPDF 的 GUI thread 回報為按下。
+
+  | | A | B |
+  |---|---|---|
+  | 首次畫面變化（ms，8 輪的中位數） | 26.3 | 21.5 |
+  | 最後一次輸入到畫面穩定（ms，8 輪的中位數） | 26.8 | 24.9 |
+  | 量測期間的系統忙碌 | 82–98% | 32–99% |
+
+  - 兩次啟動時負載都高，A 更嚴重，所以只能說明縮放沒有變慢。
+  - 縮小後的畫面，A 與 B 都回到同一張（hash 相同）。放大後的畫面，同一個 build 的不同輪之間也不完全相同（A、B 各有 2 種 hash），和 bench-app 縮放後截圖的情況一樣。
+
+### 截圖
+
+- 3 頁：第一個非空白畫面與最後畫面，12 次 run 的 hash 都相同。
+- 300 頁：
+  - 第一個非空白畫面、啟動完成的畫面、捲動後：12 次 run 都相同。
+  - PageDown 後：11 次相同；p5 的 A 差 31 個像素，每個通道差 1。
+  - 縮放後：4 種 hash，其中 2 種 A 與 B 都出現過。彼此最多差 94 個像素（0.012%），每個通道差 1，是 run 之間 tile 合成的取整差異，A 和 B 都會發生。
+
+### 重畫檢查（vsync thread park 之後）
+
+- **方法**：開 300 頁文件。每個動作之前先 idle 至少 1.5 秒，所以 B 的 vsync thread 已經 park。
+  - 最小化／還原、最大化／還原、滾輪：PostMessage 到 FastPDF 自己的視窗；
+  - 深淺色：dev script（`FASTPDF_DEV_OVERLAY=1`）的 appearance 步驟；
+  - 另一條執行緒持續用 `PrintWindow` 擷取 client 區（約 16–19 ms 一張），記錄從動作到畫面變成最終狀態的時間，以及最終畫面的 hash。
+- **結果**（ms；A 量了 2 次）：
+
+  | 動作 | A | A（第 2 次） | B |
+  |---|---|---|---|
+  | 還原（從最小化） | 32.2 | 15.7 | 18.6 |
+  | 最大化 | 70.9 | 69.0 | 70.9 |
+  | 還原（從最大化） | 31.0 | 38.7 | 31.5 |
+  | 滾輪（一則 3 格的訊息，含平滑捲動） | 115.8 | 158.0 | 120.3 |
+  | 切到深色 | 13.6 | 28.4 | 19.4 |
+  | 切回淺色 | 7.2 | 28.9 | 18.5 |
+
+  - B 的每個動作都在 A 兩次的範圍內，畫面在動作後立刻更新，最後停在正確的畫面，之後保持穩定。
+  - 最終畫面的 hash：A 與 B 相同。只有最大化的畫面，A 第 1 次和 B 不同（差 1,094 個像素、0.056%，通道差 1），A 第 2 次和 B 完全相同。
+  - 沒有測：系統主題、DPI 或螢幕變更、device lost，這些都要改系統設定。device lost 的處理見 ADR 0011〈Device lost〉。
+
+### KPI 判定（第九輪）
+
+- 小檔首頁 < 200 ms：**達成**，中位數 170.7 ms（164.2–179.8 ms）。
+- Idle CPU：**達成**。CPU time 中位數 0%（≤ 0.1%），主執行緒 0 次／秒、vsync thread 0.99 次／秒（都 ≤ 2）。NVIDIA driver 的 thread 約 61 次／秒，依定義不列入。
+- Idle RAM：**達成**，28.0 MB。
+- exe < 30 MB：**達成**，16,892,416 B（16.1 MiB）。
+
+### 後續（第九輪）
+
+1. **送 upstream**：照 `docs/upstream-issues/gpui-startup.md`、`gpui-idle.md` 的步驟，先由使用者決定是否開 discussion。合併後依 ADR 0011 的退出計畫移除本地 patch。
+2. **CI**：加上 `python tools/vendor_gpui_windows.py --check`，確認 vendored crate 與 patch 一致，而且 build 確實用到它。
+3. **首頁的下一個瓶頸**：render host 的開檔與第 1 頁 render 開始落在關鍵路徑上（B 的第一頁比視窗晚 4–10 ms）。
+4. **低階機器**（R12）：在 iGPU 筆電、高更新率螢幕上重量。NVIDIA driver 那條每秒 60 次的 thread，在其他 GPU 上不一定存在。
+5. **device lost**：沒有實測。需要能觸發 TDR 的測試環境。
 

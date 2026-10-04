@@ -9,7 +9,9 @@
 
 Patch：`patches/gpui-idle-0001-park-vsync-thread-when-idle.patch`（`git diff` 格式，base 是上面的 rev，只改 `crates/gpui_windows`，5 個檔案，+227／−10 行）。
 
-**本文件只是草稿：沒有在 GitHub 建立任何 issue、PR 或 discussion，沒有 fork、沒有 push，也沒有做任何寫入。要不要送出由使用者決定。** FastPDF 本身仍使用原本的 GPUI，沒有套用這個 patch。
+**本文件只是草稿：沒有在 GitHub 建立任何 issue、PR 或 discussion，沒有 fork、沒有 push，也沒有做任何寫入。要不要送出由使用者決定。**
+
+**2026-10-05 起已在本地套用**：FastPDF 用 `vendor/gpui_windows`（pin 的 rev 加上本機的 patch series，`[patch]` 取代 upstream 的 `gpui_windows`），這個 patch 是其中的 0003。因為要接在啟動 patch 0001 之後，0003 是本目錄草稿 rebase 後的版本：只有 `WindowsPlatform::new` 結構初始化那個 hunk 的 context 不同，程式碼改動相同（`vendor/gpui_windows/FASTPDF-PATCHES.md`）。本地的 B-8 配對量測：idle 時主執行緒喚醒 77 → 0 次／秒，vsync thread 64 → 1 次／秒，捲動與縮放沒有變慢；park 之後最小化／還原、最大化、滾輪、深淺色切換都立刻重畫。決策與量測見 ADR 0011、`docs/benchmarks/b8-app.md`〈第九輪〉。送 upstream 的建議不變：合併、FastPDF 升級 pin 之後，就移除本地 patch。
 
 ## 送出前要做的事
 
