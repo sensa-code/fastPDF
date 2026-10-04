@@ -10,6 +10,11 @@ publish.workspace = true
 fastpdf-engine-api.workspace = true
 fastpdf-render.workspace = true
 fastpdf-core.workspace = true
+fastpdf-cache.workspace = true
+gpui.workspace = true
+futures.workspace = true
+image.workspace = true
+log.workspace = true
 
 [lints]
 workspace = true

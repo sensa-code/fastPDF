@@ -43,6 +43,11 @@ flate2 = { version = "1", features = ["zlib-rs"] }
 serde = { version = "1.0.229", features = ["derive"] } # bench JSON only
 serde_json = "1.0.151"      # bench JSON only
 windows-sys = "0.61.2"      # Win32 process metrics / file APIs; no runtime cost
+# Already in GPUI's dependency graph (no new crates); named here because
+# GPUI does not re-export them. Only fastpdf-ui / fastpdf-app use them.
+futures = "0.3"             # render workers -> UI thread wake channel
+image = { version = "0.25", default-features = false } # GPUI RenderImage frames
+log = "0.4"                 # logging facade (FASTPDF_LOG, spec §31)
 
 # GPUI from Zed's repository, pinned (ADR 0001, docs/audit/gpui.md). Only
 # fastpdf-ui and fastpdf-app may depend on it. The rev must stay at or after

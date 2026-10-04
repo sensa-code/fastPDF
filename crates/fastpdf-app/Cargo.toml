@@ -10,10 +10,34 @@ publish.workspace = true
 name = "fastpdf"
 path = "src/main.rs"
 
+[features]
+default = ["engine-hayro"]
+# Engine adapters are chosen per build (spec §43) and at runtime with
+# `--engine NAME` or FASTPDF_ENGINE=NAME; the first compiled-in engine is the
+# default.
+engine-hayro = ["dep:fastpdf-engine-hayro"]
+engine-zpdf = ["dep:fastpdf-engine-zpdf"]
+# Development only: a synthetic engine that draws numbered test pages without
+# parsing the file. Used for UI work and UI-only benchmarks; never shipped.
+engine-synthetic = []
+
 [dependencies]
 fastpdf-engine-api.workspace = true
 fastpdf-core.workspace = true
 fastpdf-ui.workspace = true
+fastpdf-engine-hayro = { workspace = true, optional = true }
+fastpdf-engine-zpdf = { workspace = true, optional = true }
+gpui.workspace = true
+gpui_platform.workspace = true
+log.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true
