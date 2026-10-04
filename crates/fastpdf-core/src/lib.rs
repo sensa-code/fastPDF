@@ -9,6 +9,7 @@ pub mod keymap;
 pub mod loader;
 pub mod memory;
 pub mod recent;
+pub mod selection;
 pub mod session;
 
 pub use session::{
