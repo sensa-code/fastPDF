@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest template for FastPDF (ADR 0010). tools/package-msix.ps1 fills
+  the {{...}} placeholders and packs the result with makeappx; it never signs.
+
+  {{VERSION}}    Cargo version X.Y.Z as the four-part X.Y.Z.R (R = -Revision, default 0)
+  {{PUBLISHER}}  Placeholder until signing: replace it (package-msix.ps1 -Publisher)
+                 with the EXACT subject of the code-signing certificate, e.g.
+                 "CN=Example Ltd, O=Example Ltd, L=Taipei, C=TW". A package whose
+                 Publisher differs from the signing certificate cannot be signed or installed.
+  {{PUBLISHER_DISPLAY_NAME}}  The publisher name users see (-PublisherDisplayName).
+  {{ARCH}}       x64
+
+  Deliberately absent: network capabilities (spec: no network), .appinstaller /
+  auto-update (spec §9), startup tasks and background activation.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 rescap">
+
+  <Identity
+    Name="FastPDF"
+    Publisher="{{PUBLISHER}}"
+    Version="{{VERSION}}"
+    ProcessorArchitecture="{{ARCH}}" />
+
+  <Properties>
+    <DisplayName>FastPDF</DisplayName>
+    <PublisherDisplayName>{{PUBLISHER_DISPLAY_NAME}}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-TW" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application Id="FastPDF" Executable="fastpdf.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="FastPDF"
+        Description="Fast, lightweight PDF reader"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <!-- Replaces the per-user registry registration of the zip build
+             (fastpdf-shell): Windows adds FastPDF to "Open with" and Default
+             apps on install and removes it on uninstall. -->
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="pdf">
+            <uap:DisplayName>PDF Document</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType ContentType="application/pdf">.pdf</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <!-- `fastpdf` on the command line (packaged apps are not on PATH);
+             also how tools/bench-app can launch the installed package. -->
+        <uap5:Extension Category="windows.appExecutionAlias" Executable="fastpdf.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:AppExecutionAlias>
+            <uap5:ExecutionAlias Alias="fastpdf.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

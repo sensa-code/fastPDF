@@ -11,22 +11,27 @@
   2. checks the exe's VERSIONINFO against the Cargo version (build.rs ran) and its PE
      resources: RT_GROUP_ICON #1, the icon images, RT_VERSION #1 and exactly one
      RT_MANIFEST (GPUI's; a second one would mean a resource conflict)
-  3. stages fastpdf.exe, README.md, THIRD_PARTY_LICENSES.md, licenses/, BUILDINFO.txt and
-     licenses/third-party/: each linked crate's own license and NOTICE files plus
-     MISSING.md (python tools/license_report.py --bundle; needs python and cargo on PATH)
+  3. stages fastpdf.exe, README.md, THIRD_PARTY_LICENSES.md, the top-level files of licenses/
+     (subfolders such as licenses/overrides/ are inputs of the bundle step, not shipped as is),
+     BUILDINFO.txt and licenses/third-party/: each linked crate's own license and NOTICE files
+     plus MISSING.md (python tools/license_report.py --bundle; needs python and cargo on PATH);
+     the staging folder may not contain empty folders
   4. zips the staging folder (top-level folder inside the zip), writes <zip>.sha256
   5. verifies the zip: exact entry list (under licenses/third-party/ exactly the files the
-     bundle step reported writing) and the exe's SHA-256 inside the zip
+     bundle step reported writing), no directory entries, and the exe's SHA-256 inside the zip
   6. smoke test on the extracted copy: --version and --help (no window), then one
      GUI start with FASTPDF_BENCH=1 on a fixture until the first frame is presented;
      the process tree is always terminated. Saved settings and recent files are
      not touched (FASTPDF_SETTINGS_FILE / FASTPDF_RECENT_FILE are set empty).
+  With -StageOnly the script stops after step 3 and returns the staging folder: that
+  is how tools/package-msix.ps1 reuses the same build, checks and file set.
   The script writes only under -OutDir (default dist/) and the cargo target dir.
   See docs/RELEASE.md for the full release checklist.
 
 .EXAMPLE
   pwsh -File tools/package.ps1
   pwsh -File tools/package.ps1 -SkipBuild -NoGuiSmoke
+  pwsh -File tools/package.ps1 -StageOnly -OutDir dist/.work -Flavor msix
 #>
 [CmdletBinding()]
 param(
@@ -37,7 +42,11 @@ param(
     [switch]$NoSmokeTest,
     [switch]$NoGuiSmoke,
     [string]$SmokePdf,
-    [int]$SmokeTimeoutSec = 30
+    [int]$SmokeTimeoutSec = 30,
+    # Build, check and stage only (no zip, no smoke test); returns the staging folder.
+    [switch]$StageOnly,
+    # Written to BUILDINFO.txt: 'portable' (zip) or 'msix'.
+    [ValidateSet('portable', 'msix')][string]$Flavor = 'portable'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -149,7 +158,9 @@ New-Item -ItemType Directory -Force (Join-Path $Stage 'licenses') | Out-Null
 Copy-Item $Exe (Join-Path $Stage 'fastpdf.exe')
 Copy-Item (Join-Path $Repo 'README.md') $Stage
 Copy-Item (Join-Path $Repo 'THIRD_PARTY_LICENSES.md') $Stage
-Copy-Item (Join-Path $Repo 'licenses\*') (Join-Path $Stage 'licenses')
+# Top-level files only, matching the expected entry list below: subfolders (licenses/overrides/)
+# feed license_report.py --bundle, which writes what ships into licenses/third-party/.
+Get-ChildItem -LiteralPath (Join-Path $Repo 'licenses') -File | Copy-Item -Destination (Join-Path $Stage 'licenses')
 
 Step 'third-party license texts -> licenses/third-party/ (license_report.py --bundle)'
 $ThirdParty = Join-Path $Stage 'licenses\third-party'
@@ -172,13 +183,27 @@ $dirty = $false
 if ($gitRev) { $dirty = (git -C $Repo status --porcelain 2>$null | Measure-Object).Count -gt 0 } else { $gitRev = 'unknown (not a git checkout)' }
 $rustc = (rustc -V 2>$null)
 @(
-    "FastPDF $Version (win-x64, portable)"
+    "FastPDF $Version (win-x64, $Flavor)"
     "git: $gitRev$(if ($dirty) { ' (working tree had uncommitted changes)' })"
     "rustc: $rustc"
     "cargo profile: $CargoProfile$(if ($SkipBuild) { ' (existing build; path remapping not verified)' } elseif ($NoRemapPaths) { ' (paths not remapped)' } else { ' (--remap-path-prefix: CARGO_HOME, repo)' })"
     "built (UTC): $([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))"
     "fastpdf.exe sha256: $exeHash"
 ) | Set-Content (Join-Path $Stage 'BUILDINFO.txt') -Encoding utf8
+
+# An empty folder would become a stray directory entry in the zip (an MSIX drops it silently).
+$emptyDirs = @(Get-ChildItem -LiteralPath $Stage -Recurse -Directory -Force |
+    Where-Object { -not (Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1) } |
+    ForEach-Object { $_.FullName.Substring($Stage.Length + 1) })
+if ($emptyDirs) { throw "empty folder(s) in the staging folder: $($emptyDirs -join ', ')" }
+
+if ($StageOnly) {
+    Step "staged $Stage"
+    return [pscustomobject]@{
+        version = $Version; name = $Name; stage = $Stage; exe = $Exe; exe_sha256 = $exeHash
+        third_party_files = $bundleFiles
+    }
+}
 
 # ------------------------------------------------------------------ zip + hash
 $Zip = Join-Path $OutDir "$Name.zip"
@@ -195,7 +220,11 @@ $expected = @("$Name/fastpdf.exe", "$Name/README.md", "$Name/THIRD_PARTY_LICENSE
     @($bundleFiles | ForEach-Object { "$Name/licenses/third-party/$_" })
 $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
 try {
-    $entries = @($archive.Entries | Where-Object { $_.Length -gt 0 -or -not $_.FullName.EndsWith('/') } | ForEach-Object { $_.FullName.Replace('\', '/') })
+    $names = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
+    # CreateFromDirectory writes directory entries only for empty folders: none are expected.
+    $dirEntries = @($names | Where-Object { $_.EndsWith('/') })
+    if ($dirEntries) { throw "unexpected directory entries in the zip: $($dirEntries -join ', ')" }
+    $entries = $names
     $missing = @($expected | Where-Object { $entries -notcontains $_ })
     $extra = @($entries | Where-Object { $expected -notcontains $_ })
     if ($missing -or $extra) { throw "zip mismatch. missing: $($missing -join ', ') extra: $($extra -join ', ')" }
@@ -222,6 +251,9 @@ if (-not $NoSmokeTest) {
             $psi = New-Object System.Diagnostics.ProcessStartInfo $SmokeExe
             foreach ($a in $cliArgs) { $psi.ArgumentList.Add($a) }
             $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+            # Never read or write the user's settings / recent files, even for CLI-only runs.
+            $psi.Environment['FASTPDF_SETTINGS_FILE'] = ''
+            $psi.Environment['FASTPDF_RECENT_FILE'] = ''
             $p = [System.Diagnostics.Process]::Start($psi)
             $out = $p.StandardOutput.ReadToEndAsync(); $err = $p.StandardError.ReadToEndAsync()
             if (-not $p.WaitForExit(15000)) { $p.Kill($true); throw "fastpdf $cliArgs did not exit" }

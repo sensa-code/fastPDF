@@ -119,11 +119,34 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
 `package.ps1` 會自動檢查：
 - VERSIONINFO 與 Cargo 版本一致，且沒有 `CompanyName`；
 - zip 的 entry 清單完全符合預期，沒有多也沒有少。`licenses/third-party/` 底下以 bundle 步驟回報的檔案清單為準，逐一比對；
+- staging 不可有空資料夾，zip 也不可有任何目錄 entry：
+  - `licenses/` 只複製最上層的檔案。`licenses/overrides/` 這類子資料夾是 bundle 步驟的輸入，內容已經收進 `licenses/third-party/`；
+  - 之前用 `licenses\*` 複製時，會留下一個空的 `licenses/overrides/`，在 zip 中成為多餘的目錄 entry。舊的檢查會把目錄 entry 濾掉，所以沒有發現；
 - zip 內 exe 的 SHA-256 等於 build 產物。
+
+**MSIX（未簽章，ADR 0010）**：
+
+```powershell
+pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> makeappx pack -> unpack round trip
+```
+
+- 輸出：`dist/FastPDF-X.Y.Z.0-x64.msix` 與 `.sha256`。工作目錄 `dist/.msix-work/` 在成功後會刪除（`-KeepWork` 可保留）。
+- 共用部分：`package.ps1 -StageOnly -Flavor msix` 只做 build、檢查與 staging，回傳 staging 資料夾。所以 MSIX 和 zip 的 exe、授權檔、`BUILDINFO.txt` 完全相同，`BUILDINFO.txt` 只多標示 `msix`。
+- layout 由三部分組成：
+  - staging 的內容；
+  - `packaging/msix/Assets/*.png`（由 `tools/icon/make_icon.py` 產生）；
+  - 從 `packaging/msix/AppxManifest.xml` 填好的 manifest：四段版本、Publisher 佔位值，見 `packaging/msix/README.md`。
+- `makeappx pack` 使用 Windows SDK 內建的工具，並做完整的語意驗證（不加 `/nv`）。
+- `makeappx unpack` round-trip 的檢查項目：
+  - 每個檔案都逐位元相同；
+  - 額外檔案只能是 `AppxBlockMap.xml`（`unpack` 不會寫出 `[Content_Types].xml`）；
+  - 不能有 `AppxSignature.p7x`；
+  - manifest 的 identity、full-trust 進入點、`.pdf` 關聯、`fastpdf.exe` 別名、唯一的 capability `runFullTrust`。
+- 腳本**不簽章、不安裝、不建立憑證**。Cargo 的 pre-release 版本必須給 `-Revision N`。
 
 ### 1.7 Smoke test
 
-`package.ps1` 會先把 zip 解壓到 `dist/.smoke-*`，再執行：
+`package.ps1` 會先把 zip 解壓到 `dist/.smoke-*`，再執行以下步驟。每一次啟動，包括只走 CLI 的情況，都會把 `FASTPDF_SETTINGS_FILE` 與 `FASTPDF_RECENT_FILE` 設為空值，所以不會建立 `%APPDATA%\FastPDF\`：
 
 1. `fastpdf --version`：輸出必須是 `fastpdf X.Y.Z`；
 2. `fastpdf --help`：第一行必須是 `usage: fastpdf ...`；
@@ -139,6 +162,8 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
 - [ ] 列印對話框、深色與夜間模式、設定的保存與還原、關閉後沒有殘留 process。
 - [ ] Explorer 顯示的 exe 圖示，以及「內容 → 詳細資料」中的產品名稱與版本。
 - [ ] Windows Defender 掃描 zip 與 exe 沒有警告。
+
+**MSIX 沒有自動 smoke test**：未簽章的套件無法安裝，而 smoke test 需要安裝。`package-msix.ps1` 只做靜態的 round-trip 驗證。owner 簽章之後，要在乾淨的 VM 依 §4 的〈簽章後的驗證〉逐項確認。
 
 ### 1.8 SHA-256 與發佈
 
@@ -168,6 +193,11 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
   - 加上 `--dry-run` 只印出 `Plan::to_reg_file()` 的 `.reg` 內容供檢視，不寫入 registry。輸出是 UTF-8；含非 ASCII 字元的 `.reg` 要給 regedit 匯入時，必須另存成 UTF-16 LE（含 BOM）；
   - 兩者不能和檔案或 `--engine` 一起使用。release build 是 GUI subsystem，在 PowerShell 中要等它結束並看到輸出，請用 `fastpdf --register-file-types | Out-Host`；
   - 開發機上只執行過 `--dry-run`，實際寫入請依下方〈驗證方式〉在 Sandbox 或 VM 中確認。
+- **以 MSIX 安裝時**（ADR 0010）：
+  - 檔案關聯改由套件的 manifest 宣告（`uap:FileTypeAssociation`），安裝與解除安裝時由 Windows 處理；
+  - `file_types.rs` 以 `GetCurrentPackageFullName` 偵測 package identity。有 identity 時，`--register-file-types`、`--unregister-file-types`（含 `--dry-run`）只印出「關聯由套件的 manifest 管理」以及「預設應用程式」設定頁的位置，然後 exit 0。**不建立計畫，也不碰 registry**；
+  - 單元測試確認：開發機上的測試 process 沒有 identity；有 identity 時兩個指令都回傳 0，而且在建立計畫之前就結束；
+  - 在實際安裝的 MSIX 中的輸出，要等 owner 簽章後才能驗證（§4）。
 - **範圍**：全部寫在 `HKEY_CURRENT_USER`，不需要系統管理員權限，也不影響其他使用者。
 
 | Key（在 `HKCU` 之下） | 作用 |
@@ -189,7 +219,7 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
 - **驗證方式**：
   - 先在 Windows Sandbox 或拋棄式 VM 執行註冊，確認「開啟檔案」與「預設應用程式」中都看得到 FastPDF，再執行反註冊，確認相關 key 已清乾淨；
   - **不要在開發機上直接測試**；
-  - 如果改用 MSIX 發佈（§4），檔案關聯改由 manifest 宣告，不需要這個 crate。
+  - MSIX 版不使用這個 crate，見上方〈以 MSIX 安裝時〉。zip 版仍然需要它。
 
 ---
 
@@ -217,22 +247,57 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
 
 ---
 
-## 4. 安裝程式選項分析（尚未建立）
+## 4. 安裝程式選項（決策見 ADR 0010）
 
 | 形態 | 優點 | 缺點／風險 | 適合 |
 |---|---|---|---|
 | **可攜版 zip**（現狀） | 不需要安裝、不需要 admin、預設不寫 registry；檔案關聯是可選的 per-user 註冊（§2） | 沒有開始功能表項目與解除安裝項目；更新要手動 | V0.1 beta、進階使用者 |
-| **MSIX** | 安裝與移除都很乾淨；per-user；不需要 admin；檔案關聯在 `AppxManifest` 宣告（`uap:FileTypeAssociation`），會自動出現在預設應用程式中；可以上 Store | **必須簽章**（或走 Store）；packaged app 對 `%APPDATA%` 的寫入會被重新導向到套件的私有位置（FastPDF 的 settings 與 recent 要驗證）；package identity 對啟動時間的影響要用 B-8 量測；`.appinstaller` 的自動更新屬於 spec §9 禁止的 auto-update，不要使用 | V1.0 一般消費者 |
+| **MSIX**（未簽章版已可產生，見下方） | 安裝與移除都很乾淨；per-user；不需要 admin；檔案關聯在 `AppxManifest` 宣告（`uap:FileTypeAssociation`），會自動出現在預設應用程式中；可以上 Store | **必須簽章**（或走 Store）；packaged app 對 `%APPDATA%` 的寫入會被重新導向到套件的私有位置（FastPDF 的 settings 與 recent 要驗證）；package identity 對啟動時間的影響要用 B-8 量測；`.appinstaller` 的自動更新屬於 spec §9 禁止的 auto-update，不要使用 | V1.0 一般消費者 |
 | **MSI（WiX Toolset）** | 企業部署（Intune、GPO、SCCM）的標準；可以安裝到 Program Files（per-machine）；解除安裝行為一致 | WiX 的學習成本、per-user 與 per-machine 的設計複雜度、版本與 UpgradeCode 的紀律；**WiX 新版本對有營收的組織可能有維護費（Open Source Maintenance Fee）要求，需要確認**；同樣需要簽章 | 有企業客戶需求時 |
 | Inno Setup／NSIS（EXE 安裝程式） | 簡單、免費、per-user 容易 | 企業環境比較不歡迎 EXE 安裝程式；NSIS 偶爾會被防毒軟體誤判 | 不建議作為主要形態 |
 | winget | 只是發佈管道（manifest 指向 zip、MSI 或 MSIX 的 URL 加上 SHA-256），支援 portable 類型 | 需要公開的下載 URL，並要對 `winget-pkgs` 開 PR（屬於對外動作，由 owner 決定） | V0.1 之後的低成本管道 |
 
-本機的 Windows SDK 已經包含 `makeappx.exe` 與 `signtool.exe`，但本次**沒有建立任何套件或憑證**。
-
-**建議**：
+**決策（ADR 0010）**：
 1. V0.1：可攜版 zip 加 SHA-256，檔案關聯由 app 提供 opt-in 的 per-user 註冊。
-2. V1.0：MSIX（簽章後 sideload 或上 Store）作為主要安裝形態；MSI 只在企業需求明確時才做。
-3. 導入前寫 ADR（發佈形態、簽章、更新政策），並用 B-8 比較「zip 版 vs MSIX 版」的 cold 與 warm 啟動時間。
+2. V1.0：MSIX 作為主要安裝形態，由 owner 簽章；是否上 Store 由 owner 決定。zip 版繼續提供。
+3. MSI 只在企業需求明確時才做，另寫 ADR。
+4. 不做 auto-update，也不使用 `.appinstaller`。
+5. winget 等 owner 決定。
+
+**MSIX 的實作現況**（未簽章；`tools/package-msix.ps1`，詳見 §1.6）：
+
+- manifest 樣板 `packaging/msix/AppxManifest.xml`：
+  - `Windows.FullTrustApplication` 加上 `rescap:runFullTrust`；
+  - `.pdf` 的 `uap:FileTypeAssociation`；
+  - `uap5:AppExecutionAlias` 提供 `fastpdf.exe`；
+  - `TargetDeviceFamily` 為 Windows.Desktop 10.0.19041.0 以上；
+  - 不宣告網路 capability。
+- 版本：Cargo 的 `X.Y.Z` 對應 MSIX 的 `X.Y.Z.0`。Publisher 是明顯的佔位值，簽章時必須改成憑證 subject。
+- 2026-10-04 實測（HEAD `8270b3e` 的乾淨匯出加上本次修改；SDK 10.0.26100.0 的 `makeappx`）：
+
+| 項目 | 結果 |
+|---|---|
+| `makeappx pack` | `Package creation succeeded.`，627 個檔案（626 個 payload 加上 `AppxManifest.xml`），完整語意驗證，沒有警告 |
+| `makeappx unpack` round-trip | 627 個檔案逐位元相同；`AppxBlockMap.xml` 列出 627 個檔案；沒有 `AppxSignature.p7x`；`Get-AuthenticodeSignature` 為 `NotSigned`；manifest 的 identity、進入點、`.pdf`、別名、capability 檢查全部通過 |
+| 套件大小 | `FastPDF-0.0.1.0-x64.msix` 8,580,747 bytes（8.18 MB）。同一個 exe（16,732,672 bytes）的 zip 為 8.2 MB |
+| 時間 | 從 staging 到 round-trip 完成約 7 秒（不含 dist build） |
+| 加入 `licenses/overrides/` 後（授權 agent 的檔案，當時尚未 commit） | zip 為 625 個 entry（`licenses/third-party/` 佔 620 個），沒有目錄 entry；MSIX 為 629 個檔案（628 個 payload 加上 manifest），round-trip 通過，8.19 MB |
+
+**簽章後的驗證**（owner 執行，必須在**乾淨的 VM** 上，不要在開發機上做）：
+1. 以 `-Publisher '<憑證 subject>'` 重新打包，`signtool sign /fd SHA256 /tr <timestamp URL> /td SHA256`，然後 `signtool verify /pa /v`。
+2. 安裝與啟動：
+   - 開始功能表與工作列的圖示；
+   - 從 Explorer 開啟 `.pdf`，「開啟檔案」與「預設應用程式」中有 FastPDF；
+   - 命令列可以使用 `fastpdf.exe` 別名；
+   - `fastpdf --register-file-types` 印出「由套件的 manifest 管理」。
+3. **`%APPDATA%` 重新導向**：
+   - 確認 settings 與 recent 的實際位置：套件化的 full-trust app 寫入 `%APPDATA%\FastPDF\` 時，會被導到套件的私有位置；
+   - 確認和 zip 版是否共用設定；
+   - 確認解除安裝後是否殘留；
+   - 確認 `FASTPDF_SETTINGS_FILE`、`FASTPDF_RECENT_FILE` 的行為。
+4. 解除安裝：檔案關聯、開始功能表項目、套件資料都要移除乾淨。
+5. **B-8**：經由 `fastpdf.exe` 別名啟動套件版，和 zip 版比較冷啟動與熱啟動、idle RAM（spec §29）。在能安裝之前**不能做**這項比較。
+6. SmartScreen 與 Defender 的行為，以及高 DPI 下的 tile 與工作列圖示（目前只有 scale-100，沒有 `resources.pri`）。
 
 ---
 

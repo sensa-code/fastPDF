@@ -8,7 +8,9 @@
 # ///
 """Generate the FastPDF application icon (spec §33, Explorer integration).
 
-    uv run tools/icon/make_icon.py [--out crates/fastpdf-app/assets/fastpdf.ico] [--preview preview.png]
+    uv run tools/icon/make_icon.py [--out crates/fastpdf-app/assets/fastpdf.ico]
+                                   [--msix-assets packaging/msix/Assets | --no-msix-assets]
+                                   [--preview preview.png]
 
 Original artwork drawn here from simple polygons (no third-party icon assets):
 a white page with a folded corner and a lightning bolt ("fast").
@@ -16,7 +18,9 @@ a white page with a folded corner and a lightning bolt ("fast").
 Each size is rendered separately at 8x supersampling and box-filtered down, so
 small sizes stay crisp. The .ico container is written by hand: 16-64 px as
 32-bit BMP (DIB + AND mask, the most compatible form) and 256 px as PNG.
-Output is deterministic for a given Pillow version.
+The same artwork is written as the MSIX logos that packaging/msix/AppxManifest.xml
+references (scale-100 base images, ADR 0010). Output is deterministic for a
+given Pillow version.
 """
 
 from __future__ import annotations
@@ -50,8 +54,16 @@ BOLT = [(116, 46), (178, 46), (148, 112), (192, 112), (100, 236), (124, 140), (8
 LINES = [(62, 92, 112, 104), (62, 124, 104, 136), (62, 172, 92, 184), (150, 200, 190, 212)]
 
 
-# Page outline width in output pixels; 256 px uses 9 design units.
-EDGE_PX = {16: 1, 24: 1, 32: 1, 48: 2, 64: 2}
+# Page outline width in output pixels; other sizes use 9 design units.
+EDGE_PX = {16: 1, 24: 1, 32: 1, 44: 2, 48: 2, 50: 2, 64: 2, 104: 4}
+
+# MSIX logos: file name -> (image px, icon px). The icon is centred on a
+# transparent canvas; tiles get padding, list/taskbar sizes are full-bleed.
+MSIX_LOGOS = {
+    "StoreLogo.png": (50, 50),
+    "Square44x44Logo.png": (44, 44),
+    "Square150x150Logo.png": (150, 104),
+}
 
 
 def inset(poly: list[tuple[float, float]], t: float) -> list[tuple[float, float]]:
@@ -150,6 +162,14 @@ def png_entry(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
+def msix_logo(size: int, icon: int) -> Image.Image:
+    """The icon rendered at `icon` px, centred on a transparent `size` px canvas."""
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    offset = (size - icon) // 2
+    canvas.alpha_composite(render(icon), (offset, offset))
+    return canvas
+
+
 def build_ico(images: dict[int, Image.Image]) -> bytes:
     entries = []
     for size in SIZES:
@@ -170,6 +190,9 @@ def main() -> int:
     root = Path(__file__).resolve().parents[2]
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", type=Path, default=root / "crates/fastpdf-app/assets/fastpdf.ico")
+    ap.add_argument("--msix-assets", type=Path, default=root / "packaging/msix/Assets",
+                    help="directory for the MSIX logo PNGs")
+    ap.add_argument("--no-msix-assets", action="store_true", help="write only the .ico")
     ap.add_argument("--preview", type=Path, help="also write a PNG contact sheet (not committed)")
     args = ap.parse_args()
 
@@ -192,6 +215,14 @@ def main() -> int:
 
     digest = hashlib.sha256(ico).hexdigest()
     print(f"wrote {args.out} ({len(ico)} bytes, sizes {', '.join(map(str, SIZES))}) sha256 {digest}")
+
+    if not args.no_msix_assets:
+        args.msix_assets.mkdir(parents=True, exist_ok=True)
+        for name, (size, icon) in MSIX_LOGOS.items():
+            data = png_entry(msix_logo(size, icon))
+            (args.msix_assets / name).write_bytes(data)
+            print(f"wrote {args.msix_assets / name} ({size}x{size}, {len(data)} bytes) "
+                  f"sha256 {hashlib.sha256(data).hexdigest()}")
     return 0
 
 
