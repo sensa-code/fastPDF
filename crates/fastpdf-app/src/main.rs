@@ -7,7 +7,9 @@
 //! Environment: `FASTPDF_LOG` (log filter, spec §31), `FASTPDF_ENGINE`
 //! (engine name), `FASTPDF_BENCH=1` (start-up milestones as JSON lines on
 //! stdout), `FASTPDF_DEV_OVERLAY=1` (development overlay, spec §46),
-//! `FASTPDF_UPLOAD_BUDGET_MB` (per-frame texture upload budget; tuning).
+//! `FASTPDF_UPLOAD_BUDGET_MB` (per-frame texture upload budget; tuning),
+//! `FASTPDF_RECENT_FILE` (recent-files list location; empty disables it, so
+//! benchmarks and tests do not touch the user's list).
 //!
 //! Start-up order (spec §10): the command-line document starts opening on a
 //! background thread first thing in `main`, so engine work overlaps GPUI's
@@ -81,6 +83,8 @@ struct Env {
     bench: bool,
     dev_overlay: bool,
     upload_budget_mb: Option<usize>,
+    /// `Some(None)`: disabled; `Some(Some(path))`: custom location.
+    recent_file: Option<Option<PathBuf>>,
 }
 
 impl Env {
@@ -93,6 +97,8 @@ impl Env {
             bench: flag("FASTPDF_BENCH"),
             dev_overlay: flag("FASTPDF_DEV_OVERLAY"),
             upload_budget_mb: var("FASTPDF_UPLOAD_BUDGET_MB").and_then(|v| v.trim().parse().ok()),
+            recent_file: std::env::var_os("FASTPDF_RECENT_FILE")
+                .map(|v| (!v.is_empty()).then(|| PathBuf::from(v))),
         }
     }
 }
@@ -115,7 +121,7 @@ fn main() {
     };
     if args.help {
         println!(
-            "{USAGE}\n\nengines: {}\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY",
+            "{USAGE}\n\nengines: {}\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE",
             engines::names().join(", ")
         );
         return;
@@ -150,6 +156,9 @@ fn main() {
     let mut options = ReaderOptions::new(engine);
     options.dev_overlay = env.dev_overlay;
     options.bench = env.bench.then(|| clock.hook());
+    if let Some(recent) = env.recent_file {
+        options.recent_files = recent;
+    }
     if let Some(mb) = env.upload_budget_mb {
         options.upload_budget = mb.max(1).saturating_mul(1024 * 1024);
     }

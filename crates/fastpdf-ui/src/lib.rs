@@ -23,12 +23,19 @@
 //!   them. GPUI never frees atlas space on its own.
 //! * Nothing runs on a timer: frames happen on input, on a worker wake-up,
 //!   or while a bounded amount of texture upload work is pending.
+//! * Find (Ctrl+F), text selection and the sidebar (outline, thumbnails)
+//!   start their background work only when used: text is extracted through
+//!   one byte-budgeted `TextCache`, thumbnails render only while visible.
 
 mod actions;
 mod bench;
 mod document;
+mod find;
 mod overlay;
 mod reader;
+mod select;
+mod sidebar;
+mod text_input;
 mod textures;
 mod theme;
 mod toolbar;

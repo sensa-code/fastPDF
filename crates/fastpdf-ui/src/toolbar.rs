@@ -33,7 +33,7 @@ pub(crate) fn render(
     };
 
     use ReaderCommand as C;
-    let mut bar = div()
+    div()
         .flex()
         .flex_row()
         .flex_none()
@@ -44,8 +44,15 @@ pub(crate) fn render(
         .bg(theme.toolbar_bg)
         .border_b_1()
         .border_color(theme.toolbar_border)
-        .text_size(px(14.0));
-    bar = bar
+        .text_size(px(14.0))
+        .child(toggle(
+            "sidebar",
+            "Sidebar",
+            C::ToggleSidebar,
+            view.sidebar.open,
+            &theme,
+            cx,
+        ))
         .child(button("open", "Open", C::OpenFile, true, &theme, cx))
         .child(separator(&theme))
         .child(button(
@@ -102,6 +109,8 @@ pub(crate) fn render(
             &theme,
             cx,
         ))
+        .child(separator(&theme))
+        .child(toggle("find", "Find", C::Find, view.find.open, &theme, cx))
         .child(div().flex_1())
         .child(
             div()
@@ -112,8 +121,7 @@ pub(crate) fn render(
                 .whitespace_nowrap()
                 .max_w(px(360.0))
                 .child(title),
-        );
-    bar
+        )
 }
 
 fn separator(theme: &Theme) -> Div {
@@ -129,6 +137,40 @@ fn label(text: String, min_width: f32) -> Div {
         .child(text)
 }
 
+/// A small flat button; `selected` shows it pressed (toggles, tabs).
+pub(crate) fn styled_button(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    selected: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let base = div()
+        .id(id.into())
+        .flex()
+        .items_center()
+        .justify_center()
+        .h(px(28.0))
+        .min_w(px(28.0))
+        .px_2()
+        .rounded(px(4.0))
+        .whitespace_nowrap()
+        .child(label.into());
+    if !enabled {
+        return base.text_color(theme.text_muted).opacity(0.5);
+    }
+    let hover = theme.button_hover;
+    let active = theme.button_active;
+    let base = if selected {
+        base.bg(theme.button_active)
+    } else {
+        base
+    };
+    base.cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .active(move |style| style.bg(active))
+}
+
 /// A toolbar button that runs `command`, like its keyboard shortcut.
 fn button(
     id: &'static str,
@@ -138,26 +180,27 @@ fn button(
     theme: &Theme,
     cx: &mut Context<'_, ReaderView>,
 ) -> Stateful<Div> {
-    let base = div()
-        .id(SharedString::new_static(id))
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(28.0))
-        .min_w(px(28.0))
-        .px_2()
-        .rounded(px(4.0))
-        .whitespace_nowrap()
-        .child(label);
+    let base = styled_button(id, label, enabled, false, theme);
     if !enabled {
-        return base.text_color(theme.text_muted).opacity(0.5);
+        return base;
     }
-    let hover = theme.button_hover;
-    let active = theme.button_active;
-    base.cursor_pointer()
-        .hover(move |style| style.bg(hover))
-        .active(move |style| style.bg(active))
-        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+    base.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+        this.run_command(command, window, cx);
+    }))
+}
+
+/// A button showing whether its panel (sidebar, find bar) is open.
+fn toggle(
+    id: &'static str,
+    label: &'static str,
+    command: ReaderCommand,
+    on: bool,
+    theme: &Theme,
+    cx: &mut Context<'_, ReaderView>,
+) -> Stateful<Div> {
+    styled_button(id, label, true, on, theme).on_click(cx.listener(
+        move |this, _: &ClickEvent, window, cx| {
             this.run_command(command, window, cx);
-        }))
+        },
+    ))
 }

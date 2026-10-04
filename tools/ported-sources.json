@@ -1,0 +1,10 @@
+[
+  {
+    "path": "crates/fastpdf-ui/src/text_input.rs",
+    "source": "zed-industries/zed crates/gpui/examples/input.rs",
+    "revision": "a84689073d296dfd39987bc7dd478e43ef76d83a",
+    "license": "Apache-2.0",
+    "copyright": "Zed Industries, Inc.",
+    "changes": "Reduced to a single-line search field; byte/UTF-16 offset conversion; per-char movement."
+  }
+]

@@ -77,12 +77,14 @@ impl DevOverlay {
         )];
         if let Some(s) = self.session {
             lines.push(format!(
-                "tiles {:>4} {:>7}  hit {} miss {} evict {}",
+                "tiles {:>4} {:>7}  hit {} miss {} evict {}  thumbs {} {}",
                 s.tile_entries,
                 mib(s.tile_bytes as u64),
                 s.tile_hits,
                 s.tile_misses,
-                s.tile_evictions
+                s.tile_evictions,
+                s.thumbnail_entries,
+                mib(s.thumbnail_bytes as u64)
             ));
             let q = s.scheduler;
             lines.push(format!(

@@ -1,17 +1,20 @@
 //! Painting the document area from a [`DocumentSession`] frame.
 //!
 //! Prepaint keeps the session's viewport in sync with the element's bounds
-//! and the window scale (resize, DPI change) and takes the frame; paint
-//! releases retired textures, then draws page backgrounds, stand-in tiles,
-//! exact tiles (within the upload budget) and page errors.
+//! and the window scale (resize, DPI change), takes the frame (with the
+//! texture upload budget as its `ready` predicate) and maps search hits and
+//! the text selection to view rectangles; paint draws page backgrounds,
+//! stand-in tiles, exact tiles, highlights and page errors.
+//!
+//! [`DocumentSession`]: fastpdf_core::DocumentSession
 
 use std::time::Instant;
 
 use fastpdf_core::Frame;
 use fastpdf_engine_api::Rgba8;
 use gpui::{
-    App, Bounds, ContentMask, Pixels, Rgba, SharedString, TextAlign, TextRun, Window, fill, point,
-    px, size,
+    App, Bounds, ContentMask, DispatchPhase, Entity, MouseMoveEvent, MouseUpEvent, Pixels, Rgba,
+    SharedString, TextAlign, TextRun, Window, fill, point, px, size,
 };
 
 use crate::bench::BenchEvent;
@@ -21,6 +24,20 @@ use crate::textures::TileImage;
 /// Longest page error message painted on a page.
 const MAX_ERROR_CHARS: usize = 160;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HighlightKind {
+    SearchHit,
+    ActiveHit,
+    Selection,
+}
+
+/// What the canvas paints in one frame.
+pub(crate) struct ViewportFrame {
+    frame: Frame<TileImage>,
+    /// View rectangles (logical pixels, relative to the viewport).
+    highlights: Vec<([f32; 4], HighlightKind)>,
+}
+
 fn view_bounds(origin: gpui::Point<Pixels>, rect: [f32; 4]) -> Bounds<Pixels> {
     Bounds::new(
         point(origin.x + px(rect[0]), origin.y + px(rect[1])),
@@ -28,7 +45,7 @@ fn view_bounds(origin: gpui::Point<Pixels>, rect: [f32; 4]) -> Bounds<Pixels> {
     )
 }
 
-fn color(c: Rgba8) -> Rgba {
+pub(crate) fn color(c: Rgba8) -> Rgba {
     Rgba {
         r: f32::from(c.r) / 255.0,
         g: f32::from(c.g) / 255.0,
@@ -43,12 +60,16 @@ impl ReaderView {
         &mut self,
         bounds: Bounds<Pixels>,
         window: &mut Window,
-    ) -> Option<Frame<TileImage>> {
+    ) -> Option<ViewportFrame> {
         self.viewport_bounds = Some(bounds);
+        // Releases textures retired since the last frame before anything
+        // new is uploaded, and resets the upload budget.
+        self.textures.begin_frame(self.frame_seq, window);
         let width = f32::from(bounds.size.width);
         let height = f32::from(bounds.size.height);
         let scale = window.scale_factor();
         let retire = self.textures.retire_queue();
+        let textures = &mut self.textures;
         let DocState::Open(open) = &mut self.doc else {
             return None;
         };
@@ -66,28 +87,47 @@ impl ReaderView {
                 window.request_animation_frame();
             }
         }
-        retire.set_in_frame(true);
-        let frame = session.frame();
-        retire.set_in_frame(false);
-        Some(frame)
+        // Tiles over this frame's upload budget come back as stand-ins.
+        let frame = retire.in_frame(|| session.frame_with(|image| textures.reserve(image)));
+
+        let mut highlights = Vec::new();
+        for page in frame.pages.iter().map(|p| p.page) {
+            for (rect, active) in self.find.hits.on_page(page) {
+                if let Some(r) = session.page_to_view(page, rect) {
+                    let kind = if active {
+                        HighlightKind::ActiveHit
+                    } else {
+                        HighlightKind::SearchHit
+                    };
+                    highlights.push((r, kind));
+                }
+            }
+            for rect in self.selection.rects_on(page) {
+                if let Some(r) = session.page_to_view(page, rect) {
+                    highlights.push((r, HighlightKind::Selection));
+                }
+            }
+        }
+        Some(ViewportFrame { frame, highlights })
     }
 
     /// Canvas paint.
     pub(crate) fn paint_viewport(
         &mut self,
         bounds: Bounds<Pixels>,
-        frame: Option<Frame<TileImage>>,
+        state: Option<ViewportFrame>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        // Release evicted textures before anything new is uploaded.
-        self.textures.begin_frame(window);
         let paper = color(self.options.session.paper);
         let theme = self.theme;
-        let mut deferred = false;
         let mut pending = 0;
-        if let Some(frame) = &frame {
+        let mut deferred = 0;
+        let mut shows_pages = false;
+        if let Some(ViewportFrame { frame, highlights }) = &state {
             pending = frame.pending;
+            deferred = frame.deferred;
+            shows_pages = !frame.pages.is_empty();
             let origin = bounds.origin;
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
                 for page in &frame.pages {
@@ -95,12 +135,20 @@ impl ReaderView {
                     window.paint_quad(fill(rect.dilate(px(1.0)), theme.page_border));
                     window.paint_quad(fill(rect, paper));
                 }
-                // Stand-ins come first in the frame, exact tiles on top.
+                // Stand-ins come first in the frame, exact tiles on top;
+                // only the inner part of each tile is shown (gutters).
                 for tile in &frame.tiles {
                     let rect = view_bounds(origin, tile.rect);
-                    if !self.textures.paint(&tile.image, rect, window) {
-                        deferred = true;
-                    }
+                    self.textures
+                        .paint(&tile.image, rect, Some(tile.src), window);
+                }
+                for (rect, kind) in highlights {
+                    let color = match kind {
+                        HighlightKind::SearchHit => theme.search_hit,
+                        HighlightKind::ActiveHit => theme.search_active,
+                        HighlightKind::Selection => theme.selection,
+                    };
+                    window.paint_quad(fill(view_bounds(origin, *rect), color));
                 }
                 for page in &frame.pages {
                     if let Some(error) = &page.error {
@@ -117,11 +165,12 @@ impl ReaderView {
                 }
             });
         }
-        if deferred {
-            // Upload budget reached: continue next frame.
+        // Over budget this frame, or evictions made during it still hold
+        // GPU memory: one more frame finishes the job.
+        if deferred > 0 || self.textures.has_retired() {
             window.request_animation_frame();
         }
-        self.after_paint(frame.as_ref(), pending, deferred, window);
+        self.after_paint(shows_pages, pending, deferred, window);
         // Last, so it sits on top of the pages.
         self.overlay.paint(bounds, &theme, window, cx);
     }
@@ -129,9 +178,9 @@ impl ReaderView {
     /// Bench milestones and overlay statistics.
     fn after_paint(
         &mut self,
-        frame: Option<&Frame<TileImage>>,
+        shows_pages: bool,
         pending: usize,
-        deferred: bool,
+        deferred: usize,
         window: &mut Window,
     ) {
         let now = Instant::now();
@@ -141,12 +190,11 @@ impl ReaderView {
                 window.on_next_frame(move |_, _| hook(BenchEvent::FirstPaint));
             }
         }
-        let shows_pages = frame.is_some_and(|f| !f.pages.is_empty());
         if let DocState::Open(open) = &mut self.doc
             && !open.exact_reported
             && shows_pages
             && pending == 0
-            && !deferred
+            && deferred == 0
         {
             open.exact_reported = true;
             let since_open = open.opened_at.elapsed();
@@ -166,6 +214,24 @@ impl ReaderView {
         self.overlay
             .record_frame(now, frame_ms, session_stats, texture_stats, pending);
     }
+}
+
+/// While a selection drag is active, follows the mouse everywhere in the
+/// window (not only over the document area) until the button is released.
+/// Listeners registered during paint live for one frame; the next paint
+/// registers them again while the drag lasts.
+pub(crate) fn track_selection_drag(view: Entity<ReaderView>, window: &mut Window) {
+    let move_view = view.clone();
+    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+        if phase == DispatchPhase::Bubble {
+            move_view.update(cx, |this, cx| this.on_selection_drag(event.position, cx));
+        }
+    });
+    window.on_mouse_event(move |_: &MouseUpEvent, phase, _window, cx| {
+        if phase == DispatchPhase::Bubble {
+            view.update(cx, |this, cx| this.on_selection_end(cx));
+        }
+    });
 }
 
 fn paint_page_error(

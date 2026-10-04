@@ -17,7 +17,11 @@ None — every shipped crate has a permissive license option.
 
 ## Ported source
 
-None yet.
+| File | Source | Revision | License | Copyright | Changes |
+|---|---|---|---|---|---|
+| `crates/fastpdf-ui/src/text_input.rs` | zed-industries/zed crates/gpui/examples/input.rs | `a84689073d29` | Apache-2.0 | Zed Industries, Inc. | Reduced to a single-line search field; byte/UTF-16 offset conversion; per-char movement. |
+
+License texts: `licenses/`.
 
 ## All shipped crates (460)
 

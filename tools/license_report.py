@@ -90,6 +90,25 @@ def classify(license_expr: str | None) -> tuple[bool, str]:
     return True, "not in the permissive allowlist"
 
 
+def ported_lines() -> list[str]:
+    """Source files copied or adapted from other projects (tools/ported-sources.json)."""
+    path = ROOT / "tools" / "ported-sources.json"
+    entries = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    if not entries:
+        return ["None."]
+    lines = [
+        "| File | Source | Revision | License | Copyright | Changes |",
+        "|---|---|---|---|---|---|",
+    ]
+    for e in entries:
+        lines.append(
+            f"| `{e['path']}` | {e['source']} | `{e['revision'][:12]}` | {e['license']} "
+            f"| {e['copyright']} | {e['changes']} |"
+        )
+    lines += ["", "License texts: `licenses/`."]
+    return lines
+
+
 def render(packages: list[dict], args: argparse.Namespace) -> tuple[str, int]:
     review = []
     rows = []
@@ -128,7 +147,7 @@ def render(packages: list[dict], args: argparse.Namespace) -> tuple[str, int]:
         "",
         "## Ported source",
         "",
-        "None yet.",
+        *ported_lines(),
         "",
         f"## All shipped crates ({len(packages)})",
         "",

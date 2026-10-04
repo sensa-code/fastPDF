@@ -1713,6 +1713,7 @@ dependencies = [
  "fastpdf-core",
  "fastpdf-engine-api",
  "fastpdf-render",
+ "fastpdf-search",
  "futures",
  "gpui",
  "image",

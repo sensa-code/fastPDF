@@ -82,27 +82,44 @@ fn action_for(command: ReaderCommand) -> Box<dyn Action> {
     }
 }
 
-/// Registers every binding of the default keymap with GPUI. Invalid
-/// keystrokes are logged and skipped rather than panicking at startup.
+/// Builds a binding; invalid keystrokes are logged and skipped rather than
+/// panicking at startup.
+fn binding(keystroke: &str, action: Box<dyn Action>, context: &str) -> Option<KeyBinding> {
+    let predicate = KeyBindingContextPredicate::parse(context).ok().map(Rc::new);
+    KeyBinding::load(
+        keystroke,
+        action,
+        predicate,
+        false,
+        None,
+        &DummyKeyboardMapper,
+    )
+    .map_err(|e| log::warn!("skipping key binding {keystroke:?}: {e}"))
+    .ok()
+}
+
+/// Reader commands that the find field answers to as well (search-box
+/// convention). The reader keymap itself stays in `DEFAULT_BINDINGS`.
+const FIND_FIELD_COMMANDS: &[(&str, ReaderCommand)] = &[
+    ("enter", ReaderCommand::FindNext),
+    ("shift-enter", ReaderCommand::FindPrevious),
+];
+
+/// Registers every binding of the default keymap with GPUI, plus the text
+/// field's editing keys (`crate::text_input`).
 pub fn bind_keys(cx: &mut App) {
-    let context = KeyBindingContextPredicate::parse(KEY_CONTEXT)
-        .ok()
-        .map(Rc::new);
-    let bindings: Vec<KeyBinding> = DEFAULT_BINDINGS
+    let mut bindings: Vec<KeyBinding> = DEFAULT_BINDINGS
         .iter()
-        .filter_map(|binding| {
-            KeyBinding::load(
-                binding.keystroke,
-                action_for(binding.command),
-                context.clone(),
-                false,
-                None,
-                &DummyKeyboardMapper,
-            )
-            .map_err(|e| log::warn!("skipping key binding {:?}: {e}", binding.keystroke))
-            .ok()
-        })
+        .filter_map(|b| binding(b.keystroke, action_for(b.command), KEY_CONTEXT))
         .collect();
+    bindings.extend(FIND_FIELD_COMMANDS.iter().filter_map(|(keys, command)| {
+        binding(keys, action_for(*command), crate::text_input::INPUT_CONTEXT)
+    }));
+    bindings.extend(
+        crate::text_input::bindings()
+            .into_iter()
+            .filter_map(|(keys, action)| binding(keys, action, crate::text_input::INPUT_CONTEXT)),
+    );
     log::debug!("bound {} keystrokes", bindings.len());
     cx.bind_keys(bindings);
 }
@@ -166,23 +183,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_default_binding_parses() {
-        let context = KeyBindingContextPredicate::parse(KEY_CONTEXT)
-            .ok()
-            .map(Rc::new);
-        for binding in DEFAULT_BINDINGS {
+    fn every_binding_parses() {
+        for b in DEFAULT_BINDINGS {
             assert!(
-                KeyBinding::load(
-                    binding.keystroke,
-                    action_for(binding.command),
-                    context.clone(),
-                    false,
-                    None,
-                    &DummyKeyboardMapper,
-                )
-                .is_ok(),
+                binding(b.keystroke, action_for(b.command), KEY_CONTEXT).is_some(),
                 "{} does not parse",
-                binding.keystroke
+                b.keystroke
+            );
+        }
+        for (keys, command) in FIND_FIELD_COMMANDS {
+            assert!(
+                binding(keys, action_for(*command), crate::text_input::INPUT_CONTEXT).is_some()
+            );
+        }
+        for (keys, action) in crate::text_input::bindings() {
+            assert!(
+                binding(keys, action, crate::text_input::INPUT_CONTEXT).is_some(),
+                "{keys} does not parse"
             );
         }
     }

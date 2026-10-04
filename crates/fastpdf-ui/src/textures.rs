@@ -1,30 +1,31 @@
-//! GPU texture lifetime for tiles (docs/audit/gpui.md, "Texture & Image
-//! Pipeline").
+//! GPU texture lifetime for tiles and thumbnails (docs/audit/gpui.md,
+//! "Texture & Image Pipeline").
 //!
 //! GPUI uploads an `Arc<RenderImage>` into its sprite atlas the first time it
 //! is painted and keeps it there until `Window::drop_image` is called —
 //! dropping the `Arc` alone leaks the atlas space for the lifetime of the
 //! window. This module makes that lifetime explicit:
 //!
-//! * Tiles evicted by the tile cache (budget, memory pressure, document
-//!   close) are pushed into a [`RetireQueue`] from whatever thread evicts
-//!   them; the UI thread releases them with `drop_image` at the start of the
-//!   next paint, before anything new is uploaded.
+//! * Images evicted by the tile or thumbnail caches (budget, memory
+//!   pressure, document close) are pushed into a [`RetireQueue`] from
+//!   whatever thread evicts them; the UI thread releases them with
+//!   `drop_image` at the start of the next frame, before anything new is
+//!   uploaded.
 //! * Every image painted at least once is tracked as *resident*, so closing
 //!   a document can release all of them even if an eviction were missed.
-//! * Uploads are budgeted per frame: an image that would push the frame's
-//!   uploads past the budget is skipped this frame (its stand-in or the
-//!   paper shows instead) and the caller requests another frame.
+//! * Uploads are budgeted per frame: [`TileTextures::reserve`] is the
+//!   `ready` predicate of `DocumentSession::frame_with`, so an image over the
+//!   budget is replaced by its stand-in for this frame and uploaded later.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use fastpdf_engine_api::{PixelFormat, Pixmap};
-use gpui::{Bounds, Corners, ImageId, Pixels, RenderImage, Window};
+use gpui::{Bounds, Corners, ImageId, Pixels, RenderImage, Window, point, px, size};
 use image::{Frame, RgbaImage};
 
-/// What a cached tile is in the UI: an image GPUI can paint.
+/// What a cached tile or thumbnail is in the UI: an image GPUI can paint.
 pub(crate) type TileImage = Arc<RenderImage>;
 
 /// Default per-frame upload budget. At ~0.06 ms per MiB (measured on GPUI
@@ -76,9 +77,9 @@ pub(crate) struct RetireQueue {
 #[derive(Default)]
 struct RetireInner {
     images: Mutex<Vec<TileImage>>,
-    /// Set while the UI thread is inside `DocumentSession::frame`; evictions
-    /// during that call are released by the paint that immediately follows,
-    /// so they need no extra wake-up.
+    /// Set while the UI thread is inside a session call made during a frame
+    /// (`frame_with`, `thumbnails`); the frame itself releases evictions
+    /// made there, so they need no extra wake-up.
     in_frame: AtomicBool,
 }
 
@@ -102,8 +103,16 @@ impl RetireQueue {
         !self.inner.in_frame.load(Ordering::Acquire)
     }
 
-    pub(crate) fn set_in_frame(&self, in_frame: bool) {
-        self.inner.in_frame.store(in_frame, Ordering::Release);
+    /// Runs `f` with evictions marked as happening inside the current frame.
+    pub(crate) fn in_frame<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.inner.in_frame.store(true, Ordering::Release);
+        let result = f();
+        self.inner.in_frame.store(false, Ordering::Release);
+        result
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.lock().is_empty()
     }
 
     fn take(&self) -> Vec<TileImage> {
@@ -119,18 +128,22 @@ pub(crate) struct TextureStats {
     pub uploads: u64,
     pub upload_bytes: u64,
     pub released: u64,
-    /// Uploads postponed by the per-frame budget.
+    /// Draws postponed by the per-frame upload budget.
     pub deferred: u64,
     pub frame_upload_bytes: usize,
 }
 
-/// Tracks which tile images live in GPUI's sprite atlas.
+/// Tracks which images live in GPUI's sprite atlas.
 pub(crate) struct TileTextures {
     retire: RetireQueue,
     resident: HashMap<ImageId, TileImage>,
     resident_bytes: usize,
     upload_budget: usize,
+    /// Frame the budget below belongs to.
+    frame: Option<u64>,
     frame_uploaded: usize,
+    /// Images allowed to upload this frame.
+    reserved: HashSet<ImageId>,
     stats: TextureStats,
 }
 
@@ -150,7 +163,9 @@ impl TileTextures {
             resident: HashMap::new(),
             resident_bytes: 0,
             upload_budget: upload_budget.max(1),
+            frame: None,
             frame_uploaded: 0,
+            reserved: HashSet::new(),
             stats: TextureStats::default(),
         }
     }
@@ -168,50 +183,103 @@ impl TileTextures {
         }
     }
 
-    /// Releases retired images and resets the frame's upload budget. Call
-    /// at the start of every paint, before [`Self::paint`].
-    pub(crate) fn begin_frame(&mut self, window: &mut Window) {
-        self.frame_uploaded = 0;
-        for image in self.retire.take() {
-            self.release(&image, window);
+    /// Starts frame `frame`: resets the upload budget and releases retired
+    /// images. Idempotent per frame, so every element that paints images
+    /// calls it first in its prepaint.
+    pub(crate) fn begin_frame(&mut self, frame: u64, window: &mut Window) {
+        if self.start_frame(frame) {
+            for image in self.retire.take() {
+                self.release(image, window);
+            }
         }
     }
 
-    fn release(&mut self, image: &TileImage, window: &mut Window) {
-        // Images that were never painted have no atlas entry.
+    /// Budget bookkeeping of [`Self::begin_frame`]; true for a new frame.
+    fn start_frame(&mut self, frame: u64) -> bool {
+        if self.frame == Some(frame) {
+            return false;
+        }
+        self.frame = Some(frame);
+        self.frame_uploaded = 0;
+        self.reserved.clear();
+        true
+    }
+
+    /// Whether evicted images are still waiting for release.
+    pub(crate) fn has_retired(&self) -> bool {
+        !self.retire.is_empty()
+    }
+
+    fn release(&mut self, image: TileImage, window: &mut Window) {
+        self.forget(&image);
+        // Harmless for images that never reached the atlas.
+        if let Err(e) = window.drop_image(image) {
+            log::warn!("drop_image failed: {e}");
+        }
+    }
+
+    /// Bookkeeping half of [`Self::release`].
+    fn forget(&mut self, image: &TileImage) {
         if let Some(resident) = self.resident.remove(&image.id) {
             self.resident_bytes = self.resident_bytes.saturating_sub(image_bytes(&resident));
-            if let Err(e) = window.drop_image(resident) {
-                log::warn!("drop_image failed: {e}");
-            }
             self.stats.released += 1;
         }
     }
 
-    /// Paints `image` over `bounds`. Returns false when the upload was
-    /// deferred to a later frame by the budget (nothing was painted). The
-    /// first upload of a frame always proceeds so progress is guaranteed.
+    /// The `ready` predicate for `DocumentSession::frame_with`: whether
+    /// `image` may be drawn this frame. Images already in the atlas always
+    /// may; new ones only while this frame's upload budget lasts (the first
+    /// upload of a frame always proceeds, so progress is guaranteed).
+    pub(crate) fn reserve(&mut self, image: &TileImage) -> bool {
+        let id = image.id;
+        if self.resident.contains_key(&id) || self.reserved.contains(&id) {
+            return true;
+        }
+        let bytes = image_bytes(image);
+        if self.frame_uploaded > 0 && self.frame_uploaded + bytes > self.upload_budget {
+            self.stats.deferred += 1;
+            return false;
+        }
+        self.frame_uploaded += bytes;
+        self.reserved.insert(id);
+        true
+    }
+
+    /// Bookkeeping half of [`Self::paint`]: records the upload of `image`
+    /// if this is its first paint.
+    fn note_paint(&mut self, image: &TileImage) {
+        if self.resident.contains_key(&image.id) {
+            return;
+        }
+        let bytes = image_bytes(image);
+        if !self.reserved.contains(&image.id) {
+            // Not budgeted through `reserve` (small images such as
+            // thumbnails): still count it against this frame.
+            self.frame_uploaded += bytes;
+        }
+        self.resident_bytes += bytes;
+        self.resident.insert(image.id, Arc::clone(image));
+        self.stats.uploads += 1;
+        self.stats.upload_bytes += bytes as u64;
+    }
+
+    /// Paints `image` into `dest`; `src` is the part of the image to show,
+    /// `[x, y, width, height]` in image pixels (`None`: all of it). Uploads
+    /// the image on its first paint.
     pub(crate) fn paint(
         &mut self,
         image: &TileImage,
-        bounds: Bounds<Pixels>,
+        dest: Bounds<Pixels>,
+        src: Option<[f32; 4]>,
         window: &mut Window,
-    ) -> bool {
-        if !self.resident.contains_key(&image.id) {
-            let bytes = image_bytes(image);
-            if self.frame_uploaded > 0 && self.frame_uploaded + bytes > self.upload_budget {
-                self.stats.deferred += 1;
-                return false;
-            }
-            self.frame_uploaded += bytes;
-            self.resident_bytes += bytes;
-            self.resident.insert(image.id, Arc::clone(image));
-            self.stats.uploads += 1;
-            self.stats.upload_bytes += bytes as u64;
-        }
+    ) {
+        self.note_paint(image);
+        let full = image.size(0);
+        let image_size = (u32::from(full.width) as f32, u32::from(full.height) as f32);
+        let image_bounds = image_bounds_for(dest, src, image_size);
         if let Err(e) = window.paint_image(
-            bounds,
-            bounds,
+            dest,
+            image_bounds,
             Corners::default(),
             Arc::clone(image),
             0,
@@ -219,21 +287,46 @@ impl TileTextures {
         ) {
             log::warn!("paint_image failed: {e}");
         }
-        true
     }
 
     /// Releases every image this window uploaded (document closed).
     pub(crate) fn release_all(&mut self, window: &mut Window) {
         for image in self.retire.take() {
-            self.release(&image, window);
+            self.release(image, window);
         }
         let resident: Vec<TileImage> = self.resident.values().cloned().collect();
         for image in resident {
-            self.release(&image, window);
+            self.release(image, window);
         }
         debug_assert!(self.resident.is_empty());
         self.resident_bytes = 0;
     }
+}
+
+/// Where the whole image must be placed so that its `src` part lands
+/// exactly on `dest`. GPUI's `paint_image` then draws `dest ∩ image_bounds`
+/// (= `dest`) and samples only inside `src`, so tile gutters keep bilinear
+/// filtering at the edges from reading neighboring atlas entries.
+fn image_bounds_for(
+    dest: Bounds<Pixels>,
+    src: Option<[f32; 4]>,
+    (image_w, image_h): (f32, f32),
+) -> Bounds<Pixels> {
+    let Some([sx, sy, sw, sh]) = src else {
+        return dest;
+    };
+    if sw <= 0.0 || sh <= 0.0 {
+        return dest;
+    }
+    let scale_x = f32::from(dest.size.width) / sw;
+    let scale_y = f32::from(dest.size.height) / sh;
+    Bounds::new(
+        point(
+            dest.origin.x - px(sx * scale_x),
+            dest.origin.y - px(sy * scale_y),
+        ),
+        size(px(image_w * scale_x), px(image_h * scale_y)),
+    )
 }
 
 #[cfg(test)]
@@ -242,10 +335,23 @@ mod tests {
     use fastpdf_engine_api::{PixelSize, ResourceLimits};
 
     fn pixmap(format: PixelFormat, px: [u8; 4]) -> Pixmap {
-        let mut p = Pixmap::new(PixelSize::new(2, 1), format, &ResourceLimits::default())
+        sized_pixmap(format, px, 2, 1)
+    }
+
+    fn sized_pixmap(format: PixelFormat, px: [u8; 4], w: u32, h: u32) -> Pixmap {
+        let mut p = Pixmap::new(PixelSize::new(w, h), format, &ResourceLimits::default())
             .expect("tiny pixmap");
         p.as_mut().data_mut().as_chunks_mut::<4>().0.fill(px);
         p
+    }
+
+    fn tile(bytes_side: u32) -> TileImage {
+        to_render_image(sized_pixmap(
+            PixelFormat::Bgra8Premultiplied,
+            [1, 2, 3, 255],
+            bytes_side,
+            bytes_side,
+        ))
     }
 
     #[test]
@@ -270,8 +376,67 @@ mod tests {
         let queue = RetireQueue::default();
         let image = to_render_image(pixmap(PixelFormat::Bgra8Premultiplied, [0, 0, 0, 255]));
         assert!(queue.retire([Arc::clone(&image)]));
-        queue.set_in_frame(true);
-        assert!(!queue.retire([image]));
+        let woke = queue.in_frame(|| queue.retire([image]));
+        assert!(!woke);
+        assert!(!queue.is_empty());
         assert_eq!(queue.take().len(), 2);
+    }
+
+    #[test]
+    fn reserve_spends_the_frame_budget_once_per_image() {
+        // 8x8 tiles = 256 bytes; the budget fits two of them.
+        let mut t = TileTextures::new(600);
+        let (a, b, c) = (tile(8), tile(8), tile(8));
+        assert!(t.start_frame(1));
+        assert!(t.reserve(&a));
+        assert!(t.reserve(&a), "asking twice does not spend twice");
+        assert!(t.reserve(&b));
+        assert!(!t.reserve(&c), "third upload exceeds the budget");
+        assert_eq!(t.stats().deferred, 1);
+        t.note_paint(&a);
+        t.note_paint(&b);
+        // A new frame: resident images are free, c fits now.
+        assert!(t.start_frame(2));
+        assert!(!t.start_frame(2), "begin_frame is idempotent per frame");
+        assert!(t.reserve(&a) && t.reserve(&b) && t.reserve(&c));
+        assert_eq!(t.stats().frame_upload_bytes, 256);
+    }
+
+    #[test]
+    fn the_first_upload_of_a_frame_always_proceeds() {
+        let mut t = TileTextures::new(1);
+        t.start_frame(1);
+        assert!(t.reserve(&tile(8)), "larger than the budget, but first");
+        assert!(!t.reserve(&tile(8)));
+    }
+
+    #[test]
+    fn unreserved_paints_are_tracked_and_forgotten() {
+        let mut t = TileTextures::new(1 << 20);
+        t.start_frame(1);
+        let thumb = tile(4);
+        t.note_paint(&thumb);
+        t.note_paint(&thumb);
+        let s = t.stats();
+        assert_eq!((s.resident, s.resident_bytes, s.uploads), (1, 64, 1));
+        assert_eq!(s.frame_upload_bytes, 64);
+        t.forget(&thumb);
+        let s = t.stats();
+        assert_eq!((s.resident, s.resident_bytes, s.released), (0, 0, 1));
+    }
+
+    #[test]
+    fn image_bounds_place_the_source_rect_on_the_destination() {
+        // A 516 px tile with a 2 px gutter drawn at 1.5x: the inner 512 px
+        // land on a 768 px destination.
+        let dest = Bounds::new(point(px(100.0), px(50.0)), size(px(768.0), px(768.0)));
+        let b = image_bounds_for(dest, Some([2.0, 2.0, 512.0, 512.0]), (516.0, 516.0));
+        assert_eq!(b.origin, point(px(97.0), px(47.0)));
+        assert_eq!(b.size, size(px(774.0), px(774.0)));
+        assert_eq!(image_bounds_for(dest, None, (516.0, 516.0)), dest);
+        assert_eq!(
+            image_bounds_for(dest, Some([0.0, 0.0, 0.0, 10.0]), (516.0, 516.0)),
+            dest
+        );
     }
 }

@@ -23,6 +23,12 @@ pub(crate) struct Theme {
     pub overlay_text: Rgba,
     pub drop_highlight: Rgba,
     pub sidebar_bg: Rgba,
+    pub input_bg: Rgba,
+    /// Current page in the thumbnail list, focused controls.
+    pub accent: Rgba,
+    pub search_hit: Rgba,
+    pub search_active: Rgba,
+    pub selection: Rgba,
 }
 
 impl Theme {
@@ -47,6 +53,11 @@ impl Theme {
         overlay_text: rgb_const(0x9cff9c),
         drop_highlight: rgba_const(0x0067c030),
         sidebar_bg: rgb_const(0xececec),
+        input_bg: rgb_const(0xffffff),
+        accent: rgb_const(0x0067c0),
+        search_hit: rgba_const(0xffd00060),
+        search_active: rgba_const(0xff7a0080),
+        selection: rgba_const(0x0078d750),
     };
 
     pub(crate) const DARK: Self = Self {
@@ -63,6 +74,11 @@ impl Theme {
         overlay_text: rgb_const(0x9cff9c),
         drop_highlight: rgba_const(0x4cc2ff30),
         sidebar_bg: rgb_const(0x262626),
+        input_bg: rgb_const(0x2d2d2d),
+        accent: rgb_const(0x4cc2ff),
+        search_hit: rgba_const(0xffd00060),
+        search_active: rgba_const(0xff7a0080),
+        selection: rgba_const(0x0078d750),
     };
 }
 
