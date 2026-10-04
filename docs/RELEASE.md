@@ -40,7 +40,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 python tools/check_engine_isolation.py
-python tools/license_report.py --check
+python tools/license_report.py --all-features --check
 ```
 
 ### 1.4 Baseline 重跑與 compare（spec §30、§41）
@@ -60,12 +60,30 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
 
 ### 1.5 授權（spec §36–§37）
 
-- [ ] `python tools/license_report.py`：重新產生 `THIRD_PARTY_LICENSES.md`，`--check` 不可出現待審項目。依賴有變動時，逐一審查新增的 crate。
-- [ ] 檢查 Apache-2.0 依賴是否有 `NOTICE` 檔。有的話，內容必須隨 binary 一起發佈。
+- [ ] `python tools/license_report.py --all-features --check`：重新產生 `THIRD_PARTY_LICENSES.md`，不可出現待審項目。commit 的清單涵蓋所有 feature（含 `engine-zpdf`），不加 `--all-features` 會改掉清單的檔頭與內容。依賴有變動時，逐一審查新增的 crate。
+- [ ] 檢查 Apache-2.0 依賴是否有 `NOTICE` 檔。有的話，內容必須隨 binary 一起發佈。`package.ps1` 的 bundle 步驟（下一項）會自動收錄，並列出有 NOTICE 的 crate。
 - [ ] 檢查 `THIRD_PARTY_LICENSES.md` 的 Ported source 章節，確認所有移植自 upstream 的程式碼都有登記。
-- [ ] **已知缺口（公開發佈 binary 前必須補上）**：
-  - MIT／BSD／ISC／Zlib 要求隨 binary 附上**每個 crate 自己的 copyright 與授權全文**。目前 `licenses/` 只有 Apache-2.0 全文，`THIRD_PARTY_LICENSES.md` 只是清單。
-  - 建議擴充 `tools/license_report.py`：從 cargo registry 的原始碼目錄收集各 crate 的 `LICENSE*`、`COPYING*`、`NOTICE*`，輸出到 `licenses/third-party/<crate>-<version>/`，再由 `package.ps1` 一併打包。這不需要新增任何工具。
+- [ ] **各 crate 的授權全文（`licenses/third-party/`）**：
+  - MIT／BSD／ISC／Zlib 要求隨 binary 附上**每個 crate 自己的 copyright 與授權全文**。`package.ps1` 在 staging 時執行 `python tools/license_report.py --bundle <staging>/licenses/third-party` 收錄這些檔案。
+  - 範圍：從 `fastpdf-app` 經 normal 依賴可達的 crate（含 proc-macro），涵蓋 release binary 實際連結的所有 crate。build 依賴只在編譯時執行，不會連結進 exe，所以不收錄。`THIRD_PARTY_LICENSES.md` 的清單範圍比較大：包含所有 workspace member 與 build 依賴。
+  - 收錄方式：
+    - 各 crate 原始碼目錄的 `LICENSE*`、`LICENCE*`、`COPYING*`、`NOTICE*`、`COPYRIGHT*`、`UNLICENSE*`，原樣複製到 `<crate>-<version>/`；
+    - git 依賴另外收錄 repository 根目錄的 `NOTICE*`，放在 `<crate>-<version>/repository-root/`；
+    - git 依賴在 Windows 上 checkout 時，symlink 會變成只含相對路徑的文字檔（stub），例如 `../../LICENSE-APACHE`。bundle 會沿路徑複製真正的檔案。找不到檔案、或路徑超出該 crate 的原始碼範圍時，不複製，列在 `MISSING.md`；
+    - 沒有附授權檔的 crate 不會補寫 copyright 行，一律列在 `MISSING.md`。授權可選 Apache-2.0 的，由共用的 `Apache-2.0.txt` 涵蓋，在 `MISSING.md` 另外註記。
+  - 2026-10-04 實測（HEAD `cec1839`，default features，`x86_64-pc-windows-msvc`）：
+    - 範圍內有 362 個 crate，輸出 618 個檔案，未壓縮約 3.1 MB。其中 344 個 crate 有自己的授權全文；
+    - 範圍是用 `cargo metadata` 的 resolve 計算，會包含 weak 依賴（`dep?/feature`），所以比實際連結的多。對照 `cargo tree -p fastpdf-app -e normal`：實際的 315 個 crate 全部在範圍內，另外多收 47 個（例如 `image` → `ravif` → `rav1e` 這條 AVIF 依賴）；
+    - 33 個檔案是從 stub 解析而來：zed 的 17 個 crate 各 1 個（`LICENSE-APACHE`），hayro 的 8 個 crate 各 2 個（`LICENSE-APACHE`、`LICENSE-MIT`）。抽查 zed 7 個、hayro 3 個 crate（含 `gpui`、`hayro-syntax`），內容與 repository 中的原檔逐位元組相同，是完整的授權全文；
+    - 有 NOTICE 的 crate 共 8 個：`hayro`、`hayro-ccitt`、`hayro-cmap`、`hayro-interpret`、`hayro-jbig2`、`hayro-jpeg2000`、`hayro-postscript`、`hayro-syntax`。內容都是 hayro repository 根目錄的 `NOTICE.md`，記載改寫自 PDFBox、pdf.js 與 png crate 的程式碼。其他 crate 都沒有 NOTICE 檔；
+    - 13 個 crate 沒有附授權檔，但授權可選 Apache-2.0，由共用的 `Apache-2.0.txt` 涵蓋：accesskit 系列 3 個、lyon 系列 5 個、profiling 系列 2 個、`sval_nested`、`svg_fmt`、`zune-inflate`。其中 `sval_nested` 的 2 個 stub 指向套件以外，無法解析；
+    - `package.ps1` 完整執行一次（HEAD 的乾淨匯出加上本次工具修改）：zip 共 623 個 entry（`licenses/third-party/` 佔 618 個），entry 清單檢查與 smoke test 都通過；
+    - zip 為 8,415,819 bytes（8.03 MB）。同一批檔案不含 `licenses/third-party/` 時為 7,065,748 bytes，增加 1,350,071 bytes（+19.1%）。
+  - **仍有缺口（公開發佈前必須補上）**：下列 5 個 crate 沒有附授權檔，授權也不能選 Apache-2.0。需要從 upstream 取得含 copyright 的授權全文，以人工補上；工具目前沒有人工補檔的機制。
+    - `alloc-stdlib` 0.2.4（BSD-3-Clause）；
+    - `pulp-wasm-simd-flag` 0.1.1、`seahash` 4.1.0、`simd_helpers` 0.1.0、`taffy` 0.13.0（MIT）。
+  - 其中 `simd_helpers` 只經由 `rav1e` 進入範圍，`cargo tree` 顯示它沒有連結進 exe。實際連結的缺口是其餘 4 個。
+  - 這些缺口不會讓 `package.ps1` 失敗，只會顯示警告。清單在 zip 內的 `licenses/third-party/MISSING.md`。
 - [ ] 確認 exe 中的資產授權：
   - app icon 是 `tools/icon/make_icon.py` 原創繪製，沒有使用第三方素材；
   - 內嵌字型（hayro 的 `embed-fonts` 標準字型）要確認授權已列在 THIRD_PARTY 中。
@@ -82,12 +100,13 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
 |---|---|
 | `FastPDF-X.Y.Z-win-x64/fastpdf.exe` | `--profile dist`：fat LTO、`codegen-units=1`、strip symbols |
 | `README.md` | 專案 README |
-| `THIRD_PARTY_LICENSES.md`、`licenses/` | 授權（見 §1.5 的已知缺口） |
+| `THIRD_PARTY_LICENSES.md`、`licenses/Apache-2.0.txt` | 第三方 crate 清單與授權審查結果；Apache-2.0 全文 |
+| `licenses/third-party/` | 連結進 exe 的每個 crate 自己的授權檔（`<crate>-<version>/`）、共用的 `Apache-2.0.txt`、缺漏清單 `MISSING.md`。由 `license_report.py --bundle` 產生，見 §1.5 |
 | `BUILDINFO.txt` | 版本、git commit（含 dirty 標記）、rustc 版本、profile、build 時間、exe 的 SHA-256 |
 
 `package.ps1` 會自動檢查：
 - VERSIONINFO 與 Cargo 版本一致，且沒有 `CompanyName`；
-- zip 的 entry 清單完全符合預期，沒有多也沒有少；
+- zip 的 entry 清單完全符合預期，沒有多也沒有少。`licenses/third-party/` 底下以 bundle 步驟回報的檔案清單為準，逐一比對；
 - zip 內 exe 的 SHA-256 等於 build 產物。
 
 ### 1.7 Smoke test

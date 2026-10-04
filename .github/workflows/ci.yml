@@ -23,12 +23,17 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy (all features, e.g. engine-zpdf)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
       - name: Engine isolation (spec §42)
         run: python tools/check_engine_isolation.py
       - name: License review (spec §37)
-        run: python tools/license_report.py --check --out ${{ runner.temp }}/licenses.md
+        # All features: the committed list also covers optional engines.
+        run: python tools/license_report.py --all-features --check --out ${{ runner.temp }}/licenses.md
+      - name: THIRD_PARTY_LICENSES.md is up to date
+        run: git diff --no-index --exit-code THIRD_PARTY_LICENSES.md ${{ runner.temp }}/licenses.md
 
   bench-smoke:
     # Runs the harness on the quick corpus so crashes and hangs fail CI.

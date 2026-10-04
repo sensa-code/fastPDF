@@ -6,9 +6,37 @@ build dependencies; dev-dependencies are excluded because they never ship)
 and lists every third-party crate with its license. Licenses outside the
 permissive allowlist are flagged for manual review.
 
+--bundle DIR copies each crate's own license files into DIR/<crate>-<version>/
+for the release zip (tools/package.ps1): MIT / BSD / ISC / Zlib need the
+crate's copyright notice and license text, Apache-2.0 needs any NOTICE file.
+  - Scope: the crates reachable from fastpdf-app through normal dependencies
+    (same cargo metadata call, features and target as the report; proc-macro
+    crates included). That covers everything the release binary links, plus a
+    few extra crates: the metadata resolve also keeps weak optional
+    dependencies (`dep?/feature`) that the build does not compile.
+    Build-dependencies are left out: they only run at build time and are not
+    linked into fastpdf.exe. Workspace crates are left out too.
+  - Files: top-level LICENSE*, LICENCE*, COPYING*, NOTICE*, COPYRIGHT*,
+    UNLICENSE* (any case) of the crate directory, copied byte for byte. Git
+    dependencies also get the NOTICE* files of their repository root
+    (in repository-root/).
+  - Symlinks are followed inside the crate's source tree (the crate directory,
+    or the whole checkout for git dependencies). A Windows checkout without
+    symlink support stores a symlink as a small text file holding only the
+    target, e.g. "../../LICENSE-APACHE"; such stubs are followed the same way
+    and are never copied themselves.
+  - Nothing is made up: crates without a license text and links that could not
+    be followed are listed in DIR/MISSING.md. A crate without a license text
+    whose license allows Apache-2.0 is covered by one shared DIR/Apache-2.0.txt
+    (a copy of licenses/Apache-2.0.txt) and noted separately there.
+  - Output is deterministic (sorted, no timestamps). DIR must be empty or absent.
+With --bundle the report is written only when --out is given.
+
 Usage:
     python tools/license_report.py [--features "a,b"] [--all-features]
                                    [--target TRIPLE] [--out THIRD_PARTY_LICENSES.md] [--check]
+    python tools/license_report.py --bundle DIR [--bundle-list FILE]
+                                   [--features "a,b"] [--all-features] [--target TRIPLE]
 
 --check exits with status 1 when a crate needs review, for CI.
 """
@@ -17,7 +45,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -41,6 +71,16 @@ REVIEW_HINTS = {
     "OpenSSL": "OpenSSL/SSLeay terms: advertising clause",
 }
 
+# --bundle: the package whose binary ships (tools/package.ps1 builds `-p fastpdf-app`).
+RELEASE_PACKAGE = "fastpdf-app"
+# A crate's own license files, matched case-insensitively against the entries
+# at the top of its directory.
+LICENSE_FILE = re.compile(r"^(licen[cs]e|copying|notice|copyright|unlicense)", re.IGNORECASE)
+# The files among them that carry license terms (NOTICE and COPYRIGHT do not).
+LICENSE_TEXT = re.compile(r"^(licen[cs]e|copying|unlicense)", re.IGNORECASE)
+NOTICE_FILE = re.compile(r"^notice", re.IGNORECASE)
+SHARED_APACHE = ROOT / "licenses" / "Apache-2.0.txt"
+
 
 def cargo_metadata(features: str | None, all_features: bool, target: str) -> dict:
     cmd = ["cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", target]
@@ -52,26 +92,42 @@ def cargo_metadata(features: str | None, all_features: bool, target: str) -> dic
     return json.loads(out.stdout)
 
 
-def shipped_packages(meta: dict) -> list[dict]:
-    """Packages reachable from workspace members via non-dev edges."""
+def reachable(meta: dict, roots: list[str], follow) -> list[dict]:
+    """Third-party packages reachable from `roots` through edges whose set of
+    dependency kinds (None = normal, "build", "dev") passes `follow`."""
     nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
     packages = {p["id"]: p for p in meta["packages"]}
     members = set(meta["workspace_members"])
     seen: set[str] = set()
-    stack = list(members)
+    stack = list(roots)
     while stack:
         pid = stack.pop()
         if pid in seen:
             continue
         seen.add(pid)
         for dep in nodes[pid]["deps"]:
-            kinds = {k.get("kind") for k in dep["dep_kinds"]}
-            if kinds - {"dev"}:
+            if follow({k.get("kind") for k in dep["dep_kinds"]}):
                 stack.append(dep["pkg"])
     return sorted(
         (packages[p] for p in seen - members),
         key=lambda p: (p["name"], p["version"]),
     )
+
+
+def shipped_packages(meta: dict) -> list[dict]:
+    """Packages reachable from workspace members via non-dev edges."""
+    return reachable(meta, list(meta["workspace_members"]), lambda kinds: bool(kinds - {"dev"}))
+
+
+def linked_packages(meta: dict) -> list[dict]:
+    """Packages reachable from RELEASE_PACKAGE through normal edges: what the
+    release binary links (a superset, see the module docstring). Build-dependencies
+    only run at build time."""
+    members = set(meta["workspace_members"])
+    roots = [p["id"] for p in meta["packages"] if p["name"] == RELEASE_PACKAGE and p["id"] in members]
+    if not roots:
+        sys.exit(f"error: {RELEASE_PACKAGE} is not a workspace member")
+    return reachable(meta, roots, lambda kinds: None in kinds)
 
 
 def classify(license_expr: str | None) -> tuple[bool, str]:
@@ -159,19 +215,241 @@ def render(packages: list[dict], args: argparse.Namespace) -> tuple[str, int]:
     return "\n".join(lines), len(review)
 
 
+def link_target(path: Path) -> str | None:
+    """Target of a symlink or of a symlink stub; None for an ordinary file.
+
+    Git without symlink support (core.symlinks=false, common on Windows) checks
+    a symlink out as a small text file holding only the target, e.g.
+    "../../LICENSE-APACHE": one line, no whitespace, a path.
+    """
+    if path.is_symlink():
+        return os.readlink(path)
+    if path.stat().st_size > 1024:
+        return None
+    try:
+        text = path.read_bytes().decode("utf-8").rstrip("\r\n")
+    except UnicodeDecodeError:
+        return None
+    if not text or any(c.isspace() for c in text):
+        return None
+    if "/" in text or "\\" in text or LICENSE_FILE.match(text):
+        return text
+    return None
+
+
+def within(path: Path, root: Path) -> bool:
+    real, top = (os.path.normcase(os.path.realpath(p)) for p in (path, root))
+    try:
+        return os.path.commonpath([real, top]) == top
+    except ValueError:  # another drive
+        return False
+
+
+def follow_links(path: Path, root: Path) -> tuple[Path | None, str | None]:
+    """(file to copy, first link target). The file is None when a link leads out
+    of `root`, to something that is not a file, or around in circles."""
+    first = None
+    for _ in range(8):
+        target = link_target(path)
+        if target is None:
+            return path, first
+        first = first or target
+        path = Path(os.path.normpath(path.parent / target.replace("\\", "/")))
+        if not within(path, root) or not path.is_file():
+            return None, first
+    return None, first
+
+
+def source_root(pkg: dict, crate_dir: Path) -> Path:
+    """The tree a crate's links may point into: the whole checkout for git
+    dependencies (monorepos link each crate's LICENSE to the repository root),
+    otherwise the crate directory. Cargo marks a finished checkout with .cargo-ok."""
+    if (pkg.get("source") or "").startswith("git+"):
+        for d in (crate_dir, *crate_dir.parents):
+            if (d / ".cargo-ok").is_file():
+                return d
+    return crate_dir
+
+
+def expand(name: str, path: Path):
+    """A directory such as LICENSES/ (REUSE layout) stands for the files in it."""
+    if path.is_dir() and not path.is_symlink():
+        for sub in sorted(path.rglob("*")):
+            if sub.is_symlink() or sub.is_file():
+                yield f"{name}/{sub.relative_to(path).as_posix()}", sub
+    else:
+        yield name, path
+
+
+def crate_license_files(pkg: dict) -> tuple[list[tuple[str, Path, bool]], list[tuple[str, str]]]:
+    """([(name in the bundle, file to copy, reached through a link)],
+    [(name in the bundle, link target that could not be followed)])."""
+    crate_dir = Path(pkg["manifest_path"]).parent
+    root = source_root(pkg, crate_dir)
+    candidates = [(e, crate_dir / e) for e in sorted(os.listdir(crate_dir)) if LICENSE_FILE.match(e)]
+    if root != crate_dir:  # git dependency: the repository's NOTICE covers its crates
+        candidates += [(f"repository-root/{e}", root / e)
+                       for e in sorted(os.listdir(root)) if NOTICE_FILE.match(e)]
+    files, unresolved = [], []
+    for name, path in (item for candidate in candidates for item in expand(*candidate)):
+        real, link = follow_links(path, root)
+        if real is None:
+            unresolved.append((name, link or ""))
+        else:
+            files.append((name, real, link is not None))
+    return files, unresolved
+
+
+def allows_apache(license_expr: str | None) -> bool:
+    """True when Apache-2.0 alone satisfies the SPDX expression (it is one of
+    the OR alternatives). Expressions with parentheses are not simplified."""
+    if not license_expr or "(" in license_expr:
+        return False
+    return any(alt.strip() == "Apache-2.0" for alt in re.split(r"\s+OR\s+|/", license_expr))
+
+
+def label(p: dict) -> str:
+    return f"{p['name']} {p['version']}"
+
+
+def render_missing(scope: str, without_text: list[dict], shared_apache: list[dict],
+                   unresolved: list[tuple[dict, str, str]]) -> str:
+    def crates(packages: list[dict]) -> list[str]:
+        if not packages:
+            return ["None."]
+        return ["| Crate | Version | License | Repository |", "|---|---|---|---|", *(
+            f"| {p['name']} | {p['version']} | {p.get('license') or '—'} | {p.get('repository') or '—'} |"
+            for p in packages)]
+
+    lines = [
+        "# Missing third-party license texts",
+        "",
+        "<!-- Generated by tools/license_report.py --bundle — do not edit by hand. -->",
+        "",
+        f"- Scope: {scope}.",
+        "- Build-dependencies are not included: they only run at build time and are not linked",
+        "  into the binary.",
+        "- Each `<crate>-<version>/` folder holds the crate's own `LICENSE*`, `LICENCE*`, `COPYING*`,",
+        "  `NOTICE*`, `COPYRIGHT*` and `UNLICENSE*` files, copied byte for byte. For git dependencies,",
+        "  `repository-root/` holds the `NOTICE*` files at the root of the repository.",
+        "",
+        f"## Crates without a license text ({len(without_text)})",
+        "",
+        "Their source package has no license file. No copyright line is made up for them;",
+        "add the license text from the upstream repository before a public release.",
+        "",
+        *crates(without_text),
+        "",
+        f"## Covered by the shared Apache-2.0 text ({len(shared_apache)})",
+        "",
+        "These crates have no license file either, but their license allows Apache-2.0, which",
+        "needs no copyright line: `Apache-2.0.txt` in this folder applies to them.",
+        "",
+        *crates(shared_apache),
+        "",
+        f"## Links that could not be followed ({len(unresolved)})",
+        "",
+        "Symlinks, or symlink stubs (a text file holding only the link target), whose target is",
+        "not a file inside the crate's source tree. They were not copied.",
+        "",
+    ]
+    if unresolved:
+        lines += ["| Crate | Version | File | Link target |", "|---|---|---|---|", *(
+            f"| {p['name']} | {p['version']} | `{name}` | `{target}` |" for p, name, target in unresolved)]
+    else:
+        lines.append("None.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_bundle(packages: list[dict], dest: Path, scope: str) -> list[str]:
+    """Copies each crate's license files to dest/<crate>-<version>/ and writes
+    dest/MISSING.md. Returns the bundle's files, relative to dest, sorted."""
+    if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
+        sys.exit(f"error: --bundle {dest} must be a new or empty directory")
+    dest.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    folders: set[str] = set()
+    without_text, shared_apache, unresolved, notices, renamed = [], [], [], [], []
+    followed = 0
+    for p in sorted(packages, key=lambda p: (p["name"], p["version"], p["id"])):
+        files, broken = crate_license_files(p)
+        folder, n = f"{p['name']}-{p['version']}", 1
+        while folder.lower() in folders:  # the same name and version from two sources
+            n += 1
+            folder = f"{p['name']}-{p['version']}-{n}"
+        folders.add(folder.lower())
+        if n > 1:
+            renamed.append(f"{folder} ({p.get('source')})")
+        for name, src, via_link in files:
+            out = dest / folder / name
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, out)
+            written.append(f"{folder}/{name}")
+            followed += via_link
+        unresolved += [(p, name, target) for name, target in broken]
+        if any(NOTICE_FILE.match(part) for name, _, _ in files for part in name.split("/")):
+            notices.append(p)
+        if not any(LICENSE_TEXT.match(name.split("/")[0]) for name, _, _ in files):
+            (shared_apache if allows_apache(p.get("license")) else without_text).append(p)
+    if shared_apache:
+        shutil.copyfile(SHARED_APACHE, dest / "Apache-2.0.txt")
+        written.append("Apache-2.0.txt")
+    missing_md = render_missing(scope, without_text, shared_apache, unresolved)
+    (dest / "MISSING.md").write_text(missing_md, encoding="utf-8", newline="\n")
+    written.append("MISSING.md")
+
+    with_text = len(packages) - len(without_text) - len(shared_apache)
+    print(f"wrote {dest} ({len(written)} files)")
+    print(f"  crates: {len(packages)}, {with_text} with a license text; files reached through a "
+          f"symlink or symlink stub: {followed}")
+    print(f"  no license text: {len(without_text)} missing, {len(shared_apache)} covered by "
+          f"Apache-2.0.txt; links not followed: {len(unresolved)} (see MISSING.md)")
+    print(f"  NOTICE ({len(notices)}): {', '.join(label(p) for p in notices) or 'none'}")
+    if renamed:
+        print(f"  same name and version twice: {', '.join(renamed)}")
+    if without_text or unresolved:
+        print("  WARNING: license texts are incomplete; resolve MISSING.md before a public release")
+    return sorted(written)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--features")
     parser.add_argument("--all-features", action="store_true")
     parser.add_argument("--target", default="x86_64-pc-windows-msvc",
                         help="only count dependencies used on this target (Windows-first)")
-    parser.add_argument("--out", type=Path, default=ROOT / "THIRD_PARTY_LICENSES.md")
+    parser.add_argument("--out", type=Path,
+                        help="report file (default THIRD_PARTY_LICENSES.md; with --bundle, none)")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--bundle", type=Path, metavar="DIR",
+                        help=f"copy the license files of the crates linked into {RELEASE_PACKAGE} to DIR")
+    parser.add_argument("--bundle-list", type=Path, metavar="FILE",
+                        help="with --bundle: write the bundle's files (relative paths, one per line) to FILE")
     args = parser.parse_args()
+    if args.bundle_list and not args.bundle:
+        parser.error("--bundle-list needs --bundle")
 
-    text, review_count = render(shipped_packages(cargo_metadata(args.features, args.all_features, args.target)), args)
-    args.out.write_text(text, encoding="utf-8", newline="\n")
-    print(f"wrote {args.out} ({review_count} crate(s) need review)")
+    meta = cargo_metadata(args.features, args.all_features, args.target)
+    review_count = 0
+    if args.bundle is None or args.out is not None:
+        out = args.out or ROOT / "THIRD_PARTY_LICENSES.md"
+        text, review_count = render(shipped_packages(meta), args)
+        out.write_text(text, encoding="utf-8", newline="\n")
+        print(f"wrote {out} ({review_count} crate(s) need review)")
+    elif args.check:
+        _, review_count = render(shipped_packages(meta), args)
+        print(f"{review_count} crate(s) need review")
+    if args.bundle is not None:
+        feature_note = "all features" if args.all_features else (args.features or "default features")
+        scope = (f"crates reachable from `{RELEASE_PACKAGE}` through normal dependencies "
+                 f"(proc-macro crates included), {feature_note}, target `{args.target}`; workspace "
+                 "crates excluded. This covers every crate linked into the release binary; the "
+                 "`cargo metadata` resolve also keeps weak optional dependencies (`dep?/feature`), "
+                 "so a few listed crates may not be linked")
+        files = write_bundle(linked_packages(meta), args.bundle, scope)
+        if args.bundle_list:
+            args.bundle_list.write_text("".join(f"{f}\n" for f in files), encoding="utf-8", newline="\n")
     return 1 if args.check and review_count else 0
 
 

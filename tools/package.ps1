@@ -11,9 +11,12 @@
   2. checks the exe's VERSIONINFO against the Cargo version (build.rs ran) and its PE
      resources: RT_GROUP_ICON #1, the icon images, RT_VERSION #1 and exactly one
      RT_MANIFEST (GPUI's; a second one would mean a resource conflict)
-  3. stages fastpdf.exe, README.md, THIRD_PARTY_LICENSES.md, licenses/, BUILDINFO.txt
+  3. stages fastpdf.exe, README.md, THIRD_PARTY_LICENSES.md, licenses/, BUILDINFO.txt and
+     licenses/third-party/: each linked crate's own license and NOTICE files plus
+     MISSING.md (python tools/license_report.py --bundle; needs python and cargo on PATH)
   4. zips the staging folder (top-level folder inside the zip), writes <zip>.sha256
-  5. verifies the zip: exact entry list and the exe's SHA-256 inside the zip
+  5. verifies the zip: exact entry list (under licenses/third-party/ exactly the files the
+     bundle step reported writing) and the exe's SHA-256 inside the zip
   6. smoke test on the extracted copy: --version and --help (no window), then one
      GUI start with FASTPDF_BENCH=1 on a fixture until the first frame is presented;
      the process tree is always terminated. Saved settings and recent files are
@@ -148,6 +151,21 @@ Copy-Item (Join-Path $Repo 'README.md') $Stage
 Copy-Item (Join-Path $Repo 'THIRD_PARTY_LICENSES.md') $Stage
 Copy-Item (Join-Path $Repo 'licenses\*') (Join-Path $Stage 'licenses')
 
+Step 'third-party license texts -> licenses/third-party/ (license_report.py --bundle)'
+$ThirdParty = Join-Path $Stage 'licenses\third-party'
+$bundleList = Join-Path $OutDir "$Name.third-party-files.txt"
+Push-Location $Repo
+try {
+    python tools/license_report.py --bundle $ThirdParty --bundle-list $bundleList | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) { throw "tools/license_report.py --bundle failed with exit code $LASTEXITCODE" }
+    # Paths relative to licenses/third-party/, exactly as the bundle step wrote them.
+    $bundleFiles = @(Get-Content -LiteralPath $bundleList -Encoding utf8 | Where-Object { $_ })
+} finally {
+    Pop-Location
+    Remove-Item -LiteralPath $bundleList -Force -ErrorAction SilentlyContinue
+}
+if ($bundleFiles -notcontains 'MISSING.md') { throw 'license_report.py --bundle did not report MISSING.md' }
+
 $exeHash = (Get-FileHash -Algorithm SHA256 $Exe).Hash.ToLowerInvariant()
 $gitRev = (git -C $Repo rev-parse --short=12 HEAD 2>$null)
 $dirty = $false
@@ -173,7 +191,8 @@ $zipHash = (Get-FileHash -Algorithm SHA256 $Zip).Hash.ToLowerInvariant()
 # ------------------------------------------------------------------ verify zip
 Step 'verify zip contents'
 $expected = @("$Name/fastpdf.exe", "$Name/README.md", "$Name/THIRD_PARTY_LICENSES.md", "$Name/BUILDINFO.txt") +
-    @(Get-ChildItem (Join-Path $Repo 'licenses') -File | ForEach-Object { "$Name/licenses/$($_.Name)" })
+    @(Get-ChildItem (Join-Path $Repo 'licenses') -File | ForEach-Object { "$Name/licenses/$($_.Name)" }) +
+    @($bundleFiles | ForEach-Object { "$Name/licenses/third-party/$_" })
 $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
 try {
     $entries = @($archive.Entries | Where-Object { $_.Length -gt 0 -or -not $_.FullName.EndsWith('/') } | ForEach-Object { $_.FullName.Replace('\', '/') })
@@ -188,7 +207,7 @@ try {
     } finally { $stream.Dispose() }
     if ($inZip -ne $exeHash) { throw "fastpdf.exe in the zip differs from the build ($inZip vs $exeHash)" }
 } finally { $archive.Dispose() }
-Write-Host "  $($entries.Count) files, exe hash matches"
+Write-Host "  $($entries.Count) files ($($bundleFiles.Count) under licenses/third-party/), exe hash matches"
 
 # ------------------------------------------------------------------ smoke test
 $smoke = [ordered]@{}

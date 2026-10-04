@@ -32,7 +32,7 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 python tools/check_engine_isolation.py
-python tools/license_report.py --check
+python tools/license_report.py --all-features --check
 ```
 
 ## Dependency policy（spec §36）
