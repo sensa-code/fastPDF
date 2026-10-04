@@ -21,8 +21,9 @@
 | M4 Renderer comparison | `docs/engine-comparison.md` | ✅ Hayro 為預設 engine（ADR 0007） |
 | M5 Tile renderer | tile／scheduler／cache + GPUI viewport；B-3／B-4（tile 512、2 workers） | ✅ |
 | M6 Memory budget | `MemoryBudgetManager`、overlay 分項、B-5 驗證（大型 PDF 不爆 RAM） | ✅ |
-| M7 UX | sidebar（outline、縮圖）、搜尋、選取／複製、列印、recent files、深色外觀、夜間模式、設定 | V0.1 功能清單完成；檔案關聯、安裝程式待做 |
-| 下一步 | render host process（ADR 0008，Proposed） | 設計與原型量測完成 |
+| M7 UX | sidebar（outline、縮圖）、搜尋、選取／複製、列印、recent files、深色外觀、夜間模式、設定、繁體中文介面、平滑捲動 | V0.1 功能清單完成；檔案關聯目前只有命令列（`--register-file-types`）；安裝程式待做 |
+| 發佈 | 可攜版 zip：icon／版本資訊、第三方授權全文、SHA-256、smoke test | ✅ `tools/package.ps1`、`docs/RELEASE.md`（公開發佈前仍有 4 個 crate 缺授權全文） |
+| Render host | engine 移到獨立 process（ADR 0008）：crash、配置失敗、卡住只會結束 host | 已實作，opt-in：`--engine hayro-isolated`；預設仍是 in-process，PR 4 的驗收完成前不切換 |
 
 ## 需求
 
@@ -34,6 +35,7 @@
 
 ```bash
 cargo run --release -p fastpdf-app -- path/to/file.pdf   # 開啟 FastPDF
+cargo run --release -p fastpdf-app -- --register-file-types --dry-run   # 檢視檔案關聯會寫入的 registry
 cargo test --workspace                                  # 單元測試
 uv run tools/fixtures/generate.py                       # 產生測試 PDF 到 fixtures/generated/
 cargo run --release -p fastpdf-bench -- full fixtures/generated/small-text/<file>.pdf
@@ -48,6 +50,7 @@ crates/
   fastpdf-engine-api/    domain model + PdfEngine trait + GuardedDocument（零依賴）
   fastpdf-engine-hayro/  Hayro adapter
   fastpdf-engine-zpdf/   zpdf adapter（PoC，feature-gated）
+  fastpdf-engine-remote/ render host：engine 在獨立 process 中執行（ADR 0008，opt-in）
   fastpdf-cache/         byte-budget LRU + MemoryBudgetManager
   fastpdf-render/        scale bucket、tile grid、layout、viewport、scheduler、tile cache
   fastpdf-search/        lazy、incremental、可取消的全文搜尋
@@ -55,11 +58,12 @@ crates/
   fastpdf-ui/            GPUI views（唯一依賴 GPUI 的 library crate）
   fastpdf-app/           執行檔 `fastpdf`
   fastpdf-print/         Win32 列印（分段 render）
+  fastpdf-shell/         Windows 檔案關聯（per-user HKCU 註冊計畫）
   fastpdf-bench/         無 GUI 的 benchmark harness
 docs/                    spec、audit、ADR、profiling、development guide
 fixtures/                測試語料說明（產出不 commit）
 benchmarks/              baseline 與量測紀錄
-tools/                   fixture 產生器、license report、engine isolation 檢查
+tools/                   fixture 產生器、license report、engine isolation 檢查、打包（package.ps1）、app 層 benchmark（bench-app）
 ```
 
 ## 開發規範
