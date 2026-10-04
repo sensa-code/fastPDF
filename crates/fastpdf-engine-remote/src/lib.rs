@@ -19,6 +19,11 @@
 //! shared memory section (renders larger than a slot get a section of their
 //! own, so every render is done in one piece and is byte-identical to
 //! in-process rendering); document bytes are shared as a read-only section.
+//! Tile renders skip the pipes: request and reply travel in the slot's
+//! control block, with a semaphore and one event per slot as the only
+//! wake-ups (`win::channel`). Pixels travel in RGBA, the engines' own
+//! order, and FastPDF swaps them to BGRA while copying them out of the
+//! slot.
 //! The host is created inside a job object with a memory limit and
 //! `KILL_ON_JOB_CLOSE`. The wire format (`protocol` module) is hand-written,
 //! versioned and validated field by field in both directions.

@@ -77,6 +77,9 @@ pub(crate) const MAX_WORKERS: u32 = 64;
 pub(crate) const MAX_SLOTS: u32 = 1024;
 pub(crate) const MAX_SLOT_BYTES: u64 = 256 << 20;
 pub(crate) const MAX_SECTION_BYTES: u64 = 1 << 40;
+/// Bytes of one slot's control block in the slot channel
+/// (`win::channel`).
+pub(crate) const SLOT_CONTROL_BYTES: u64 = 4096;
 
 // Message kinds. Commands and replies use disjoint ranges so a frame sent
 // the wrong way is rejected outright.
@@ -189,11 +192,17 @@ pub(crate) struct Init {
     pub(crate) slots: Option<SlotSpec>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SlotSpec {
     pub(crate) section: SectionRef,
     pub(crate) count: u32,
     pub(crate) slot_bytes: u64,
+    /// The slot channel's control blocks, `count * SLOT_CONTROL_BYTES`.
+    pub(crate) control: SectionRef,
+    /// Semaphore released once per slot render posted in the channel.
+    pub(crate) requests: u64,
+    /// One completion event per slot.
+    pub(crate) done: Vec<u64>,
 }
 
 /// A section (shared memory) handle that is valid in the host process.
@@ -370,6 +379,12 @@ pub(crate) fn encode_command(cmd: &Command) -> Result<Vec<u8>> {
                     put_section(&mut e, s.section);
                     e.u32(s.count);
                     e.u64(s.slot_bytes);
+                    put_section(&mut e, s.control);
+                    e.u64(s.requests);
+                    e.u32(u32::try_from(s.done.len()).unwrap_or(u32::MAX));
+                    for &event in &s.done {
+                        e.u64(event);
+                    }
                 }
                 None => e.u8(0),
             }
@@ -495,10 +510,24 @@ pub(crate) fn decode_command(payload: &[u8]) -> Result<Command> {
                 if u64::from(count).checked_mul(slot_bytes) != Some(section.len) {
                     return Err(ProtocolError::BadValue("slot section size"));
                 }
+                let control = get_section(&mut d)?;
+                if u64::from(count).checked_mul(SLOT_CONTROL_BYTES) != Some(control.len) {
+                    return Err(ProtocolError::BadValue("slot control size"));
+                }
+                let requests = get_handle(&mut d)?;
+                if d.u32()? != count {
+                    return Err(ProtocolError::BadValue("slot event count"));
+                }
+                let done = (0..count)
+                    .map(|_| get_handle(&mut d))
+                    .collect::<Result<Vec<_>>>()?;
                 Some(SlotSpec {
                     section,
                     count,
                     slot_bytes,
+                    control,
+                    requests,
+                    done,
                 })
             } else {
                 None
@@ -632,14 +661,19 @@ fn put_section(e: &mut Encoder, s: SectionRef) {
     e.u64(s.len);
 }
 
-fn get_section(d: &mut Decoder<'_>) -> Result<SectionRef> {
+/// A kernel handle value: a non-zero multiple of four that fits in 32 bits;
+/// pseudo handles (-1, -2) and garbage fail here.
+fn get_handle(d: &mut Decoder<'_>) -> Result<u64> {
     let handle = d.u64()?;
-    let len = d.u64()?;
-    // Kernel handle values are non-zero multiples of four that fit in 32
-    // bits; pseudo handles (-1, -2) and garbage fail here.
     if handle == 0 || handle > u64::from(u32::MAX) || !handle.is_multiple_of(4) {
         return Err(ProtocolError::BadValue("handle"));
     }
+    Ok(handle)
+}
+
+fn get_section(d: &mut Decoder<'_>) -> Result<SectionRef> {
+    let handle = get_handle(d)?;
+    let len = d.u64()?;
     if len == 0 || len > MAX_SECTION_BYTES {
         return Err(ProtocolError::BadValue("section size"));
     }

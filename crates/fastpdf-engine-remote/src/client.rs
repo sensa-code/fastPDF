@@ -2,6 +2,13 @@
 //! reply reader thread, request/reply matching, deadlines, tile slots, and
 //! the post-mortem when the host dies.
 //!
+//! Tile renders into a slot use the slot channel instead of the pipes
+//! (`win::channel`): the requesting thread posts the request in the slot's
+//! control block and waits on the slot's completion event itself, so
+//! neither the host's command reader nor this side's reply reader is
+//! involved. They are still registered in the same table, so deadlines,
+//! crash attribution and cancellation work as for every other request.
+//!
 //! Every request registers a [`Pending`] entry before its command is
 //! written. The entry owns the request's render target (slot or section)
 //! and its gate admission until the host's terminal reply arrives, even when
@@ -23,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use fastpdf_engine_api::{CancelToken, EngineError, FileOrigin, HostExitReason, PageIndex};
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, SYNCHRONIZATION_SYNCHRONIZE};
 
 use crate::config::RemoteConfig;
 use crate::gate::OwnedPass;
@@ -31,17 +39,23 @@ use crate::host::ipc_args;
 use crate::policy::{DeathCause, InFlight, Subject};
 use crate::protocol::{
     BUILD_ID, Command, DocumentRef, FrameError, Init, MAX_REPLY_FRAME, MAX_WORKERS, Payload,
-    RenderTarget, Reply, SectionRef, SlotSpec, WireEngineInfo, decode_reply, encode_command,
-    read_frame,
+    RenderTarget, Reply, SLOT_CONTROL_BYTES, SectionRef, SlotSpec, WireEngineInfo, decode_reply,
+    encode_command, read_frame,
 };
+use crate::win::channel::{Controls, MAX_REQUEST};
 use crate::win::pipe::{self, ServerPipe, Wake};
 use crate::win::process::{self, Child, JobLimits, KILLED_BY_PARENT, describe_exit};
 use crate::win::section::{Access, Section, View};
+use crate::win::sync::{Event, Semaphore, Waited, wait_any};
 
 /// How often waiting callers look at their cancel token.
 const POLL: Duration = Duration::from_millis(3);
 /// How often the reader thread checks request deadlines.
 const DEADLINE_TICK: Duration = Duration::from_millis(50);
+/// How often it looks for abandoned slot renders the host has finished.
+const ABANDONED_TICK: Duration = Duration::from_millis(10);
+/// Longest wait for the post-mortem after this side terminated the host.
+const DEATH_WAIT: Duration = Duration::from_secs(10);
 /// Read buffer of the reply pipe.
 const REPLY_BUFFER: usize = 64 << 10;
 /// A command that cannot be written within this time means the host stopped
@@ -151,12 +165,19 @@ struct Pending {
     // Held, never read: dropping the entry is what releases them.
     _admission: Option<OwnedPass>,
     sink: Option<Arc<Geometry>>,
+    /// A render posted in this slot's control block (the slot channel).
+    slot: Option<u32>,
+    /// Its caller gave up (cancelled): the entry holds the slot until the
+    /// host is done with it, and the reader thread reclaims both.
+    abandoned: bool,
 }
 
 #[derive(Default)]
 struct Table {
     entries: HashMap<u64, Pending>,
     closed: bool,
+    /// Posting order of slot renders: the host takes them in this order.
+    next_order: u64,
 }
 
 /// Why the parent terminated the host itself.
@@ -196,6 +217,9 @@ pub(crate) struct Connection {
     /// so it starts watching deadlines (it has no timer while idle).
     wake: Arc<Wake>,
     death: OnceLock<Death>,
+    /// Set once the post-mortem is recorded: wakes callers waiting on a
+    /// slot render.
+    dead: Event,
     kill_reason: Mutex<Option<KillReason>>,
     slots: Option<Arc<SlotPool>>,
     next_id: AtomicU64,
@@ -267,9 +291,24 @@ impl Connection {
         };
         let slot_spec = match &slots {
             Some(pool) => {
+                let fail = |e: io::Error| startup_error("tile slots", e);
                 let handle = child
                     .duplicate_into(pool.section.as_handle(), Access::ReadWrite.mask())
-                    .map_err(|e| startup_error("tile slots", e))?;
+                    .map_err(fail)?;
+                let control = child
+                    .duplicate_into(pool.control.as_handle(), Access::ReadWrite.mask())
+                    .map_err(fail)?;
+                // The host only waits on the semaphore and only sets the
+                // events.
+                let requests = child
+                    .duplicate_into(pool.requests.handle(), SYNCHRONIZATION_SYNCHRONIZE)
+                    .map_err(fail)?;
+                let done = pool
+                    .done
+                    .iter()
+                    .map(|event| child.duplicate_into(event.handle(), EVENT_MODIFY_STATE))
+                    .collect::<io::Result<Vec<_>>>()
+                    .map_err(fail)?;
                 Some(SlotSpec {
                     section: SectionRef {
                         handle,
@@ -277,6 +316,12 @@ impl Connection {
                     },
                     count: pool.count,
                     slot_bytes: pool.slot_bytes as u64,
+                    control: SectionRef {
+                        handle: control,
+                        len: pool.control.len() as u64,
+                    },
+                    requests,
+                    done,
                 })
             }
             None => None,
@@ -333,6 +378,7 @@ impl Connection {
             Err(e) => return Err(startup_failure(&child, &e.to_string())),
         };
         let wake = Arc::new(Wake::new().map_err(|e| startup_error("reader thread", e))?);
+        let dead = Event::new(true).map_err(|e| startup_error("reader thread", e))?;
         let conn = Arc::new(Self {
             generation,
             child,
@@ -340,6 +386,7 @@ impl Connection {
             table: Mutex::new(Table::default()),
             wake: Arc::clone(&wake),
             death: OnceLock::new(),
+            dead,
             kill_reason: Mutex::new(None),
             slots,
             next_id: AtomicU64::new(1),
@@ -484,6 +531,25 @@ impl Connection {
         reply_to: Option<SyncSender<Delivery>>,
         timeout: Duration,
     ) -> Option<Instant> {
+        let mut table = lock(&self.table);
+        if table.closed {
+            return None;
+        }
+        let (deadline, _) = self.register_locked(&mut table, id, request, reply_to, timeout, None);
+        Some(deadline)
+    }
+
+    /// [`Connection::register`] with the table already locked (and open);
+    /// returns the deadline and, for slot renders, the posting order.
+    fn register_locked(
+        &self,
+        table: &mut Table,
+        id: u64,
+        request: Request,
+        reply_to: Option<SyncSender<Delivery>>,
+        timeout: Duration,
+        slot: Option<u32>,
+    ) -> (Instant, u64) {
         let Request {
             expect,
             subject,
@@ -492,10 +558,6 @@ impl Connection {
             sink,
             ..
         } = request;
-        let mut table = lock(&self.table);
-        if table.closed {
-            return None;
-        }
         let was_idle = table.entries.is_empty();
         // The host renders `render_threads` at a time, in order; a render
         // sent behind others starts only when they are done (each within
@@ -513,6 +575,8 @@ impl Connection {
             timeout
         };
         let deadline = Instant::now() + allowed;
+        let order = table.next_order;
+        table.next_order += 1;
         table.entries.insert(
             id,
             Pending {
@@ -523,13 +587,14 @@ impl Connection {
                 target,
                 _admission: admission,
                 sink,
+                slot,
+                abandoned: false,
             },
         );
-        drop(table);
         if was_idle {
             self.wake.signal();
         }
-        Some(deadline)
+        (deadline, order)
     }
 
     /// Registers `request` and sends `frame`, in that order under the
@@ -562,6 +627,9 @@ impl Connection {
         timeout: Duration,
         cancel: Option<&CancelToken>,
     ) -> Result<(Payload, Option<TargetLease>), CallError> {
+        if matches!(request.target, Some(TargetLease::Slot(_))) {
+            return self.call_slot(request, timeout, cancel);
+        }
         let id = request.command.id().ok_or_else(|| {
             CallError::Fatal(EngineError::InvalidRequest("request without an id".into()))
         })?;
@@ -606,6 +674,147 @@ impl Connection {
                 }
             }
         }
+    }
+
+    /// A render into a tile slot, through the slot channel (module docs).
+    fn call_slot(
+        &self,
+        mut request: Request,
+        timeout: Duration,
+        cancel: Option<&CancelToken>,
+    ) -> Result<(Payload, Option<TargetLease>), CallError> {
+        let invalid = |what: String| CallError::Fatal(EngineError::InvalidRequest(what));
+        let id = request
+            .command
+            .id()
+            .ok_or_else(|| invalid("request without an id".into()))?;
+        let frame = encode_command(&request.command)
+            .map_err(|e| invalid(format!("cannot send request: {e}")))?;
+        let payload = frame.get(4..).unwrap_or_default();
+        let Some(TargetLease::Slot(slot)) = request.target.take() else {
+            return Err(invalid("slot render without a slot".into()));
+        };
+        let (pool, index) = (Arc::clone(&slot.pool), slot.index);
+        let lease = TargetLease::Slot(slot);
+        if payload.len() > MAX_REQUEST {
+            return Err(invalid("render request too large for a slot".into()));
+        }
+        let deadline = {
+            let mut table = lock(&self.table);
+            if table.closed {
+                return Err(CallError::Lost);
+            }
+            let (deadline, order) =
+                self.register_locked(&mut table, id, request, None, timeout, Some(index));
+            // Posted under the table lock: the host takes slot renders in
+            // registration order, which render deadlines rely on.
+            let posted = pool.controls.post(index, id, order, payload);
+            if !posted || pool.requests.release().is_err() {
+                drop(table);
+                return Err(self.violation("cannot post a slot render".into()));
+            }
+            deadline
+        };
+        let Some(event) = pool.done.get(index as usize) else {
+            return Err(self.violation("slot without a completion event".into()));
+        };
+        let give_up = deadline + GIVE_UP_GRACE;
+        let poll = u32::try_from(POLL.as_millis()).unwrap_or(3).max(1);
+        let mut killed = false;
+        loop {
+            match wait_any(&[event.handle(), self.dead.handle()], poll) {
+                Waited::Signalled(0) => return self.collect(id, index, &pool, lease),
+                Waited::Signalled(_) => {
+                    // The host ended, possibly after finishing this request.
+                    if pool.controls.is_done(index, id) {
+                        return self.collect(id, index, &pool, lease);
+                    }
+                    return Err(CallError::Lost);
+                }
+                Waited::TimedOut => {
+                    if cancel.is_some_and(CancelToken::is_cancelled) {
+                        // A request not taken yet sees the flag; a running
+                        // one gets the command. The slot stays the host's
+                        // until it is done (`abandon`).
+                        pool.controls.cancel(index);
+                        if let Ok(frame) = encode_command(&Command::Cancel { id }) {
+                            let _ = self.write(&frame);
+                        }
+                        self.abandon(id, lease);
+                        return Err(CallError::Cancelled);
+                    }
+                    if Instant::now() > give_up {
+                        if killed {
+                            return Err(CallError::Fatal(EngineError::Unavailable(
+                                "the render host does not respond".into(),
+                            )));
+                        }
+                        // The reader thread should have enforced the deadline.
+                        killed = true;
+                        self.kill(KillReason::Deadline { id });
+                    }
+                }
+                Waited::Failed => return Err(self.violation("cannot wait for a slot".into())),
+            }
+        }
+    }
+
+    /// The finished slot render `id`: checks and decodes the host's reply.
+    fn collect(
+        &self,
+        id: u64,
+        slot: u32,
+        pool: &SlotPool,
+        lease: TargetLease,
+    ) -> Result<(Payload, Option<TargetLease>), CallError> {
+        let bytes = match pool.controls.reply(slot, id) {
+            Ok(bytes) => bytes,
+            Err(e) => return Err(self.violation(format!("slot reply: {e:?}"))),
+        };
+        let result = match decode_reply(&bytes) {
+            Ok(Reply::Done { id: got, result }) if got == id => result,
+            Ok(_) => return Err(self.violation("slot reply to another request".into())),
+            Err(e) => return Err(self.violation(format!("slot reply: {e}"))),
+        };
+        if let Ok(payload) = &result
+            && !Expect::Rendered.accepts(payload)
+        {
+            return Err(self.violation("slot reply does not match its command".into()));
+        }
+        // The terminal reply: the entry, and with it the admission, goes.
+        // (Gone already if the host ended meanwhile.)
+        let entry = lock(&self.table).entries.remove(&id);
+        drop(entry);
+        match result {
+            Ok(payload) => Ok((payload, Some(lease))),
+            Err(e) => Err(CallError::Engine(e)),
+        }
+    }
+
+    /// The caller of slot render `id` gave up: its entry keeps the slot (and
+    /// the admission) until the host is done with it (`watch_deadlines`).
+    fn abandon(&self, id: u64, lease: TargetLease) {
+        let mut table = lock(&self.table);
+        let leftover = match table.entries.get_mut(&id) {
+            Some(entry) => {
+                entry.target = Some(lease);
+                entry.abandoned = true;
+                None
+            }
+            // The host ended: its slots are closed, nothing can reuse this one.
+            None => Some(lease),
+        };
+        drop(table);
+        drop(leftover);
+    }
+
+    /// Terminates a host that broke the slot channel's rules and waits for
+    /// the post-mortem, so the caller finds the death record.
+    fn violation(&self, why: String) -> CallError {
+        self.kill(KillReason::Protocol(why));
+        let ms = u32::try_from(DEATH_WAIT.as_millis()).unwrap_or(u32::MAX);
+        let _ = wait_any(&[self.dead.handle()], ms);
+        CallError::Lost
     }
 
     /// Sends `request` without waiting for its reply.
@@ -680,29 +889,66 @@ impl Connection {
     /// timer.
     fn watch_deadlines(&self) -> Option<Duration> {
         let now = Instant::now();
-        let overdue = {
-            let table = lock(&self.table);
+        let mut finished = Vec::new();
+        let mut broken = None;
+        let (overdue, abandoned) = {
+            let mut table = lock(&self.table);
             if table.entries.is_empty() {
                 return None;
             }
-            table
+            // Abandoned slot renders the host has finished: their slots and
+            // admissions are free again.
+            if let Some(pool) = &self.slots {
+                let done: Vec<(u64, u32)> = table
+                    .entries
+                    .iter()
+                    .filter(|(_, p)| p.abandoned)
+                    .filter_map(|(id, p)| p.slot.map(|s| (*id, s)))
+                    .filter(|(_, s)| pool.done.get(*s as usize).is_some_and(Event::try_consume))
+                    .collect();
+                for (id, slot) in done {
+                    if pool.controls.reply(slot, id).is_ok() {
+                        finished.extend(table.entries.remove(&id));
+                    } else {
+                        // The entry keeps the slot: the host is terminated.
+                        broken = Some(format!("slot {slot} signalled without a reply"));
+                    }
+                }
+            }
+            let overdue = table
                 .entries
                 .iter()
                 .filter(|(_, p)| p.deadline <= now)
                 .min_by_key(|(_, p)| p.deadline)
-                .map(|(id, _)| *id)
+                .map(|(id, _)| *id);
+            let abandoned = table.entries.values().any(|p| p.abandoned);
+            (overdue, abandoned)
         };
-        if let Some(id) = overdue {
+        // Leases and admissions are released outside the table lock.
+        drop(finished);
+        if let Some(why) = broken {
+            self.kill(KillReason::Protocol(why));
+        } else if let Some(id) = overdue {
             self.kill(KillReason::Deadline { id });
         }
-        Some(DEADLINE_TICK)
+        Some(if abandoned {
+            ABANDONED_TICK
+        } else {
+            DEADLINE_TICK
+        })
     }
 
     fn deliver(&self, id: u64, result: Result<Payload, EngineError>) -> Result<(), String> {
-        let pending = lock(&self.table)
-            .entries
-            .remove(&id)
-            .ok_or_else(|| format!("reply to unknown request {id}"))?;
+        let pending = {
+            let mut table = lock(&self.table);
+            if table.entries.get(&id).is_some_and(|p| p.slot.is_some()) {
+                return Err(format!("pipe reply to slot render {id}"));
+            }
+            table
+                .entries
+                .remove(&id)
+                .ok_or_else(|| format!("reply to unknown request {id}"))?
+        };
         if let Ok(payload) = &result
             && !pending.expect.accepts(payload)
         {
@@ -810,8 +1056,17 @@ impl Connection {
         let entries = {
             let mut table = lock(&self.table);
             let entries = std::mem::take(&mut table.entries);
+            // A slot render whose reply is already in its block finished
+            // before the host ended: not in flight, and its caller still
+            // collects the result.
+            let finished = |id: u64, p: &Pending| {
+                p.slot
+                    .zip(self.slots.as_ref())
+                    .is_some_and(|(slot, pool)| pool.controls.is_done(slot, id))
+            };
             let in_flight = entries
                 .iter()
+                .filter(|(id, p)| !finished(**id, p))
                 .map(|(id, p)| InFlight {
                     id: *id,
                     subject: p.subject,
@@ -830,6 +1085,9 @@ impl Connection {
         };
         if let Some(pool) = &self.slots {
             pool.close();
+        }
+        if let Err(e) = self.dead.set() {
+            log::error!("cannot wake slot renders of a dead render host: {e}");
         }
         for (_, pending) in entries {
             if let Some(tx) = pending.reply_to {
@@ -921,6 +1179,12 @@ pub(crate) struct SlotPool {
     count: u32,
     state: Mutex<PoolState>,
     cv: Condvar,
+    /// The slot channel: control blocks, request semaphore, one completion
+    /// event per slot (`win::channel`).
+    control: Section,
+    controls: Controls,
+    requests: Semaphore,
+    done: Vec<Event>,
 }
 
 struct PoolState {
@@ -936,6 +1200,13 @@ impl SlotPool {
         let section = Section::create(len)?;
         // The parent only ever reads slots.
         let view = section.map(Access::Read)?;
+        let control = Section::create(count as usize * SLOT_CONTROL_BYTES as usize)?;
+        let controls = Controls::new(control.map(Access::ReadWrite)?, count)
+            .ok_or_else(|| io::Error::other("slot control blocks"))?;
+        let requests = Semaphore::new(count)?;
+        let done = (0..count)
+            .map(|_| Event::new(false))
+            .collect::<io::Result<Vec<_>>>()?;
         Ok(Arc::new(Self {
             section,
             view,
@@ -946,6 +1217,10 @@ impl SlotPool {
                 closed: false,
             }),
             cv: Condvar::new(),
+            control,
+            controls,
+            requests,
+            done,
         }))
     }
 
@@ -1018,14 +1293,25 @@ impl TargetLease {
         }
     }
 
-    /// Copies the rendered pixels into `dst`.
-    pub(crate) fn copy_to(&self, dst: &mut [u8]) -> bool {
-        match self {
+    /// Copies the rendered pixels into `dst`; `swap_red_blue`: converting
+    /// RGBA to BGRA on the way.
+    pub(crate) fn copy_to(&self, dst: &mut [u8], swap_red_blue: bool) -> bool {
+        let (view, offset) = match self {
             Self::Slot(lease) => {
-                let offset = lease.index as usize * lease.pool.slot_bytes;
-                dst.len() <= lease.pool.slot_bytes && lease.pool.view.read_into(offset, dst)
+                if dst.len() > lease.pool.slot_bytes {
+                    return false;
+                }
+                (
+                    &lease.pool.view,
+                    lease.index as usize * lease.pool.slot_bytes,
+                )
             }
-            Self::Own { view, .. } => view.read_into(0, dst),
+            Self::Own { view, .. } => (view, 0),
+        };
+        if swap_red_blue {
+            view.read_into_swapping_red_blue(offset, dst)
+        } else {
+            view.read_into(offset, dst)
         }
     }
 }

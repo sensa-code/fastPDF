@@ -15,9 +15,11 @@
 
 #![allow(unsafe_code)]
 
+pub(crate) mod channel;
 pub(crate) mod pipe;
 pub(crate) mod process;
 pub(crate) mod section;
+pub(crate) mod sync;
 
 use std::collections::HashSet;
 use std::io;

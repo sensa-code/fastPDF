@@ -157,8 +157,15 @@ fn remote_results_are_identical_to_in_process() {
         let p = PageIndex::new(page);
         assert_eq!(remote.page_info(p), local.page_info(p));
         // Slot-sized and larger-than-slot renders (scale 4 is ~5 MB), both
-        // pixel formats, rotations, night mode, a paper color and a tile.
+        // pixel formats (pixels travel as RGBA; BGRA is swapped on the way
+        // out), rotations, night mode, a paper color and a tile.
         for (s, rotation, format, color) in [
+            (
+                2.0,
+                Rotation::R180,
+                PixelFormat::Bgra8Premultiplied,
+                ColorMode::Inverted,
+            ),
             (
                 0.25,
                 Rotation::R0,
@@ -894,8 +901,10 @@ fn renders_beyond_the_render_threads_wait_in_the_host() {
         .page(0, Behavior::Delay)
         .page(1, Behavior::Delay);
     let doc = Arc::new(open(&engine, &spec));
-    // Callers keep two renders in flight per render at a time.
-    assert_eq!(doc.render_queue_depth(), 2);
+    // One request in flight per render at a time (ADR 0008): the second
+    // render below comes from another caller, as when the viewport and the
+    // thumbnails render at once.
+    assert_eq!(doc.render_queue_depth(), 1);
     let started = Instant::now();
     let renders: Vec<_> = [0, 1]
         .into_iter()

@@ -31,8 +31,8 @@ use std::time::{Duration, Instant};
 use fastpdf_engine_api::{
     CancelToken, DocumentMetadata, DocumentSource, EngineDocument, EngineError, EngineInfo,
     FileOrigin, HostExit, HostExitReason, HostStatus, Link, MemoryPressure, OpenOptions,
-    OutlineItem, PageIndex, PageInfo, PdfEngine, PixmapMut, RenderOutcome, RenderRequest,
-    ResourceLimits, TextLayer,
+    OutlineItem, PageIndex, PageInfo, PdfEngine, PixelFormat, PixmapMut, RenderOutcome,
+    RenderRequest, ResourceLimits, TextLayer,
 };
 
 use crate::HostStats;
@@ -65,9 +65,14 @@ const KEPT_VERDICTS: usize = 8;
 const START_GRACE: Duration = Duration::from_secs(1);
 /// Delay before a taken spare host is replaced.
 const REFILL_DELAY: Duration = Duration::from_secs(1);
-/// Renders a caller keeps in flight per render at a time
-/// (`EngineDocument::render_queue_depth`).
-const RENDER_QUEUE_DEPTH: usize = 2;
+/// Channel order of the pixels the host writes, whatever the caller's
+/// target uses. The engine adapters render RGBA and convert while copying
+/// into the target (`PixmapMut::copy_from_rgba`); in RGBA that copy is a
+/// plain row copy, and the swap to BGRA happens here, in the copy out of
+/// the slot that is needed anyway. Per 1 MiB tile, host and FastPDF
+/// together spend about 300 kcycles less than with the swap in the host
+/// (docs/benchmarks/render-host.md).
+const TRANSFER_FORMAT: PixelFormat = PixelFormat::Rgba8Premultiplied;
 
 /// A [`PdfEngine`] whose documents live in render host processes.
 ///
@@ -991,7 +996,10 @@ impl EngineDocument for RemoteDocument {
         }
         self.shared.check_page(request.page)?;
         let bytes = target.data().len();
-        let format = target.format();
+        let swap_red_blue = match target.format() {
+            PixelFormat::Rgba8Premultiplied => false,
+            PixelFormat::Bgra8Premultiplied => true,
+        };
         let timeout = self.shared.timeout;
         let (payload, lease) = self.shared.call(
             Some(Subject::Page(request.page.get())),
@@ -1001,7 +1009,7 @@ impl EngineDocument for RemoteDocument {
                 let command = Command::Render(Render {
                     id,
                     request: request.clone(),
-                    format,
+                    format: TRANSFER_FORMAT,
                     target: lease.wire(),
                 });
                 let mut req = Request::new(command, Expect::Rendered, None);
@@ -1013,7 +1021,7 @@ impl EngineDocument for RemoteDocument {
             return Err(mismatch());
         };
         match lease {
-            Some(lease) if lease.copy_to(target.data_mut()) => Ok(outcome),
+            Some(lease) if lease.copy_to(target.data_mut(), swap_red_blue) => Ok(outcome),
             _ => Err(EngineError::Internal("render target lost".into())),
         }
     }
@@ -1079,12 +1087,11 @@ impl EngineDocument for RemoteDocument {
         Some(self.shared.host_status())
     }
 
-    /// Two per render at a time: the next request waits in the host while a
-    /// finished tile travels back, so the host's render threads never idle
-    /// on the round trip (the host renders `render_threads` at a time).
-    fn render_queue_depth(&self) -> usize {
-        RENDER_QUEUE_DEPTH
-    }
+    // `render_queue_depth` keeps its default of 1. With the slot channel
+    // and RGBA transfer, a second request in flight per render no longer
+    // buys new-content throughput, only more cache-hit throughput than
+    // in-process, at up to 22 percentage points more CPU per tile (more
+    // threads busy at once; ADR 0008, PR 4 third round).
 }
 
 /// Background geometry thread of one document: fills the cache batch by

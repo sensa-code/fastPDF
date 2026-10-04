@@ -230,6 +230,12 @@ impl Rng {
                         },
                         count,
                         slot_bytes,
+                        control: SectionRef {
+                            handle: self.handle(),
+                            len: u64::from(count) * SLOT_CONTROL_BYTES,
+                        },
+                        requests: self.handle(),
+                        done: (0..count).map(|_| self.handle()).collect(),
                     }
                 }),
             }),
@@ -456,6 +462,12 @@ fn hand_picked_messages_round_trip() {
                 },
                 count: 10,
                 slot_bytes: 1_114_112,
+                control: SectionRef {
+                    handle: 0x1A8,
+                    len: 10 * SLOT_CONTROL_BYTES,
+                },
+                requests: 0x1AC,
+                done: (0..10).map(|i| 0x1B0 + 4 * i).collect(),
             }),
         }),
         Command::Open(Open {
@@ -730,25 +742,51 @@ fn invalid_field_values_are_rejected() {
         Err(ProtocolError::BadValue("page size"))
     );
 
-    // Slot section size must match count x slot size.
-    let init = Command::Init(Init {
-        build_id: "b".into(),
-        engine: "e".into(),
-        workers: 1,
-        render_threads: 1,
-        slots: Some(SlotSpec {
-            section: SectionRef { handle: 8, len: 20 },
-            count: 2,
-            slot_bytes: 10,
-        }),
-    });
-    let mut frame = encode_command(&init).unwrap();
-    let len_at = frame.len() - 12 - 8;
-    frame[len_at..len_at + 8].copy_from_slice(&21u64.to_le_bytes());
+    // Slot section sizes must match the slot count, and every slot needs
+    // its completion event.
+    let spec = SlotSpec {
+        section: SectionRef { handle: 8, len: 20 },
+        count: 2,
+        slot_bytes: 10,
+        control: SectionRef {
+            handle: 12,
+            len: 2 * SLOT_CONTROL_BYTES,
+        },
+        requests: 16,
+        done: vec![20, 24],
+    };
+    let init = |slots: SlotSpec| {
+        Command::Init(Init {
+            build_id: "b".into(),
+            engine: "e".into(),
+            workers: 1,
+            render_threads: 1,
+            slots: Some(slots),
+        })
+    };
+    let decoded = |cmd: &Command| decode_command(&encode_command(cmd).unwrap()[4..]);
+    assert!(decoded(&init(spec.clone())).is_ok());
+    let mut bad = spec.clone();
+    bad.section.len = 21;
     assert_eq!(
-        decode_command(&frame[4..]),
+        decoded(&init(bad)),
         Err(ProtocolError::BadValue("slot section size"))
     );
+    let mut bad = spec.clone();
+    bad.control.len -= 1;
+    assert_eq!(
+        decoded(&init(bad)),
+        Err(ProtocolError::BadValue("slot control size"))
+    );
+    let mut bad = spec.clone();
+    bad.done.pop();
+    assert_eq!(
+        decoded(&init(bad)),
+        Err(ProtocolError::BadValue("slot event count"))
+    );
+    let mut bad = spec;
+    bad.done[1] = 0;
+    assert_eq!(decoded(&init(bad)), Err(ProtocolError::BadValue("handle")));
 }
 
 #[test]

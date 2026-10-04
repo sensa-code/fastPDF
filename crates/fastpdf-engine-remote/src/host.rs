@@ -8,7 +8,15 @@
 //! (opening, text, outline), single-page geometry (`PageInfo`, which
 //! FastPDF's UI thread may be waiting for, so it never queues behind a
 //! render) and background geometry batches (`PageInfos`). Only `Cancel` is
-//! handled inline, so cancellation reaches a busy worker at once. Every request runs inside `catch_unwind` — on top of the
+//! handled inline, so cancellation reaches a busy worker at once.
+//!
+//! Tile renders do not come through the command pipe: the render threads
+//! take them from the slot channel themselves (`win::channel`) and answer
+//! in the slot's control block, so neither pipe sees them. Renders larger
+//! than a slot still arrive as commands; the render threads serve them
+//! too, woken by a semaphore of their own.
+//!
+//! Every request runs inside `catch_unwind` — on top of the
 //! `GuardedDocument` the document is opened with — and ends with exactly one
 //! `Done` reply, so the parent never waits for an answer that cannot come.
 //! The only way a request goes unanswered is the death of the whole process,
@@ -36,9 +44,11 @@ use crate::protocol::{
     Payload, Render, RenderTarget, Reply, WireEngineInfo, decode_command, encode_reply, read_frame,
 };
 use crate::win;
+use crate::win::channel::{Controls, MAX_REPLY};
 use crate::win::section::{
     FileView, MappedBytes, ParentFile, ParentSection, SlotTable, TargetView,
 };
+use crate::win::sync::{Event, FOREVER, Semaphore, Waited, wait_any};
 
 /// Command-line flag in front of the connection spec.
 pub(crate) const IPC_FLAG: &str = "--fastpdf-ipc";
@@ -152,7 +162,10 @@ where
                 .name(format!("fastpdf-render-host-{kind:?}-{n}"))
                 .stack_size(WORKER_STACK)
                 .spawn(move || {
-                    let _ = catch_unwind(AssertUnwindSafe(|| worker(&state, kind)));
+                    let _ = catch_unwind(AssertUnwindSafe(|| match &state.channel {
+                        Some(channel) if kind == LaneKind::Render => slot_worker(&state, channel),
+                        _ => worker(&state, kind),
+                    }));
                     // A worker never returns. If one unwinds out of its loop,
                     // the request it held would never be answered: end the
                     // process so the parent sees a crash, not a silent hang.
@@ -226,15 +239,19 @@ where
             return Err((writer, EngineError::Panicked(msg)));
         }
     };
-    let slots = match init.slots {
-        Some(spec) => match SlotTable::adopt(spec.section.handle, spec.count, spec.slot_bytes) {
-            Ok(table) => Some(table),
-            Err(e) => {
-                let msg = format!("cannot map the tile slots: {e}");
-                return Err((writer, EngineError::Internal(msg)));
+    let (slots, channel) = match &init.slots {
+        Some(spec) => {
+            let adopted = SlotTable::adopt(spec.section.handle, spec.count, spec.slot_bytes)
+                .and_then(|table| Ok((table, Channel::adopt(spec)?)));
+            match adopted {
+                Ok((table, channel)) => (Some(table), Some(channel)),
+                Err(e) => {
+                    let msg = format!("cannot map the tile slots: {e}");
+                    return Err((writer, EngineError::Internal(msg)));
+                }
             }
-        },
-        None => None,
+        }
+        None => (None, None),
     };
     let info = engine.info();
     let ready = Reply::Ready {
@@ -252,6 +269,7 @@ where
         engine,
         document: RwLock::new(None),
         slots,
+        channel,
         cancels: Mutex::new(HashMap::new()),
         render: Lane::default(),
         work: Lane::default(),
@@ -295,10 +313,123 @@ struct Job {
     cancel: CancelToken,
 }
 
+/// The host's end of the slot channel.
+struct Channel {
+    controls: Controls,
+    requests: Semaphore,
+    done: Vec<Event>,
+    /// This host's own: released once per render queued on the render
+    /// lane (renders larger than a slot, which arrive as commands).
+    commands: Semaphore,
+}
+
+impl Channel {
+    fn adopt(spec: &crate::protocol::SlotSpec) -> io::Result<Self> {
+        let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "bad slot channel");
+        let section = ParentSection::adopt(spec.control.handle, spec.control.len)?;
+        let view = section
+            .section()
+            .ok_or_else(invalid)?
+            .map(win::section::Access::ReadWrite)?;
+        // The view keeps the section alive; the handle is no longer needed.
+        drop(section);
+        let controls = Controls::new(view, spec.count).ok_or_else(invalid)?;
+        let requests = Semaphore::adopt(spec.requests)?;
+        let done = spec
+            .done
+            .iter()
+            .map(|&value| Event::adopt(value))
+            .collect::<io::Result<Vec<_>>>()?;
+        if done.len() != controls.count() as usize {
+            return Err(invalid());
+        }
+        Ok(Self {
+            controls,
+            requests,
+            done,
+            commands: Semaphore::new(u32::MAX)?,
+        })
+    }
+}
+
+/// A render thread with the slot channel: takes tile renders from the
+/// control blocks, oldest first, and answers there (module docs), and runs
+/// the renders queued as commands. Waits on both semaphores without a
+/// timeout, so an idle host uses no CPU.
+fn slot_worker(state: &State, channel: &Channel) {
+    loop {
+        // Commands first: they are rare, and a steady stream of tile
+        // renders must not starve them past their deadline.
+        match wait_any(
+            &[channel.commands.handle(), channel.requests.handle()],
+            FOREVER,
+        ) {
+            Waited::Signalled(0) => {
+                // One release per queued job, so there is one.
+                if let Some(job) = state.try_job(LaneKind::Render) {
+                    state.run(job);
+                }
+                continue;
+            }
+            Waited::Signalled(_) => {}
+            // Without the semaphores no render can reach us: end, and the
+            // parent sees a crash rather than requests that never finish.
+            Waited::TimedOut | Waited::Failed => std::process::exit(i32::from(EXIT_PIPE)),
+        }
+        let Some((slot, id, bytes)) = channel.controls.take() else {
+            continue;
+        };
+        // Registered before the cancel flag is read: a `Cancel` command the
+        // main thread handles before this finds no token, but the parent
+        // set the flag before sending it.
+        let cancel = CancelToken::new();
+        lock(&state.cancels).insert(id, cancel.clone());
+        if channel.controls.cancelled(slot) {
+            cancel.cancel();
+        }
+        let frame = catch_unwind(AssertUnwindSafe(|| {
+            let result = match decode_command(&bytes) {
+                Ok(Command::Render(render))
+                    if render.id == id && render.target == RenderTarget::Slot(slot) =>
+                {
+                    state.render(render, &cancel)
+                }
+                _ => Err(EngineError::InvalidRequest(
+                    "malformed slot render request".into(),
+                )),
+            };
+            encode_reply(&Reply::Done { id, result })
+        }))
+        .unwrap_or_else(|payload| {
+            let msg = format!("render host: {}", panic_message(payload.as_ref()));
+            encode_reply(&Reply::Done {
+                id,
+                result: Err(EngineError::Panicked(msg)),
+            })
+        });
+        lock(&state.cancels).remove(&id);
+        // A render reply is a few bytes; an error message is clipped well
+        // below the block's room.
+        let reply = frame.get(4..).filter(|r| r.len() <= MAX_REPLY);
+        let answered = reply.is_some_and(|r| channel.controls.finish(slot, r))
+            && channel
+                .done
+                .get(slot as usize)
+                .is_some_and(|e| e.set().is_ok());
+        if !answered {
+            // The parent would wait for this render until its deadline;
+            // ending now makes it a crash it handles at once.
+            std::process::exit(i32::from(EXIT_PIPE));
+        }
+    }
+}
+
 struct State {
     engine: Box<dyn PdfEngine>,
     document: RwLock<Option<Arc<GuardedDocument>>>,
     slots: Option<SlotTable>,
+    /// Present with the slots: tile renders arrive here, not on the pipe.
+    channel: Option<Channel>,
     /// Cancel tokens of queued and running requests.
     cancels: Mutex<HashMap<u64, CancelToken>>,
     render: Lane,
@@ -315,6 +446,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 fn worker(state: &State, lane: LaneKind) {
     loop {
         let job = state.next_job(lane);
+        state.run(job);
+    }
+}
+
+impl State {
+    /// Runs a queued request and sends its reply on the pipe.
+    fn run(&self, job: Job) {
         let Job {
             id,
             command,
@@ -323,7 +461,7 @@ fn worker(state: &State, lane: LaneKind) {
         // Backstop for panics outside the engine's guard (protocol or slot
         // handling in this file): the request still gets its terminal reply.
         let frame = catch_unwind(AssertUnwindSafe(|| {
-            let result = state.execute(command, &cancel);
+            let result = self.execute(command, &cancel);
             encode_reply(&Reply::Done { id, result })
         }))
         .unwrap_or_else(|payload| {
@@ -333,15 +471,13 @@ fn worker(state: &State, lane: LaneKind) {
                 result: Err(EngineError::Panicked(msg)),
             })
         });
-        lock(&state.cancels).remove(&id);
-        if state.writer.send(&frame).is_err() {
+        lock(&self.cancels).remove(&id);
+        if self.writer.send(&frame).is_err() {
             // The parent is gone; nobody is waiting for anything.
             std::process::exit(i32::from(EXIT_PIPE));
         }
     }
-}
 
-impl State {
     fn lane(&self, kind: LaneKind) -> &Lane {
         match kind {
             LaneKind::Render => &self.render,
@@ -355,13 +491,30 @@ impl State {
         let id = command.id().unwrap_or(0);
         let cancel = CancelToken::new();
         lock(&self.cancels).insert(id, cancel.clone());
-        let lane = self.lane(LaneKind::of(&command));
+        let kind = LaneKind::of(&command);
+        let lane = self.lane(kind);
         lock(&lane.queue).push_back(Job {
             id,
             command,
             cancel,
         });
-        lane.wake.notify_one();
+        match &self.channel {
+            // The render threads wait on the slot channel's semaphores, not
+            // on the lane.
+            Some(channel) if kind == LaneKind::Render => {
+                if channel.commands.release().is_err() {
+                    // The render would never start; the parent handles a
+                    // crash at once instead of waiting for its deadline.
+                    std::process::exit(i32::from(EXIT_PIPE));
+                }
+            }
+            _ => lane.wake.notify_one(),
+        }
+    }
+
+    /// A queued job of `kind`, without waiting.
+    fn try_job(&self, kind: LaneKind) -> Option<Job> {
+        lock(&self.lane(kind).queue).pop_front()
     }
 
     fn cancel(&self, id: u64) {

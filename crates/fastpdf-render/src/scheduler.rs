@@ -3,11 +3,11 @@
 //! * Workers never run on the UI thread.
 //! * The worker count is fixed and small: latency matters more than
 //!   throughput, and a 32-core machine must not render 32 tiles at once.
-//! * For documents rendered in another process
+//! * For documents that want more than one request in flight per render
 //!   (`EngineDocument::render_queue_depth` > 1) each worker gets company:
 //!   `workers * depth` threads keep that many requests in flight, so the
-//!   next tile already waits in the render host while a finished one travels
-//!   back. The host still renders only `workers` tiles at a time.
+//!   next tile already waits in the engine while a finished one travels
+//!   back. The engine still renders only `workers` tiles at a time.
 //! * Every new plan replaces the queue of its lane: queued jobs the view no
 //!   longer needs are discarded, and in-flight ones are cancelled.
 
@@ -565,8 +565,8 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
-    /// A document rendered in another process: two requests in flight per
-    /// render at a time.
+    /// A document whose renders wait on a round trip: two requests in
+    /// flight per render at a time.
     struct RemoteLike(SlowDoc);
 
     impl EngineDocument for RemoteLike {

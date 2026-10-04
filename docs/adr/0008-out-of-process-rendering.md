@@ -1,6 +1,6 @@
 # ADR 0008 — Out-of-Process Rendering（render host process）
 
-- 狀態：Accepted（2026-10-05）。PR 1–4 已實作（`crates/fastpdf-engine-remote`）。**Windows 的預設 engine 是 `hayro-isolated`**；`--engine hayro` 在 process 內 render，`fastpdf-bench` 一律在 process 內。PR 5（降低權限）還沒做。實作與本文的差異見〈實作現況〉，驗收見〈PR 4 第二輪〉。
+- 狀態：Accepted（2026-10-05）。PR 1–4 已實作（`crates/fastpdf-engine-remote`）。**Windows 的預設 engine 是 `hayro-isolated`**；`--engine hayro` 在 process 內 render，`fastpdf-bench` 一律在 process 內。PR 5（降低權限）還沒做。實作與本文的差異見〈實作現況〉，驗收見〈PR 4 第二輪〉，每個 tile 的 CPU 見〈PR 4 第三輪〉。
 - 日期：2026-10-04
 - 相關 spec：§12、§18、§24、§25、§29、§33；風險：`docs/PROJECT_AUDIT.md` R1、R10；`docs/audit/hayro.md` R1–R3
 - 原型：scratchpad 的 `oop/proto`（不在 repo 內），以 path dependency 指向 HEAD `956c573` 的 `git archive` 快照，避免受其他 agent 未 commit 的修改影響
@@ -400,11 +400,51 @@ engine 的快取與文件 bytes 整批移到 host，總量不變；額外成本�
   - `fastpdf-bench` 維持在 process 內。
   - 其他平台沒有 host 實作，維持在 process 內。
 
+### PR 4 第三輪（2026-10-05）：每個 tile 的 CPU
+
+完整的方法與數字見 [`docs/benchmarks/render-host.md`](../benchmarks/render-host.md)〈第三輪〉。
+
+- **問題**：第二輪之後，每個 tile 的 CPU cycles（parent＋host）比 in-process 多：新內容 8–31%，cache 命中 13–59%。預設 isolated 會讓筆電 render 時更耗電。目標是兩者都在 +10% 內，吞吐量與 B-8 維持。
+- **成本來源**（每個 thread 的 cycles 與單獨的微量測）：
+  - IPC：每個 tile 喚醒 4 條 thread，兩端各一次 pipe 寫入與讀取。
+  - host 裡的 BGRA 轉換：engine 的 block cache 是 RGBA，`copy_from_rgba` 逐像素換位；來源不在 CPU 快取時每 MiB 570–680 kcycles，同樣的資料逐列複製只要 190–290。in-process 時轉換與新記憶體的 page fault 在同一趟，remote 時是多出來的一趟。
+  - pipelining：同時忙碌的 thread 變多，每個 tile 多 2–22 個百分點（in-process 的 worker 從 1 條加到 4 條也多 14–18%）。
+- **修改**：
+  1. **slot channel**（`win/channel.rs`、`win/sync.rs`）：tile render 不經 pipe。
+     - 每個 slot 一個 4 KiB 控制區塊（第二個共享 section）。parent 寫入編碼好的 `Render`、標成 REQUESTED（在 table 的鎖內，順序與註冊順序相同），再 release 一個 semaphore。
+     - host 的 render thread 等 semaphore，以 CAS 取 order 最小的區塊，render 後把 `Done` 寫回區塊，set 該 slot 的完成 event。
+     - 等待中的 worker 直接等自己 slot 的 event 與「host 已結束」的 event。每個 tile 只喚醒 2 條 thread，沒有 `ReadFile`／`WriteFile`。
+     - 取消仍送 `Cancel`，另外在區塊設 cancel flag；deadline、crash 歸責照舊；被放棄的 slot 等 host 做完後由 reader 的 tick 回收；host 結束前已寫好回覆的請求照常交付，不算在途。
+     - handle 以最小權限 duplicate：semaphore 只有 `SYNCHRONIZE`，event 只有 `EVENT_MODIFY_STATE`。parent 檢查區塊的狀態、id、長度後才以 protocol decoder 解碼，違規就終止 host。
+     - 大於 slot 的 render 仍走命令，由同一組 render thread 處理，host 同時 render 的數量不變。
+  2. **RGBA 傳輸**：parent 一律向 host 要 RGBA（engine 自己的順序），host 的 copy out 變成逐列複製；parent 從 slot 複製時順便換成 BGRA（u32 遮罩與位移，會向量化）。不改 protocol，結果逐位元組相同。
+  3. **取消 pipelining**：`render_queue_depth` 回到預設的 1。scheduler 的 `workers × depth` 機制保留給 round trip 慢的 engine；host 的 render lane 與排隊 render 的 deadline 照舊（viewport 與縮圖的 scheduler 同時 render 時仍會排隊）。
+- **結果**（7 輪交替，每次執行前負載 < 20%；中位數，修改前 → 修改後）：
+
+| 檔案 | CPU 新內容 | CPU cache 命中 | 吞吐量 新內容 | 吞吐量 cache 命中 |
+|---|---|---|---|---|
+| three-pages | +28.4% → −2.0% | +53.7% → −2.2% | −0.4% → −0.1% | +12.3% → +0.2% |
+| dense-300p | +11.7% → +2.5% | +9.7% → +1.0% | +0.0% → −2.3% | +0.3% → −1.3% |
+| photos | +8.3% → +1.4% | +50.1% → +0.8% | −1.0% → −1.0% | +14.9% → +0.5% |
+| gov-letter | +27.6% → −1.4% | +56.4% → +6.5% | −4.0% → +0.7% | +6.9% → −3.8% |
+
+- **各項的貢獻**（另一組 4 個版本輪替，cache 命中）：只有 slot channel 時少 0–11 個百分點；加上 RGBA 傳輸再少 4–23；取消 pipelining 再少 6–22（新內容 2–19）。
+- **取捨**：
+  - cache 命中的吞吐量不再比 in-process 快，變成相同。保留 pipelining 時快 44–61%（dense-300p 沒有差），但 CPU 多 5–23%。新內容的吞吐量兩種都相同。
+  - 背景負載 24–30% 時，cache 命中的 CPU 最多 +18.9%、吞吐量最低 −19.2%：每個 tile 有兩次 thread 交接，tile 很便宜時喚醒延遲就顯得明顯。
+  - 不開 UI 的第一頁（開檔加第一頁所有 tile）：remote 比 in-process 多 1.16–1.23 ms，保留 pipelining 時 1.24–1.34 ms。
+- **B-8 抽查**（dist build，3 頁 4 對，負載 4–18%）：`window_visible` 配對差中位數 +2.95 ms；`first_page_exact` +8.45 ms〔−9.86, +18.68〕，超過 5 ms。
+  - 4 對中有 2 對是 B 的整個啟動就較晚（`window_visible` +11.4、+6.0 ms）；第一頁只會落在第一個 frame 或晚一個 frame（0 或 6–15 ms），A、B 都是。
+  - 不開 UI 的量測顯示 render 的差距是 1.2 ms，與有無 pipelining 無關。4 對不足以判定，需要時以第二輪的方法（每個情境 6 對）重跑。
+  - idle：兩個 host 的 FastPDF thread 都是 0 cycles、0 次喚醒；private bytes +6.00 MB、private working set +3.50 MB（第二輪 +6.40／+3.70）。
+- **正確性**：84 個 fixture 0 差異；取消、crash 歸責、deadline、slot 回收、空檔、只交 handle 的整合測試全部通過；新增 slot channel、event／semaphore、R／B 換位與 BGRA＋夜間模式＋大於 slot 的比對測試。
+- **還沒做**：in-process 的 `copy_from_rgba` 也是逐像素換位（engine-api 的 `PixmapMut`），改成同樣的遮罩寫法可以讓 in-process 的 cache 命中也變快。這不影響 remote（host 已不換位）。
+
 ## Consequences
 
 - UI process 不再因為 engine 的 stack overflow、配置失敗、mmap I/O 錯誤或失控運算而消失，§24、§25 的要求從「盡量 contain」變成由 OS 保證。R1 的「中期緩解」與 R10 都由這個 ADR 承接。
 - 多一個 process 要管理：spawn、握手、重啟、版本一致性、診斷（host 的 log 要轉送到 parent 的 logger）。
-- 每個 tile 多一次 1 MiB 複製與一次 IPC 往返（20–26 µs，要喚醒 4 條 thread）。parent 為每個同時進行的 render 在 host 多排一個請求，所以吞吐量與 in-process 相同（新內容 −2.4% 至 +5.3%、cache 命中 −2.0% 至 +18.0%）。代價是每個 tile 的 CPU cycles 多 8–31%（新內容）與 13–59%（cache 命中），見〈PR 4 第二輪〉。低階機器要在 B-8 補測（R12）。
+- 每個 tile 多一次 1 MiB 複製（parent 從 slot 複製時順便把 RGBA 換成 BGRA）與一次 slot channel 往返（喚醒 2 條 thread）。每個 tile 的 CPU cycles 與 in-process 相差 −2.2% 至 +6.5%，吞吐量相同（新內容 −2.3% 至 +0.7%、cache 命中 −3.8% 至 +0.5%），見〈PR 4 第三輪〉。背景負載高時 cache 命中的 tile 受兩次 thread 交接的喚醒延遲影響較大。低階機器要在 B-8 補測（R12）。
 - 記憶體總量基本不變，但 private bytes 分成兩個 process，再加上待命 host。B-8 第二輪的合計比 in-process 多：private bytes 6.4 MiB、private working set 3.7 MiB。memory budget manager 已把 host 的 private 納入 external bytes，overlay 也分開顯示。
 - 列印、搜尋、選取透過 `GuardedDocument` 的介面自動走 host，不需要個別修改。
 

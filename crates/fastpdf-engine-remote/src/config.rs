@@ -59,8 +59,8 @@ pub struct RemoteConfig {
     pub host_workers: u32,
     /// Renders a host runs at a time: as many as the caller renders tiles
     /// at a time in-process, so the engine keeps as many caches as there.
-    /// Requests beyond that wait in the host (the caller keeps
-    /// `render_queue_depth` per render in flight to hide the round trip).
+    /// Renders beyond that (several schedulers at once, such as the
+    /// viewport's and the thumbnails') wait in the host.
     pub render_threads: u32,
     /// Keep one started host in reserve, so opening a document or restarting
     /// after a crash does not wait for a process to start.

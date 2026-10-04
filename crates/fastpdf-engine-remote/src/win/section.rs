@@ -27,6 +27,7 @@ use std::os::windows::fs::FileExt;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 use std::ptr::NonNull;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use windows_sys::Win32::Foundation::{DuplicateHandle, FALSE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Memory::{
@@ -220,6 +221,35 @@ impl View {
         true
     }
 
+    /// As [`View::read_into`], swapping the red and blue bytes of every
+    /// 4-byte pixel on the way (RGBA to BGRA, or back); bytes after the
+    /// last whole pixel are copied unchanged.
+    pub(crate) fn read_into_swapping_red_blue(&self, offset: usize, dst: &mut [u8]) -> bool {
+        if offset
+            .checked_add(dst.len())
+            .is_none_or(|end| end > self.len)
+        {
+            return false;
+        }
+        // SAFETY: the range lies inside the mapping (checked above).
+        let src = unsafe { self.ptr.as_ptr().add(offset) };
+        let (pixels, rest) = dst.as_chunks_mut::<4>();
+        let whole = pixels.len() * 4;
+        for (i, px) in pixels.iter_mut().enumerate() {
+            // SAFETY: pixel `i` lies inside the checked range, and `[u8; 4]`
+            // has no alignment requirement. As in `read_into`, the bytes are
+            // read through a raw pointer while the other process leaves the
+            // range alone (slot rules, module docs); `dst` is a distinct
+            // local buffer.
+            let rgba = unsafe { src.add(i * 4).cast::<[u8; 4]>().read() };
+            *px = swap_red_blue(u32::from_le_bytes(rgba)).to_le_bytes();
+        }
+        // SAFETY: the bytes after the last whole pixel lie inside the
+        // checked range too.
+        unsafe { std::ptr::copy_nonoverlapping(src.add(whole), rest.as_mut_ptr(), rest.len()) };
+        true
+    }
+
     /// Copies `src` into the view at `offset`. Returns false (copying
     /// nothing) when the range is out of bounds.
     pub(crate) fn write_from(&self, offset: usize, src: &[u8]) -> bool {
@@ -236,6 +266,52 @@ impl View {
             std::ptr::copy_nonoverlapping(src.as_ptr(), self.ptr.as_ptr().add(offset), src.len());
         }
         true
+    }
+
+    /// Copies `src` into the view at `offset`, for bytes the other process
+    /// reads (the slot channel's control blocks). Returns false (copying
+    /// nothing) when the range is out of bounds. The view must have been
+    /// mapped writable.
+    pub(crate) fn write_shared(&self, offset: usize, src: &[u8]) -> bool {
+        if offset
+            .checked_add(src.len())
+            .is_none_or(|end| end > self.len)
+        {
+            return false;
+        }
+        // SAFETY: the range lies inside the mapping (checked above) and the
+        // caller mapped the view writable. We write through a raw pointer
+        // and never hold a reference into the range, so the other process
+        // reading (or, misbehaving, writing) it at the same time can only
+        // leave arbitrary byte values, which every reader validates.
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), self.ptr.as_ptr().add(offset), src.len());
+        }
+        true
+    }
+
+    /// The 32-bit word at `offset`, as an atomic shared with the other
+    /// process (the slot channel's control blocks). `None` when the word is
+    /// out of bounds or misaligned.
+    pub(crate) fn atomic_u32(&self, offset: usize) -> Option<&AtomicU32> {
+        if !offset.is_multiple_of(4) || offset.checked_add(4).is_none_or(|end| end > self.len) {
+            return None;
+        }
+        // SAFETY: the word lies inside the mapping, which stays valid while
+        // `self` (borrowed by the result) lives, and is 4-aligned (views
+        // start at a page boundary). Both processes access these words only
+        // atomically; a misbehaving one can only store arbitrary values,
+        // which every reader validates.
+        Some(unsafe { AtomicU32::from_ptr(self.ptr.as_ptr().add(offset).cast()) })
+    }
+
+    /// As [`View::atomic_u32`], for a 64-bit word.
+    pub(crate) fn atomic_u64(&self, offset: usize) -> Option<&AtomicU64> {
+        if !offset.is_multiple_of(8) || offset.checked_add(8).is_none_or(|end| end > self.len) {
+            return None;
+        }
+        // SAFETY: as in `atomic_u32`, with 8-byte alignment.
+        Some(unsafe { AtomicU64::from_ptr(self.ptr.as_ptr().add(offset).cast()) })
     }
 
     /// A mutable slice over `offset..offset + len`.
@@ -257,6 +333,13 @@ impl View {
         // the caller.
         Some(unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr().add(offset), len) })
     }
+}
+
+/// One pixel read as a little-endian word, its bytes 0 and 2 swapped:
+/// RGBA becomes BGRA and back. Written with masks and shifts so the copy
+/// loop vectorizes.
+fn swap_red_blue(px: u32) -> u32 {
+    (px & 0xFF00_FF00) | ((px >> 16) & 0xFF) | ((px & 0xFF) << 16)
 }
 
 impl Drop for View {
@@ -523,6 +606,37 @@ mod tests {
         assert_eq!(&out[..4], b"abcd");
         // SAFETY: as above.
         assert!(unsafe { a.slice_mut(8000, 500) }.is_none());
+    }
+
+    #[test]
+    fn copies_out_can_swap_red_and_blue() {
+        let section = Section::create(8192).unwrap();
+        let a = section.map(Access::ReadWrite).unwrap();
+        let b = section.map(Access::Read).unwrap();
+        // Two RGBA pixels and two stray bytes.
+        let rgba = [10, 20, 30, 255, 1, 2, 3, 4, 7, 8];
+        assert!(a.write_from(100, &rgba));
+        let mut out = [0u8; 10];
+        assert!(b.read_into_swapping_red_blue(100, &mut out));
+        assert_eq!(out, [30, 20, 10, 255, 3, 2, 1, 4, 7, 8]);
+        // A larger run, as a tile row: swapping twice gives the pixels back.
+        let row: Vec<u8> = (0..4096u32).map(|i| (i * 7 % 251) as u8).collect();
+        assert!(a.write_from(4096, &row));
+        let mut bgra = vec![0u8; row.len()];
+        assert!(b.read_into_swapping_red_blue(4096, &mut bgra));
+        let (src_px, _) = row.as_chunks::<4>();
+        let (dst_px, _) = bgra.as_chunks::<4>();
+        for (s, d) in src_px.iter().zip(dst_px) {
+            assert_eq!(*d, [s[2], s[1], s[0], s[3]]);
+        }
+        assert!(a.write_from(0, &bgra));
+        let mut back = vec![0u8; row.len()];
+        assert!(b.read_into_swapping_red_blue(0, &mut back));
+        assert_eq!(back, row);
+        // Out of range: refused, nothing copied.
+        let mut short = [9u8; 8];
+        assert!(!b.read_into_swapping_red_blue(8188, &mut short));
+        assert_eq!(short, [9; 8]);
     }
 
     #[test]
