@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex};
 
 use fastpdf_cache::{BudgetedCache, SharedCache, retention};
 use fastpdf_engine_api::{
-    Destination, DestinationView, DocumentId, EngineDocument, EngineError, GuardedDocument, PageId,
-    PageIndex, PageInfo, PageRect, PageSize, PixelFormat, Pixmap, RenderRequest, RenderScale,
-    Rgba8, Rotation,
+    ColorMode, Destination, DestinationView, DocumentId, EngineDocument, EngineError,
+    GuardedDocument, PageId, PageIndex, PageInfo, PageRect, PageSize, PixelFormat, Pixmap,
+    RenderRequest, RenderScale, Rgba8, Rotation,
 };
 use fastpdf_render::{
     DocumentLayout, Lane, LayoutRect, PlanConfig, Priority, RenderJob, RenderScheduler,
@@ -126,6 +126,7 @@ pub struct ThumbnailKey {
     pub page: PageId,
     pub width_px: u32,
     pub rotation: Rotation,
+    pub color: ColorMode,
 }
 
 /// One sidebar row returned by [`DocumentSession::thumbnails`].
@@ -180,6 +181,7 @@ struct Thumbnails<V> {
 struct PlanInputs {
     viewport: Viewport,
     rotation: Rotation,
+    color: ColorMode,
     layout_version: u64,
 }
 
@@ -192,6 +194,7 @@ pub struct DocumentSession<V: Clone + Send + 'static> {
     layout_version: u64,
     viewport: Viewport,
     rotation: Rotation,
+    color: ColorMode,
     zoom_mode: ZoomMode,
     scheduler: RenderScheduler<RenderKey>,
     incoming: Receiver<Incoming<V>>,
@@ -299,6 +302,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             layout,
             layout_version: 0,
             rotation: Rotation::R0,
+            color: ColorMode::Normal,
             zoom_mode: ZoomMode::FitWidth,
             scheduler,
             incoming,
@@ -345,6 +349,17 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
 
     pub fn rotation(&self) -> Rotation {
         self.rotation
+    }
+
+    pub fn color_mode(&self) -> ColorMode {
+        self.color
+    }
+
+    /// Switches page colors (e.g. night mode). Tiles of the other mode stay
+    /// cached until evicted, so switching back is instant while they last;
+    /// the UI should paint unrendered paper in the matching color.
+    pub fn set_color_mode(&mut self, color: ColorMode) {
+        self.color = color;
     }
 
     /// Tile cache handle, for registration with the memory budget manager.
@@ -567,6 +582,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         let inputs = PlanInputs {
             viewport: self.viewport,
             rotation: self.rotation,
+            color: self.color,
             layout_version: self.layout_version,
         };
         let plan = plan_tiles(
@@ -687,10 +703,12 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         let visible = visible.start.min(count)..visible.end.min(count);
         let wanted =
             visible.start.saturating_sub(margin)..visible.end.saturating_add(margin).min(count);
+        let color = self.color;
         let key = |page: u32| ThumbnailKey {
             page: PageId::new(id, PageIndex::new(page)),
             width_px: th.width_px,
             rotation,
+            color,
         };
 
         let mut items = Vec::with_capacity(visible.len());
@@ -739,6 +757,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
                 scale,
             );
             request.background = self.config.paper;
+            request.color_mode = color;
             // Visible rows first, in order; margin rows after them.
             let distance = if in_view {
                 (page - visible.start) as f32
@@ -769,9 +788,9 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             near_margin: self.config.near_margin,
             prefetch_next_page: true,
             rotation: self.rotation,
+            color: self.color,
             background: self.config.paper,
             gutter: self.config.tile_gutter,
-            ..PlanConfig::default()
         }
     }
 
@@ -786,13 +805,18 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         while let Ok(msg) = self.incoming.try_recv() {
             match msg {
                 Incoming::Tile { key, image, bytes } => {
-                    // Results for an old rotation are useless now.
+                    // Results for an old rotation are useless now; tiles of
+                    // the other color mode are kept for a quick switch back.
                     if key.rotation == self.rotation {
                         self.tiles.insert(key, image, bytes);
                     }
                 }
                 Incoming::Thumbnail { key, image, bytes } => match &self.thumbnails {
-                    Some(th) if th.width_px == key.width_px && key.rotation == self.rotation => {
+                    Some(th)
+                        if th.width_px == key.width_px
+                            && key.rotation == self.rotation
+                            && key.color == self.color =>
+                    {
                         th.cache.insert(key, image, bytes);
                     }
                     // Sidebar closed or resized meanwhile: release right away.
@@ -1302,6 +1326,25 @@ mod tests {
         let top = s.layout().page_rect(PageIndex::new(5)).unwrap().y;
         assert!((s.viewport().scroll_y - (top + 400.0)).abs() < 1e-6);
         assert_eq!(s.current_page(), PageIndex::new(5));
+    }
+
+    #[test]
+    fn color_mode_switch_renders_inverted_tiles() {
+        let mut s = session();
+        let normal = settle(&mut s);
+        assert_eq!(&normal.tiles[0].image.data()[..4], &[255, 255, 255, 255]);
+        s.set_color_mode(ColorMode::Inverted);
+        let inverted = settle(&mut s);
+        assert!(
+            inverted
+                .tiles
+                .iter()
+                .all(|t| t.key.color == ColorMode::Inverted)
+        );
+        assert_eq!(&inverted.tiles[0].image.data()[..4], &[0, 0, 0, 255]);
+        // Switching back reuses the cached normal tiles: nothing pending.
+        s.set_color_mode(ColorMode::Normal);
+        assert_eq!(s.frame().pending, 0);
     }
 
     #[test]

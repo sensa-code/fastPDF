@@ -13,9 +13,9 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{
-    CancelToken, DocumentMetadata, DocumentSource, EngineDocument, EngineError, EngineInfo, Link,
-    MemoryPressure, OpenOptions, OutlineItem, PageIndex, PageInfo, PdfEngine, PixmapMut,
-    RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
+    CancelToken, ColorMode, DocumentMetadata, DocumentSource, EngineDocument, EngineError,
+    EngineInfo, Link, MemoryPressure, OpenOptions, OutlineItem, PageIndex, PageInfo, PdfEngine,
+    PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
 };
 
 /// Panics after which a document is considered degraded; the reader core
@@ -147,7 +147,20 @@ impl EngineDocument for GuardedDocument {
             ));
         }
         self.limits.check_bitmap(target.size())?;
-        let outcome = self.call(|| self.inner.render(request, target, cancel))?;
+        // Engines always render normal colors; derived color modes are
+        // applied here, uniformly for every engine.
+        let normal;
+        let engine_request = if request.color_mode == ColorMode::Normal {
+            request
+        } else {
+            normal = RenderRequest {
+                color_mode: ColorMode::Normal,
+                ..request.clone()
+            };
+            &normal
+        };
+        let outcome = self.call(|| self.inner.render(engine_request, target, cancel))?;
+        apply_color_mode(request.color_mode, target);
         // A result that arrives after cancellation is stale; drop it.
         cancel.check()?;
         Ok(outcome)
@@ -177,6 +190,19 @@ impl EngineDocument for GuardedDocument {
             self.inner.trim_memory(pressure);
             Ok(())
         });
+    }
+}
+
+/// Post-processes a normally rendered bitmap into `mode`.
+fn apply_color_mode(mode: ColorMode, target: &mut PixmapMut<'_>) {
+    if mode == ColorMode::Inverted {
+        // Premultiplied inversion: straight 255 - c becomes a - c, in
+        // either channel order.
+        let (pixels, _) = target.data_mut().as_chunks_mut::<4>();
+        for px in pixels {
+            let a = px[3];
+            *px = [a - px[0].min(a), a - px[1].min(a), a - px[2].min(a), a];
+        }
     }
 }
 
@@ -348,6 +374,17 @@ mod tests {
             doc.page_info(PageIndex::new(3)),
             Err(EngineError::PageOutOfRange { .. })
         ));
+    }
+
+    #[test]
+    fn inverted_mode_turns_paper_black_for_any_engine() {
+        let doc = open(3, b"ok").unwrap();
+        let mut req = request(&doc, 0);
+        req.color_mode = ColorMode::Inverted;
+        let mut pm = Pixmap::new(req.region.size(), PixelFormat::default(), doc.limits()).unwrap();
+        doc.render(&req, &mut pm.as_mut(), &CancelToken::new())
+            .unwrap();
+        assert_eq!(&pm.data()[..4], &[0, 0, 0, 255]);
     }
 
     #[test]

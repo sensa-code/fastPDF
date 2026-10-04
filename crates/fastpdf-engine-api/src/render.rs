@@ -6,6 +6,10 @@ use crate::{PageIndex, PageSize, PixelRect, RenderScale, Rgba8, Rotation};
 pub enum ColorMode {
     #[default]
     Normal,
+    /// Night mode: colors inverted (white paper becomes black). Applied by
+    /// the guard layer after the engine renders normally, so every engine
+    /// supports it identically.
+    Inverted,
 }
 
 /// One render job: a region (usually a tile) of one page at one scale.
