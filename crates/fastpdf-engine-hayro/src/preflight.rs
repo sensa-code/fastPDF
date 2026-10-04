@@ -15,7 +15,6 @@
 
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use fastpdf_engine_api::{CancelToken, EngineError, LimitKind, ResourceLimits};
@@ -229,7 +228,7 @@ fn has_inline_image(content: &[u8]) -> bool {
 fn checks_enabled() -> (bool, bool) {
     #[cfg(feature = "diagnostics")]
     {
-        static MODE: OnceLock<(bool, bool)> = OnceLock::new();
+        static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
         *MODE.get_or_init(
             || match std::env::var("FASTPDF_HAYRO_PREFLIGHT").as_deref() {
                 Ok("0") => (false, false),
