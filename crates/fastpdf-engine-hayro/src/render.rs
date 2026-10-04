@@ -33,6 +33,10 @@ use crate::preflight;
 
 /// Side of a merged render block in device pixels (16 MiB of RGBA).
 pub(crate) const BLOCK_SIDE: u32 = 2048;
+
+/// Extra pixels around each block so tile requests carrying a gutter still
+/// fall inside one block (neighbouring blocks overlap by twice this).
+const BLOCK_APRON: u32 = 16;
 /// Finished blocks kept for neighbouring tiles.
 pub(crate) const BLOCK_CACHE_BYTES: usize = 48 * 1024 * 1024;
 /// vello_cpu panics for render targets wider or taller than 65 532 px
@@ -154,13 +158,26 @@ fn block_side() -> u32 {
 /// strictly smaller than its block and lies inside it.
 fn block_for(region: PixelRect, page_px: PixelSize, limits: &ResourceLimits) -> Option<PixelRect> {
     let side = block_side();
-    let bx = region.x / side * side;
-    let by = region.y / side * side;
+    // Choose the block by the region's interior, so a tile gutter
+    // (fastpdf-render `PlanConfig::gutter`) reaching into the previous block
+    // does not change the choice, then grow the block by an apron so the
+    // guttered region still fits inside it.
+    let bx = region.x.saturating_add(BLOCK_APRON.min(region.width / 2)) / side * side;
+    let by = region.y.saturating_add(BLOCK_APRON.min(region.height / 2)) / side * side;
+    let x0 = bx.saturating_sub(BLOCK_APRON);
+    let y0 = by.saturating_sub(BLOCK_APRON);
+    let reach = u64::from(side) + u64::from(BLOCK_APRON);
+    let x1 = (u64::from(bx) + reach).min(u64::from(page_px.width));
+    let y1 = (u64::from(by) + reach).min(u64::from(page_px.height));
+    if x1 <= u64::from(x0) || y1 <= u64::from(y0) {
+        return None;
+    }
+    // x1/y1 are bounded by the page size, which fits in u32.
     let block = PixelRect::new(
-        bx,
-        by,
-        side.min(page_px.width.saturating_sub(bx)),
-        side.min(page_px.height.saturating_sub(by)),
+        x0,
+        y0,
+        (x1 - u64::from(x0)) as u32,
+        (y1 - u64::from(y0)) as u32,
     );
     (!block.is_empty()
         && region.is_within(block)
@@ -489,12 +506,30 @@ mod tests {
         let tile = PixelRect::new(512, 2560, 512, 512);
         assert_eq!(
             block_for(tile, page, &limits()),
-            Some(PixelRect::new(0, 2048, 2048, 1120))
+            Some(PixelRect::new(0, 2032, 2064, 1136))
         );
         let edge = PixelRect::new(2048, 0, 400, 512);
         assert_eq!(
             block_for(edge, page, &limits()),
-            Some(PixelRect::new(2048, 0, 400, 2048))
+            Some(PixelRect::new(2032, 0, 416, 2064))
+        );
+    }
+
+    #[test]
+    fn guttered_tiles_at_block_edges_stay_in_one_block() {
+        let page = PixelSize::new(5000, 5000);
+        // Tile 1536..2048 with a 2 px gutter reaches 2050.
+        let left = PixelRect::new(1534, 510, 516, 516);
+        assert_eq!(
+            block_for(left, page, &limits()),
+            Some(PixelRect::new(0, 0, 2064, 2064))
+        );
+        // Tile 2048..2560 with a 2 px gutter starts at 2046.
+        let right = PixelRect::new(2046, 510, 516, 516);
+        assert_eq!(
+            block_for(right, page, &limits()),
+            // 16 px apron on both sides of the 2048 px block.
+            Some(PixelRect::new(2032, 0, 2080, 2064))
         );
     }
 

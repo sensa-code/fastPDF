@@ -76,6 +76,27 @@ impl TileGrid {
         Some(PixelRect::new(x, y, w, h))
     }
 
+    /// The region actually rendered for a tile: its rectangle grown by
+    /// `gutter` pixels on every side, clipped to the page. Drawing only the
+    /// inner part of such a bitmap keeps bilinear sampling at tile edges on
+    /// real content, so scaled tiles meet without seams (GPUI atlas entries
+    /// have no padding). Returns `(rendered, inner)`.
+    pub fn rendered_region(&self, coord: TileCoord, gutter: u32) -> Option<(PixelRect, PixelRect)> {
+        let inner = self.tile_rect(coord)?;
+        let x0 = inner.x.saturating_sub(gutter);
+        let y0 = inner.y.saturating_sub(gutter);
+        let x1 = (inner.right() + u64::from(gutter)).min(u64::from(self.page_px.width));
+        let y1 = (inner.bottom() + u64::from(gutter)).min(u64::from(self.page_px.height));
+        // x1/y1 are bounded by the page size, which fits in u32.
+        let rendered = PixelRect::new(
+            x0,
+            y0,
+            (x1 - u64::from(x0)) as u32,
+            (y1 - u64::from(y0)) as u32,
+        );
+        Some((rendered, inner))
+    }
+
     /// Tiles intersecting `rect` (page pixel space), row by row.
     pub fn tiles_intersecting(&self, rect: PixelRect) -> impl Iterator<Item = TileCoord> + use<> {
         let clipped = rect.intersect(self.page_px.bounds());
@@ -139,6 +160,17 @@ mod tests {
             .count();
         assert!(visible <= 20, "{visible}");
         assert!(g.tile_count() > 100);
+    }
+
+    #[test]
+    fn gutters_grow_inside_the_page_only() {
+        let g = TileGrid::new(PixelSize::new(1000, 600), 512);
+        let (r, inner) = g.rendered_region(TileCoord { col: 0, row: 0 }, 2).unwrap();
+        assert_eq!(inner, PixelRect::new(0, 0, 512, 512));
+        assert_eq!(r, PixelRect::new(0, 0, 514, 514));
+        let (r, _) = g.rendered_region(TileCoord { col: 1, row: 1 }, 2).unwrap();
+        assert_eq!(r, PixelRect::new(510, 510, 490, 90));
+        assert_eq!(g.rendered_region(TileCoord { col: 9, row: 0 }, 2), None);
     }
 
     #[test]

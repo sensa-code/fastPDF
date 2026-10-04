@@ -33,6 +33,9 @@ pub struct PlanConfig {
     pub rotation: Rotation,
     pub color: ColorMode,
     pub background: Rgba8,
+    /// Extra pixels rendered around each tile (see
+    /// [`TileGrid::rendered_region`]); the request region includes them.
+    pub gutter: u32,
 }
 
 impl Default for PlanConfig {
@@ -44,6 +47,7 @@ impl Default for PlanConfig {
             rotation: Rotation::R0,
             color: ColorMode::Normal,
             background: Rgba8::WHITE,
+            gutter: 0,
         }
     }
 }
@@ -100,7 +104,7 @@ pub fn plan_tiles(
             let sy = f64::from(page_px.height) / page_rect.height;
             let px_rect = to_pixels(&area, &page_rect, sx, sy);
             for coord in grid.tiles_intersecting(px_rect) {
-                let Some(region) = grid.tile_rect(coord) else {
+                let Some((rendered, region)) = grid.rendered_region(coord, config.gutter) else {
                     continue;
                 };
                 let tile_center =
@@ -127,7 +131,7 @@ pub fn plan_tiles(
                         page,
                         scale,
                         rotation: config.rotation,
-                        region,
+                        region: rendered,
                         background: config.background,
                         color_mode: config.color,
                         annotations: true,
@@ -237,6 +241,29 @@ mod tests {
         assert!(plan.len() <= 12, "{}", plan.len());
         assert!(plan.iter().all(|t| t.priority == Priority::Visible));
         assert!(plan.iter().all(|t| t.request.region.width <= 512));
+    }
+
+    #[test]
+    fn gutters_extend_requests_but_not_keys() {
+        let (layout, viewport) = setup(1, 1.0);
+        let config = PlanConfig {
+            gutter: 2,
+            ..PlanConfig::default()
+        };
+        let plain = plan_tiles(
+            DocumentId::from_raw(1),
+            &layout,
+            &viewport,
+            info,
+            &PlanConfig::default(),
+        );
+        let padded = plan_tiles(DocumentId::from_raw(1), &layout, &viewport, info, &config);
+        assert_eq!(plain.len(), padded.len());
+        for (a, b) in plain.iter().zip(&padded) {
+            assert_eq!(a.key, b.key);
+            assert!(a.request.region.is_within(b.request.region));
+        }
+        assert_eq!(padded[0].request.region, PixelRect::new(0, 0, 514, 514));
     }
 
     #[test]

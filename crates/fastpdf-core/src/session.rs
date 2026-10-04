@@ -40,6 +40,8 @@ pub struct SessionConfig {
     pub paper: Rgba8,
     /// Extra area rendered ahead of scrolling, in viewport heights.
     pub near_margin: f32,
+    /// Pixels rendered around each tile so scaled tiles meet without seams.
+    pub tile_gutter: u32,
 }
 
 impl Default for SessionConfig {
@@ -53,6 +55,7 @@ impl Default for SessionConfig {
             pixel_format: PixelFormat::Bgra8Premultiplied,
             paper: Rgba8::WHITE,
             near_margin: 0.5,
+            tile_gutter: 2,
         }
     }
 }
@@ -78,8 +81,13 @@ pub struct FramePage {
 /// An image to draw, already positioned.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameTile<V> {
+    pub key: TileKey,
     pub image: V,
+    /// Destination `[x, y, width, height]` in logical pixels.
     pub rect: [f32; 4],
+    /// Part of the image to draw, `[x, y, width, height]` in image pixels.
+    /// Tiles are rendered with a gutter; only this inner part is shown.
+    pub src: [f32; 4],
     /// False for stand-ins from another scale bucket.
     pub exact: bool,
 }
@@ -92,6 +100,10 @@ pub struct Frame<V> {
     pub tiles: Vec<FrameTile<V>>,
     /// Visible tiles that are not available at the exact resolution yet.
     pub pending: usize,
+    /// Visible tiles that are rendered but were not ready to draw (e.g. the
+    /// UI's per-frame upload budget was spent); stand-ins were used instead.
+    /// The UI should request another frame while this is non-zero.
+    pub deferred: usize,
 }
 
 /// Counters for the development overlay (spec §46).
@@ -483,6 +495,14 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
     /// Collects finished tiles, schedules what the view needs, and returns
     /// what to draw now. Cheap enough to call on every paint.
     pub fn frame(&mut self) -> Frame<V> {
+        self.frame_with(|_| true)
+    }
+
+    /// Like [`DocumentSession::frame`], but asks `ready` whether an image
+    /// may be drawn this frame (e.g. whether it fits the UI's upload budget).
+    /// Images that are not ready are replaced by stand-ins and counted in
+    /// [`Frame::deferred`].
+    pub fn frame_with(&mut self, mut ready: impl FnMut(&V) -> bool) -> Frame<V> {
         self.wake_pending.store(false, Ordering::Release);
         self.drain_incoming();
 
@@ -504,7 +524,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             &self.plan_config(),
         );
 
-        let frame = self.build_frame(&plan);
+        let frame = self.build_frame(&plan, &mut ready);
         // Tiles evicted after planning would otherwise never come back.
         if frame.pending > 0 && self.scheduler.is_idle() {
             self.planned = None;
@@ -524,6 +544,16 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             self.planned = Some(inputs);
         }
         frame
+    }
+
+    /// Releases everything this session shows: cancels all rendering and
+    /// passes every cached tile and thumbnail to the eviction hooks, so the
+    /// UI can free their GPU resources before dropping the session.
+    pub fn close(&mut self) {
+        self.scheduler.cancel_all();
+        self.tiles.remove_document(self.id);
+        self.disable_thumbnails();
+        self.planned = None;
     }
 
     pub fn stats(&self) -> SessionStats {
@@ -687,6 +717,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             prefetch_next_page: true,
             rotation: self.rotation,
             background: self.config.paper,
+            gutter: self.config.tile_gutter,
             ..PlanConfig::default()
         }
     }
@@ -774,7 +805,11 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         }
     }
 
-    fn build_frame(&self, plan: &[fastpdf_render::PlannedTile]) -> Frame<V> {
+    fn build_frame(
+        &self,
+        plan: &[fastpdf_render::PlannedTile],
+        ready: &mut dyn FnMut(&V) -> bool,
+    ) -> Frame<V> {
         let visible = self.viewport.visible_rect();
         let pages: Vec<FramePage> = {
             let range = self.layout.pages_intersecting(visible.y, visible.bottom());
@@ -801,46 +836,53 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         let mut visible_keys = Vec::new();
         let mut visible_bytes = 0;
         let mut pending = 0;
+        let mut deferred = 0;
+        let gutter = self.config.tile_gutter;
         for tile in plan.iter().filter(|t| t.priority == Priority::Visible) {
             let Some((page_rect, grid)) = self.page_geometry(tile.key.page.page, tile.key.bucket)
             else {
                 continue;
             };
-            let region = tile.request.region;
-            let bytes = region.width as usize * region.height as usize * 4;
-            if let Some(image) = self.tiles.with(&tile.key, Clone::clone) {
-                exact.push(FrameTile {
-                    image,
-                    rect: self.pixels_to_view(
-                        &page_rect,
-                        &grid,
-                        [
-                            region.x as f32,
-                            region.y as f32,
-                            region.width as f32,
-                            region.height as f32,
-                        ],
-                    ),
-                    exact: true,
-                });
-                visible_keys.push(tile.key);
-                visible_bytes += bytes;
+            let Some((rendered, inner)) = grid.rendered_region(tile.key.coord, gutter) else {
                 continue;
-            }
-            if !self.failed.contains(&tile.key) {
+            };
+            if let Some(image) = self.tiles.with(&tile.key, Clone::clone) {
+                visible_keys.push(tile.key);
+                visible_bytes += rendered.width as usize * rendered.height as usize * 4;
+                if ready(&image) {
+                    exact.push(FrameTile {
+                        key: tile.key,
+                        image,
+                        rect: self.pixels_to_view(&page_rect, &grid, rect_f32(inner)),
+                        src: src_rect(rendered, inner),
+                        exact: true,
+                    });
+                    continue;
+                }
+                deferred += 1;
+            } else if !self.failed.contains(&tile.key) {
                 pending += 1;
             }
             let page = tile.key.page.page;
             let fallbacks = self.tiles.fallbacks(&tile.key, |bucket| {
                 self.page_geometry(page, bucket).map(|(_, g)| g)
             });
-            if let Some(best) = fallbacks.into_iter().next()
-                && seen_standins.insert(best.key)
+            let best = fallbacks
+                .into_iter()
+                .find(|f| !seen_standins.contains(&f.key));
+            if let Some(best) = best
                 && let Some(image) = self.tiles.with(&best.key, Clone::clone)
+                && let Some((_, fb_grid)) = self.page_geometry(page, best.key.bucket)
+                && let Some((fb_rendered, fb_inner)) =
+                    fb_grid.rendered_region(best.key.coord, gutter)
+                && ready(&image)
             {
+                seen_standins.insert(best.key);
                 standins.push(FrameTile {
+                    key: best.key,
                     image,
                     rect: self.pixels_to_view(&page_rect, &grid, best.dest),
+                    src: src_rect(fb_rendered, fb_inner),
                     exact: false,
                 });
                 visible_keys.push(best.key);
@@ -852,6 +894,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             pages,
             tiles: standins,
             pending,
+            deferred,
         }
     }
 
@@ -900,6 +943,23 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             snap((y - self.viewport.scroll_y) * ppp),
         ]
     }
+}
+
+fn rect_f32(r: fastpdf_engine_api::PixelRect) -> [f32; 4] {
+    [r.x as f32, r.y as f32, r.width as f32, r.height as f32]
+}
+
+/// The inner tile rectangle relative to the rendered (guttered) bitmap.
+fn src_rect(
+    rendered: fastpdf_engine_api::PixelRect,
+    inner: fastpdf_engine_api::PixelRect,
+) -> [f32; 4] {
+    [
+        (inner.x - rendered.x) as f32,
+        (inner.y - rendered.y) as f32,
+        inner.width as f32,
+        inner.height as f32,
+    ]
 }
 
 #[cfg(test)]
@@ -1038,6 +1098,62 @@ mod tests {
             (right - (page[0] + page[2])).abs() <= 1.0,
             "{right} vs {page:?}"
         );
+    }
+
+    #[test]
+    fn tiles_carry_keys_and_inner_source_rects() {
+        let mut s = session();
+        let frame = settle(&mut s);
+        let t = &frame.tiles[0];
+        // The first tile touches the page's top-left corner: no gutter there,
+        // 2 px on the right and bottom.
+        assert_eq!(t.src, [0.0, 0.0, 512.0, 512.0]);
+        assert_eq!(t.image.size().width, 514);
+        assert!(frame.tiles.iter().all(|t| t.key.page.document == s.id()));
+    }
+
+    #[test]
+    fn images_that_are_not_ready_are_deferred_to_stand_ins() {
+        let mut s = session();
+        settle(&mut s);
+        // Nothing may be drawn this frame (upload budget spent).
+        let frame = s.frame_with(|_| false);
+        assert!(frame.deferred > 0);
+        assert!(frame.tiles.is_empty());
+        assert_eq!(frame.pending, 0);
+        // Next frame everything is ready again.
+        let frame = s.frame();
+        assert_eq!(frame.deferred, 0);
+        assert!(!frame.tiles.is_empty());
+    }
+
+    #[test]
+    fn close_releases_every_cached_tile() {
+        let doc = open_guarded(
+            &Engine,
+            DocumentSource::from_bytes(SharedBytes::from_vec(vec![0])),
+            &OpenOptions::default(),
+        )
+        .unwrap();
+        let evicted = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&evicted);
+        let mut s = DocumentSession::new(
+            Arc::new(doc),
+            SessionConfig::default(),
+            (1280.0, 720.0),
+            1.0,
+            Arc::new,
+            || {},
+            move |e: Vec<(TileKey, Arc<Pixmap>)>| {
+                counter.fetch_add(e.len(), Ordering::Relaxed);
+            },
+        );
+        let frame = settle(&mut s);
+        let shown = frame.tiles.len();
+        assert!(shown > 0);
+        s.close();
+        assert!(evicted.load(Ordering::Relaxed) >= shown);
+        assert_eq!(s.stats().tile_entries, 0);
     }
 
     #[test]
