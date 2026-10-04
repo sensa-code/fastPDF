@@ -235,6 +235,73 @@ fn memory_trimming_keeps_documents_usable() {
 }
 
 #[test]
+fn memory_counters_follow_blocks_trims_and_reopens() {
+    use fastpdf_engine_hayro::diagnostics;
+
+    // Other tests run concurrently and share the process-wide counters, so
+    // only lower bounds and monotonic growth are checked here.
+    let doc = open(build(&[busy_page()]));
+    let req = full_request(&doc, 0, 2.0, Rotation::R0);
+    let page = req.region;
+    // A tile smaller than its block: the block is rendered and cached.
+    render_region(&doc, &req, PixelRect::new(0, 0, 256, 256)).unwrap();
+    let block = u64::from(page.width) * u64::from(page.height) * 4;
+    let m = diagnostics::memory();
+    assert!(m.block_cache_bytes >= block, "{m:?}");
+    assert!(m.live_documents >= 1 && m.live_generations >= 1, "{m:?}");
+    assert!(m.render_threads >= 1, "{m:?}");
+    assert!(m.decoded_content_bytes > 0, "{m:?}");
+
+    doc.trim_memory(MemoryPressure::Soft);
+    let soft = diagnostics::memory();
+    assert!(soft.soft_trims > m.soft_trims, "{soft:?}");
+
+    doc.trim_memory(MemoryPressure::Hard);
+    render_region(&doc, &req, PixelRect::new(256, 256, 256, 256)).unwrap();
+    let hard = diagnostics::memory();
+    assert!(hard.hard_trims > m.hard_trims, "{hard:?}");
+    // The hard trim replaced the `Pdf` generation before the second render.
+    assert!(hard.reopens > m.reopens, "{hard:?}");
+}
+
+#[test]
+fn memory_usage_reports_blocks_and_contexts() {
+    let doc = open(build(&[busy_page()]));
+    let req = full_request(&doc, 0, 2.0, Rotation::R0);
+    let page = req.region;
+    render_region(&doc, &req, PixelRect::new(0, 0, 256, 256)).unwrap();
+    let block = u64::from(page.width) * u64::from(page.height) * 4;
+    let used = doc.memory_usage().unwrap();
+    // The cached block plus the render context that drew it.
+    assert!(used >= 2 * block, "{used} < 2 x {block}");
+    doc.trim_memory(MemoryPressure::Soft);
+    let trimmed = doc.memory_usage().unwrap();
+    assert!(trimmed <= used - block, "{trimmed} vs {used}");
+}
+
+#[test]
+fn large_images_go_through_the_decode_budget() {
+    use fastpdf_engine_hayro::diagnostics;
+
+    // A 6000 x 6000 RGB image needs ~250 MB to decode: far above the
+    // threshold, so its render is admitted by the decode budget. The data
+    // is truncated, so hayro gives up quickly after the admission.
+    let mut spec = PageSpec::new([0.0, 0.0, 200.0, 200.0], "q 200 0 0 200 0 0 cm /Im0 Do Q");
+    spec.resources = "/XObject << /Im0 6 0 R >>".into();
+    let bytes = build_with(&[spec], |b| {
+        b.add_stream(
+            "/Type /XObject /Subtype /Image /Width 6000 /Height 6000 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode",
+            zlib(&[128u8; 3000]),
+        );
+    });
+    let doc = open(bytes);
+    let before = diagnostics::memory().decode_admissions;
+    let req = full_request(&doc, 0, 0.5, Rotation::R0);
+    let _ = render(&doc, &req, PixelFormat::default());
+    assert!(diagnostics::memory().decode_admissions > before);
+}
+
+#[test]
 fn encrypted_document_passwords() {
     let page = PageSpec::new([0.0, 0.0, 200.0, 200.0], RED_SQUARE);
     let mut b = PdfBuilder::new();
@@ -432,9 +499,20 @@ fn traditional_chinese_text_layer() {
     let text = layer.plain_text();
     assert!(text.contains("中文測試"), "{text:?}");
     let span = &layer.spans[0];
-    assert_eq!(span.char_bounds.len(), span.text.chars().count());
+    let n = span.text.chars().count();
+    // Full-width glyphs split the span evenly, so the per-char rectangles
+    // are left out and selection splits the span box (text.rs `compact`).
+    assert!(span.char_bounds.is_empty() || span.char_bounds.len() == n);
+    let first = span.char_bounds.first().copied().unwrap_or_else(|| {
+        let w = span.bounds.width() / n as f32;
+        fastpdf_engine_api::PageRect::new(
+            span.bounds.x0,
+            span.bounds.y0,
+            span.bounds.x0 + w,
+            span.bounds.y1,
+        )
+    });
     // Page space: y down from the top of the 120 pt page; baseline at 70.
-    let first = span.char_bounds[0];
     assert!(first.x0 >= 15.0 && first.x0 <= 25.0, "{first}");
     assert!(first.y0 < 70.0 && first.y1 > 70.0, "{first}");
     assert!(span.bounds.x1 > 140.0, "{}", span.bounds);

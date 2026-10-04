@@ -8,6 +8,7 @@
 //! fastpdf-bench compare <baseline.json> <candidate.json> [--threshold 10]
 //! fastpdf-bench diff    <file.pdf> --engine hayro,zpdf [--out dir]
 //! fastpdf-bench diff-corpus <manifest.json | dir> --engine hayro,zpdf
+//! fastpdf-bench scroll  <file.pdf> [--tile-budget-mb N] [--out report.json]
 //! fastpdf-bench engines
 //! ```
 //!
@@ -23,6 +24,7 @@ mod measure;
 mod metrics;
 mod png;
 mod report;
+mod scroll;
 
 use std::process::ExitCode;
 
@@ -86,6 +88,7 @@ fn run(args: &Args) -> Result<ExitCode, String> {
         } => compare::run(baseline, candidate, args),
         Command::Diff(file) => diff::run(file, args),
         Command::DiffCorpus(input) => diff::run_corpus(input, args),
+        Command::Scroll(file) => scroll::run(file, args),
     }
 }
 

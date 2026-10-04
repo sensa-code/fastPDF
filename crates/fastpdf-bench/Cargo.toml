@@ -16,6 +16,7 @@ engine-zpdf = ["dep:fastpdf-engine-zpdf"]
 
 [dependencies]
 fastpdf-engine-api.workspace = true
+fastpdf-cache.workspace = true
 fastpdf-render.workspace = true
 fastpdf-core.workspace = true
 fastpdf-engine-hayro = { workspace = true, optional = true }

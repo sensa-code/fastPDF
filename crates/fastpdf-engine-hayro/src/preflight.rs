@@ -138,13 +138,14 @@ pub(crate) fn ensure_verdict<'a>(
     if let Some(v) = cell.get() {
         return v.into_result();
     }
-    let verdict = compute(doc, page, cache, cancel)?;
+    let verdict = compute(doc, index, page, cache, cancel)?;
     let _ = cell.set(verdict);
     verdict.into_result()
 }
 
 fn compute<'a>(
     doc: &DocInner,
+    index: u32,
     page: &'a Page<'a>,
     cache: &InterpreterCache<'a>,
     cancel: Option<&CancelToken>,
@@ -155,7 +156,10 @@ fn compute<'a>(
     if scan_on {
         let mut memo = doc.scan_memo();
         match scan::scan_page(page, limits, &mut memo, cancel) {
-            Ok(summary) => nested = summary.nested,
+            Ok(summary) => {
+                nested = summary.nested;
+                doc.set_decode_estimate(index, summary.image_bytes);
+            }
             Err(ScanError::Limit(kind)) => return Ok(Verdict::Limit(kind)),
             Err(ScanError::Cancelled) => return Err(EngineError::Cancelled),
         }

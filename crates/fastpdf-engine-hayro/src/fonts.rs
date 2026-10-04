@@ -69,6 +69,19 @@ pub(crate) fn stats() -> &'static FontStats {
     &store().stats
 }
 
+/// Bytes of the system font files currently mapped by the store. They are
+/// file-backed and shared (not private memory) and can outlive the store's
+/// LRU while hayro's per-thread caches still use them.
+pub(crate) fn mapped_bytes() -> u64 {
+    let cache = lock(&store().cache);
+    cache
+        .entries
+        .values()
+        .flatten()
+        .map(|data| (**data).as_ref().len() as u64)
+        .sum()
+}
+
 /// The resolver handed to hayro. One shared `Arc`, so cloning settings is free.
 pub(crate) fn resolver() -> FontResolverFn {
     static RESOLVER: OnceLock<FontResolverFn> = OnceLock::new();

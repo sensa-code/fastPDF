@@ -3,6 +3,12 @@
 //! Feasibility"). hayro reports glyphs in content-stream order with their
 //! Unicode (ToUnicode → glyph name → `uniXXXX`; UCS2 CMaps for non-embedded
 //! CID fonts) and full transforms; layout analysis is ours.
+//!
+//! Layers live in FastPDF's byte-budgeted text cache, so they are kept
+//! compact (benchmark B-5): a span is a whole line run, also across font
+//! switches (producers split CJK text over many TrueType subsets), buffers
+//! are trimmed to their length, and per-char rectangles are dropped when an
+//! even split of the span box reproduces them (full-width CJK, monospace).
 
 use fastpdf_engine_api::{EngineError, PageIndex, PageRect, TextLayer, TextSpan};
 use hayro::hayro_interpret::font::{Glyph, GlyphRun};
@@ -121,12 +127,9 @@ impl<'a> Device<'a> for TextCollector {
             let Some(text) = glyph.as_unicode() else {
                 continue;
             };
-            let (advance, font) = match &**glyph {
-                Glyph::Outline(o) => (
-                    o.advance_width().map(f64::from).unwrap_or(DEFAULT_ADVANCE),
-                    o.font_cache_key(),
-                ),
-                Glyph::Type3(_) => (DEFAULT_ADVANCE, 0),
+            let advance = match &**glyph {
+                Glyph::Outline(o) => o.advance_width().map(f64::from).unwrap_or(DEFAULT_ADVANCE),
+                Glyph::Type3(_) => DEFAULT_ADVANCE,
             };
             let text = match text {
                 BfString::Char(c) => c.to_string(),
@@ -140,7 +143,6 @@ impl<'a> Device<'a> for TextCollector {
                 } else {
                     DEFAULT_ADVANCE
                 },
-                font,
             });
         }
     }
@@ -164,7 +166,6 @@ struct PlacedGlyph {
     /// Glyph space (1000 units/em) → page space.
     transform: Affine,
     advance: f64,
-    font: u128,
 }
 
 impl PlacedGlyph {
@@ -218,7 +219,6 @@ struct SpanBuilder {
 
 struct OpenSpan {
     span: TextSpan,
-    font: u128,
     em: f64,
     last: PlacedGlyph,
 }
@@ -256,7 +256,6 @@ impl SpanBuilder {
                 append(&mut span, &glyph);
                 self.current = Some(OpenSpan {
                     span,
-                    font: glyph.font,
                     em,
                     last: glyph,
                 });
@@ -268,10 +267,11 @@ impl SpanBuilder {
         let Some(open) = self.current.take() else {
             return;
         };
-        let span = open.span;
+        let mut span = open.span;
         if span.text.trim().is_empty() {
             return;
         }
+        compact(&mut span);
         let duplicate = self
             .spans
             .iter()
@@ -285,6 +285,7 @@ impl SpanBuilder {
 
     fn finish(mut self) -> Vec<TextSpan> {
         self.close();
+        self.spans.shrink_to_fit();
         self.spans
     }
 }
@@ -292,10 +293,10 @@ impl SpanBuilder {
 fn flow(open: &OpenSpan, next: &PlacedGlyph) -> Flow {
     let (u, v, em) = open.last.frame();
     let (_, _, next_em) = next.frame();
-    if open.font != next.font
-        || em <= f64::EPSILON
-        || (next_em - open.em).abs() > 0.2 * open.em.max(f64::EPSILON)
-    {
+    // A font switch alone does not end a span: the size and the geometry
+    // decide. Producers spread one line of CJK text over many TrueType
+    // subsets, and bold or italic words sit on the same line.
+    if em <= f64::EPSILON || (next_em - open.em).abs() > 0.2 * open.em.max(f64::EPSILON) {
         return Flow::Break;
     }
     // Horizontal flow: next origin relative to the previous glyph's end.
@@ -337,6 +338,30 @@ fn append(span: &mut TextSpan, glyph: &PlacedGlyph) {
     };
 }
 
+/// Trims a finished span's buffers to their length and drops `char_bounds`
+/// when splitting `bounds` evenly gives the same rectangles, which is what
+/// FastPDF's selection does for spans without per-char geometry. Per-char
+/// rectangles take 16 bytes per char and dominate the layer's size.
+fn compact(span: &mut TextSpan) {
+    let n = span.char_bounds.len();
+    if n > 0 && n == span.text.chars().count() {
+        let b = span.bounds;
+        let w = b.width() / n as f32;
+        // 2% of a char, at least 0.05 pt: far below what a click resolves.
+        let tol = (w * 0.02).max(0.05);
+        let close = |a: f32, b: f32| (a - b).abs() <= tol;
+        let even = span.char_bounds.iter().enumerate().all(|(i, r)| {
+            let x0 = b.x0 + w * i as f32;
+            close(r.x0, x0) && close(r.x1, x0 + w) && close(r.y0, b.y0) && close(r.y1, b.y1)
+        });
+        if even {
+            span.char_bounds = Vec::new();
+        }
+    }
+    span.text.shrink_to_fit();
+    span.char_bounds.shrink_to_fit();
+}
+
 fn page_rect(r: Rect) -> PageRect {
     PageRect::new(to_f32(r.x0), to_f32(r.y0), to_f32(r.x1), to_f32(r.y1))
 }
@@ -352,6 +377,7 @@ fn overlap(a: PageRect, b: PageRect) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fastpdf_engine_api::PageIndex;
 
     /// A 10 pt glyph at (x, y) in page space (y down, text upright).
     fn glyph(text: &str, x: f64, y: f64, advance: f64) -> PlacedGlyph {
@@ -361,7 +387,6 @@ mod tests {
             text: text.to_owned(),
             transform: t,
             advance,
-            font: 1,
         }
     }
 
@@ -401,6 +426,92 @@ mod tests {
         for (i, c) in ["直", "排", "文"].iter().enumerate() {
             b.push(glyph(c, 50.0, 20.0 + 10.0 * i as f64, 1000.0));
         }
-        assert_eq!(texts(&b.finish()), vec!["直排文"]);
+        let spans = b.finish();
+        assert_eq!(texts(&spans), vec!["直排文"]);
+        // Stacked boxes are not an even horizontal split: kept.
+        assert_eq!(spans[0].char_bounds.len(), 3);
+    }
+
+    /// The layer as FastPDF sees it, for the selection functions.
+    fn layer(spans: Vec<TextSpan>) -> TextLayer {
+        TextLayer {
+            page: PageIndex::FIRST,
+            spans,
+        }
+    }
+
+    #[test]
+    fn uniform_runs_drop_char_bounds_without_changing_selection() {
+        use fastpdf_core::selection::{hit_test, select_all, selected_text};
+
+        // Full-width CJK: every glyph advances 1 em.
+        let mut b = SpanBuilder::default();
+        for (i, c) in ["政", "府", "公", "文"].iter().enumerate() {
+            b.push(glyph(c, 10.0 + 10.0 * i as f64, 20.0, 1000.0));
+        }
+        let compacted = b.finish();
+        assert!(compacted[0].char_bounds.is_empty());
+
+        // The same span with its per-char rectangles.
+        let mut full = SpanBuilder::default();
+        for (i, c) in ["政", "府", "公", "文"].iter().enumerate() {
+            let g = glyph(c, 10.0 + 10.0 * i as f64, 20.0, 1000.0);
+            match full.current.as_mut() {
+                Some(open) => {
+                    append(&mut open.span, &g);
+                    open.last = g;
+                }
+                None => {
+                    let mut span = TextSpan::default();
+                    append(&mut span, &g);
+                    full.current = Some(OpenSpan {
+                        span,
+                        em: 10.0,
+                        last: g,
+                    });
+                }
+            }
+        }
+        let full = full.current.take().map(|o| o.span).into_iter().collect();
+        let (a, b) = (layer(compacted), layer(full));
+        // Clicking anywhere selects the same character.
+        for x in [10.5f32, 14.0, 19.9, 20.1, 27.0, 33.0, 41.0, 49.5] {
+            assert_eq!(hit_test(&a, x, 17.0), hit_test(&b, x, 17.0), "x = {x}");
+        }
+        assert_eq!(
+            selected_text(&a, &select_all(&a)),
+            selected_text(&b, &select_all(&b))
+        );
+    }
+
+    #[test]
+    fn proportional_runs_keep_char_bounds() {
+        let mut b = SpanBuilder::default();
+        b.push(glyph("W", 10.0, 20.0, 940.0));
+        b.push(glyph("i", 19.4, 20.0, 280.0));
+        b.push(glyph("l", 22.2, 20.0, 280.0));
+        let spans = b.finish();
+        assert_eq!(texts(&spans), vec!["Wil"]);
+        assert_eq!(spans[0].char_bounds.len(), 3);
+        assert_eq!(spans[0].char_bounds.capacity(), 3);
+    }
+
+    #[test]
+    fn font_switches_on_one_line_stay_in_one_span() {
+        use fastpdf_core::selection::{select_all, selected_text};
+
+        // Two glyph runs from different fonts (e.g. TrueType subsets), same
+        // size and baseline, then a new line.
+        let mut b = SpanBuilder::default();
+        b.push(glyph("中", 10.0, 20.0, 1000.0));
+        b.push(glyph("文", 20.0, 20.0, 1000.0));
+        b.push(glyph("字", 30.0, 20.0, 1000.0));
+        // 4 pt gap: a word space.
+        b.push(glyph("A", 44.0, 20.0, 600.0));
+        b.push(glyph("下", 10.0, 35.0, 1000.0));
+        let spans = b.finish();
+        assert_eq!(texts(&spans), vec!["中文字 A", "下"]);
+        let l = layer(spans);
+        assert_eq!(selected_text(&l, &select_all(&l)), "中文字 A\n下");
     }
 }

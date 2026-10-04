@@ -18,13 +18,14 @@ use crate::pool::{Pool, TextJob};
 use crate::preflight::Verdict;
 use crate::render::{self, BlockCache};
 use crate::scan::ScanMemo;
+use crate::stats;
 
 /// Striped locks that serialize the verdict computation of one page.
 const VERDICT_LOCKS: usize = 16;
 /// Decoded content streams hayro may keep (it caches them per page for the
 /// lifetime of the `Pdf`) before the adapter reopens the document to drop
 /// them. Reopening costs a few milliseconds even for 2000 pages.
-const CONTENT_STREAM_BUDGET: u64 = 64 * 1024 * 1024;
+pub(crate) const CONTENT_STREAM_BUDGET: u64 = 64 * 1024 * 1024;
 
 /// Opens `bytes` with hayro, mapping its errors onto [`EngineError`].
 pub(crate) fn open_pdf(bytes: &SharedBytes, password: &str) -> Result<Pdf, EngineError> {
@@ -61,12 +62,37 @@ pub(crate) struct Generation {
     pub(crate) id: u64,
     pub(crate) pdf: Pdf,
     content: Mutex<ContentAccount>,
+    /// Last field: the gauge falls only after the `Pdf` is gone.
+    _live: stats::Live,
 }
 
 #[derive(Default)]
 struct ContentAccount {
     pages: HashSet<u32>,
     bytes: u64,
+}
+
+impl Generation {
+    /// Decoded content-stream bytes accounted in this generation.
+    fn content_bytes(&self) -> u64 {
+        lock(&self.content).bytes
+    }
+
+    fn new(id: u64, pdf: Pdf) -> Self {
+        Self {
+            id,
+            pdf,
+            content: Mutex::new(ContentAccount::default()),
+            _live: stats::Live::generation(),
+        }
+    }
+}
+
+impl Drop for Generation {
+    fn drop(&mut self) {
+        // The decoded content streams go away with the `Pdf`.
+        stats::sub(&stats::counters().content_bytes, lock(&self.content).bytes);
+    }
 }
 
 impl std::fmt::Debug for Generation {
@@ -89,10 +115,19 @@ pub(crate) struct DocInner {
     /// Bumped to make every pool thread drop its hayro caches.
     cache_epoch: AtomicU64,
     pub(crate) verdicts: Vec<OnceLock<Verdict>>,
+    /// Per page: bytes the largest image decode needs (from the scan).
+    decode_estimates: Vec<AtomicU64>,
     verdict_locks: Vec<Mutex<()>>,
     scan_memo: Mutex<ScanMemo>,
     pub(crate) blocks: BlockCache,
+    /// Estimated buffers of this document's render contexts (one per pool
+    /// thread), maintained by `ThreadCaches`.
+    context_bytes: Arc<AtomicU64>,
+    /// Estimated image-decode bytes of this document's running renders.
+    pub(crate) decode_bytes: AtomicU64,
     page_ids: OnceLock<HashMap<ObjectIdentifier, u32>>,
+    /// Last field: the gauge falls only after everything above is freed.
+    _live: stats::Live,
 }
 
 impl std::fmt::Debug for DocInner {
@@ -121,20 +156,20 @@ impl DocInner {
             limits,
             encrypted,
             page_count,
-            current: RwLock::new(Arc::new(Generation {
-                id: 0,
-                pdf,
-                content: Mutex::new(ContentAccount::default()),
-            })),
+            current: RwLock::new(Arc::new(Generation::new(0, pdf))),
             next_generation: AtomicU64::new(1),
             regenerate: AtomicBool::new(false),
             regenerate_lock: Mutex::new(()),
             cache_epoch: AtomicU64::new(0),
             verdicts: (0..page_count).map(|_| OnceLock::new()).collect(),
+            decode_estimates: (0..page_count).map(|_| AtomicU64::new(0)).collect(),
             verdict_locks: (0..VERDICT_LOCKS).map(|_| Mutex::new(())).collect(),
             scan_memo: Mutex::new(ScanMemo::default()),
             blocks: BlockCache::new(render::BLOCK_CACHE_BYTES),
+            context_bytes: Arc::new(AtomicU64::new(0)),
+            decode_bytes: AtomicU64::new(0),
             page_ids: OnceLock::new(),
+            _live: stats::Live::document(),
         }
     }
 
@@ -182,11 +217,8 @@ impl DocInner {
         // mind (it does not); keep the old generation in that case.
         if let Ok(pdf) = open_pdf(&self.bytes, &self.password) {
             let id = self.next_generation.fetch_add(1, Ordering::Relaxed);
-            *write(&self.current) = Arc::new(Generation {
-                id,
-                pdf,
-                content: Mutex::new(ContentAccount::default()),
-            });
+            *write(&self.current) = Arc::new(Generation::new(id, pdf));
+            stats::add(&stats::counters().reopens, 1);
         }
     }
 
@@ -196,6 +228,7 @@ impl DocInner {
         let mut account = lock(&generation.content);
         if account.pages.insert(page) {
             account.bytes = account.bytes.saturating_add(bytes as u64);
+            stats::add(&stats::counters().content_bytes, bytes as u64);
             if account.bytes > CONTENT_STREAM_BUDGET {
                 self.request_reopen();
             }
@@ -213,6 +246,42 @@ impl DocInner {
 
     pub(crate) fn scan_memo(&self) -> MutexGuard<'_, ScanMemo> {
         lock(&self.scan_memo)
+    }
+
+    pub(crate) fn context_gauge(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.context_bytes)
+    }
+
+    /// Bytes this document holds outside FastPDF's caches (estimated):
+    /// finished blocks, the content streams hayro keeps decoded, the pool
+    /// threads' render contexts and the image decodes of renders in
+    /// progress. Not included: the mapped file and system fonts (file-backed
+    /// and shared) and hayro's per-thread font and glyph-outline caches,
+    /// which hayro does not measure (bounded by `MAX_PAGES_PER_CACHE`).
+    pub(crate) fn memory_usage(&self) -> u64 {
+        let content = read(&self.current).content_bytes();
+        [
+            self.blocks.bytes() as u64,
+            content,
+            self.context_bytes.load(Ordering::Relaxed),
+            self.decode_bytes.load(Ordering::Relaxed),
+        ]
+        .into_iter()
+        .fold(0u64, u64::saturating_add)
+    }
+
+    pub(crate) fn set_decode_estimate(&self, page: u32, bytes: u64) {
+        if let Some(e) = self.decode_estimates.get(page as usize) {
+            e.store(bytes, Ordering::Relaxed);
+        }
+    }
+
+    /// Decode-budget bytes a render of `page` needs; 0 before the page's
+    /// verdict exists or when the scan is switched off.
+    pub(crate) fn decode_estimate(&self, page: u32) -> u64 {
+        self.decode_estimates
+            .get(page as usize)
+            .map_or(0, |e| e.load(Ordering::Relaxed))
     }
 
     pub(crate) fn page_geom(&self, page: PageIndex) -> Result<PageGeom, EngineError> {
@@ -332,10 +401,15 @@ impl EngineDocument for HayroDocument {
         nav::links(&self.inner, &generation, page)
     }
 
+    fn memory_usage(&self) -> Option<u64> {
+        Some(self.inner.memory_usage())
+    }
+
     fn trim_memory(&self, pressure: MemoryPressure) {
         match pressure {
             MemoryPressure::Normal => {}
             MemoryPressure::Soft => {
+                stats::add(&stats::counters().soft_trims, 1);
                 // Rendered blocks and every thread's hayro caches (fonts,
                 // glyph outlines, color spaces).
                 self.inner.blocks.clear();
@@ -343,6 +417,7 @@ impl EngineDocument for HayroDocument {
                 self.pool.release_idle_threads();
             }
             MemoryPressure::Hard => {
+                stats::add(&stats::counters().hard_trims, 1);
                 // Additionally hayro's decoded content/object streams (by
                 // reopening the `Pdf`) and the scan memo.
                 self.inner.blocks.clear();

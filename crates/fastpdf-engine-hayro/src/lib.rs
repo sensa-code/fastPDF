@@ -24,6 +24,7 @@
 //! layer is listed in `docs/audit/hayro.md`; process isolation is the
 //! remaining defense.
 
+mod decode;
 mod document;
 mod fonts;
 mod geometry;
@@ -32,6 +33,7 @@ mod pool;
 mod preflight;
 mod render;
 mod scan;
+mod stats;
 mod text;
 
 use fastpdf_engine_api::{
@@ -94,6 +96,65 @@ impl PdfEngine for HayroEngine {
 #[doc(hidden)]
 pub mod diagnostics {
     use std::sync::atomic::Ordering;
+
+    /// Block-cache budget of one document, in bytes.
+    pub const BLOCK_CACHE_BUDGET: u64 = crate::render::BLOCK_CACHE_BYTES as u64;
+    /// Image-decode working memory all renders of the process may use at once.
+    pub const DECODE_BUDGET: u64 = crate::decode::BUDGET;
+    /// Decoded content-stream bytes after which a document reopens its `Pdf`.
+    pub const CONTENT_STREAM_BUDGET: u64 = crate::document::CONTENT_STREAM_BUDGET;
+
+    /// Memory the adapter holds outside FastPDF's budgeted caches, summed
+    /// over all open documents of this process.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct MemoryCounters {
+        /// Finished blocks kept for neighbouring tiles.
+        pub block_cache_bytes: u64,
+        /// Content streams hayro keeps decoded inside live `Pdf` generations.
+        pub decoded_content_bytes: u64,
+        /// Documents whose memory is not completely freed yet.
+        pub live_documents: u64,
+        pub live_generations: u64,
+        /// Generations replaced since process start (content budget, hard
+        /// memory pressure, panics).
+        pub reopens: u64,
+        pub render_threads: u64,
+        /// Render threads executing a job.
+        pub busy_threads: u64,
+        /// `trim_memory` calls since process start.
+        pub soft_trims: u64,
+        pub hard_trims: u64,
+        /// Estimated buffers of the pool threads' render contexts.
+        pub context_bytes: u64,
+        /// System font files mapped by the font resolver (file-backed and
+        /// shared, so not part of `EngineDocument::memory_usage`).
+        pub mapped_font_bytes: u64,
+        /// Decode budget held by running renders (estimated bytes).
+        pub decode_bytes: u64,
+        /// Renders admitted by the decode budget, and those that waited.
+        pub decode_admissions: u64,
+        pub decode_waits: u64,
+    }
+
+    pub fn memory() -> MemoryCounters {
+        let c = crate::stats::counters();
+        MemoryCounters {
+            block_cache_bytes: c.block_bytes.load(Ordering::Relaxed),
+            decoded_content_bytes: c.content_bytes.load(Ordering::Relaxed),
+            live_documents: c.documents.load(Ordering::Relaxed),
+            live_generations: c.generations.load(Ordering::Relaxed),
+            reopens: c.reopens.load(Ordering::Relaxed),
+            render_threads: c.threads.load(Ordering::Relaxed),
+            busy_threads: c.busy_threads.load(Ordering::Relaxed),
+            soft_trims: c.soft_trims.load(Ordering::Relaxed),
+            hard_trims: c.hard_trims.load(Ordering::Relaxed),
+            context_bytes: c.context_bytes.load(Ordering::Relaxed),
+            mapped_font_bytes: crate::fonts::mapped_bytes(),
+            decode_bytes: c.decode_bytes.load(Ordering::Relaxed),
+            decode_admissions: c.decode_admissions.load(Ordering::Relaxed),
+            decode_waits: c.decode_waits.load(Ordering::Relaxed),
+        }
+    }
 
     /// `(system font hits, CJK font hits, embedded fallbacks, misses)` since
     /// process start.

@@ -15,23 +15,35 @@ USAGE:
   fastpdf-bench compare <baseline.json> <candidate.json> [--threshold PERCENT]
   fastpdf-bench diff    <file.pdf>   --engine A,B [--page N] [--tolerance T] [--out DIR]
   fastpdf-bench diff-corpus <manifest.json|dir> --engine A,B [--images DIR] [--out results.json]
+  fastpdf-bench scroll  <file.pdf>   [--viewport WxH] [--zoom PCT] [--step PX] [--tile-budget-mb N]
+                                     [--soft-limit-mb N] [--hard-limit-mb N] [--sample-every N]
+                                     [--settle SECS] [--out report.json]
   fastpdf-bench engines
 
 OPTIONS:
   --engine NAME      engine adapter (default: first compiled in; see `engines`)
-  --scale S          display scale, 1.0 = 100% zoom at 96 dpi (default 1.0)
+  --scale S          display scale, 1.0 = 100% zoom at 96 dpi (default 1.0);
+                     scroll: the window's device scale factor
   --page N           1-based page for `render` (default 1)
   --tile PX          render as PX-sized tiles through the render scheduler
-  --viewport WxH     with --tile: only tiles visible in a WxH view at the page top
-  --workers N        with --tile: scheduler worker threads (default: auto)
+  --viewport WxH     with --tile: only tiles visible in a WxH view at the page top;
+                     scroll: view size in logical pixels (default 1920x1080)
+  --workers N        with --tile / scroll: scheduler worker threads (default: auto)
   --repeat N         repetitions (open/render: in-process; corpus: child runs per file)
   --samples N        pages sampled for page-render / thumbnail stats in `full` (default 10)
   --password PW      password for encrypted files
-  --out PATH         render: write PNG; corpus: write JSON results
+  --out PATH         render: write PNG; corpus / scroll: write JSON results
   --timeout SECS     corpus: per-file timeout (default 120)
   --threshold PCT    compare: regression threshold in percent (default 10)
   --tolerance T      diff: per-channel delta (0-255) above which a pixel differs (default 16)
   --images DIR       diff-corpus: write per-page PNGs and diff images to DIR
+  --zoom PCT         scroll: zoom while scrolling (default 100; excursions go to 400)
+  --step PX          scroll: scroll step in logical pixels (default 90% of the view height)
+  --tile-budget-mb N scroll: tile cache budget (default 128)
+  --soft-limit-mb N  scroll: memory manager soft limit (default 320)
+  --hard-limit-mb N  scroll: memory manager hard limit (default 512)
+  --sample-every N   scroll: steps between time-series samples (default 10)
+  --settle SECS      scroll: longest wait for a step's visible tiles (default 30)
 ";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +60,7 @@ pub(crate) enum Command {
     },
     Diff(PathBuf),
     DiffCorpus(PathBuf),
+    Scroll(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +82,14 @@ pub(crate) struct Args {
     pub(crate) threshold: f64,
     pub(crate) tolerance: u8,
     pub(crate) out_images: Option<PathBuf>,
+    /// `scroll` settings; `None` = the command's default.
+    pub(crate) zoom_percent: Option<f32>,
+    pub(crate) step_px: Option<f32>,
+    pub(crate) tile_budget_mb: Option<u32>,
+    pub(crate) soft_limit_mb: Option<u32>,
+    pub(crate) hard_limit_mb: Option<u32>,
+    pub(crate) sample_every: u32,
+    pub(crate) settle_secs: u64,
 }
 
 impl Args {
@@ -90,6 +111,13 @@ impl Args {
             threshold: 10.0,
             tolerance: 16,
             out_images: None,
+            zoom_percent: None,
+            step_px: None,
+            tile_budget_mb: None,
+            soft_limit_mb: None,
+            hard_limit_mb: None,
+            sample_every: 10,
+            settle_secs: 30,
         }
     }
 }
@@ -136,6 +164,7 @@ pub(crate) fn parse(raw: impl IntoIterator<Item = OsString>) -> Result<Args, Str
         },
         "diff" => Command::Diff(path("a PDF file")?),
         "diff-corpus" => Command::DiffCorpus(path("a manifest or directory")?),
+        "scroll" => Command::Scroll(path("a PDF file")?),
         other => return Err(format!("unknown command `{other}`")),
     };
     if let Some(extra) = pos.next() {
@@ -180,10 +209,38 @@ pub(crate) fn parse(raw: impl IntoIterator<Item = OsString>) -> Result<Args, Str
             "threshold" => args.threshold = value.parse().map_err(|e| bad(&e))?,
             "tolerance" => args.tolerance = value.parse().map_err(|e| bad(&e))?,
             "images" => args.out_images = Some(PathBuf::from(value)),
+            "zoom" => args.zoom_percent = Some(positive(&value).map_err(|e| bad(&e))?),
+            "step" => args.step_px = Some(positive(&value).map_err(|e| bad(&e))?),
+            "tile-budget-mb" => args.tile_budget_mb = Some(megabytes(&value).map_err(|e| bad(&e))?),
+            "soft-limit-mb" => args.soft_limit_mb = Some(megabytes(&value).map_err(|e| bad(&e))?),
+            "hard-limit-mb" => args.hard_limit_mb = Some(megabytes(&value).map_err(|e| bad(&e))?),
+            "sample-every" => {
+                args.sample_every = value.parse::<u32>().map_err(|e| bad(&e))?.max(1);
+            }
+            "settle" => args.settle_secs = value.parse::<u64>().map_err(|e| bad(&e))?.max(1),
             _ => return Err(format!("unknown option --{name}")),
         }
     }
     Ok(args)
+}
+
+fn positive(value: &str) -> Result<f32, String> {
+    let v: f32 = value
+        .parse()
+        .map_err(|e: std::num::ParseFloatError| e.to_string())?;
+    if v.is_finite() && v > 0.0 {
+        Ok(v)
+    } else {
+        Err("must be a positive number".into())
+    }
+}
+
+fn megabytes(value: &str) -> Result<u32, String> {
+    match value.parse::<u32>() {
+        Ok(0) => Err("must be at least 1".into()),
+        Ok(v) => Ok(v),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -221,5 +278,28 @@ mod tests {
         assert!(p("render a.pdf b.pdf").is_err());
         assert!(p("render a.pdf --page").is_err());
         assert_eq!(p("--help").unwrap().command, Command::Help);
+    }
+
+    #[test]
+    fn parses_scroll() {
+        let a = p("scroll big.pdf --viewport 1920x1080 --tile-budget-mb 16 --zoom 150                    --step 500 --soft-limit-mb 96 --hard-limit-mb 160 --sample-every 5 --settle 3")
+        .unwrap();
+        assert_eq!(a.command, Command::Scroll("big.pdf".into()));
+        assert_eq!(a.viewport, Some((1920, 1080)));
+        assert_eq!(
+            (a.tile_budget_mb, a.soft_limit_mb, a.hard_limit_mb),
+            (Some(16), Some(96), Some(160))
+        );
+        assert_eq!((a.zoom_percent, a.step_px), (Some(150.0), Some(500.0)));
+        assert_eq!((a.sample_every, a.settle_secs), (5, 3));
+
+        let d = p("scroll big.pdf").unwrap();
+        assert_eq!((d.zoom_percent, d.tile_budget_mb), (None, None));
+        assert_eq!((d.sample_every, d.settle_secs), (10, 30));
+
+        assert!(p("scroll").is_err());
+        assert!(p("scroll a.pdf --tile-budget-mb 0").is_err());
+        assert!(p("scroll a.pdf --zoom -5").is_err());
+        assert!(p("scroll a.pdf --step nan").is_err());
     }
 }

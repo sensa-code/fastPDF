@@ -26,10 +26,11 @@ use hayro::vello_cpu::{RasterizerSettings, RenderContext, TargetInit};
 use hayro::{RenderSettings, render_into};
 
 use crate::document::{DocInner, Generation, lock};
-use crate::fonts;
 use crate::geometry::PageGeom;
 use crate::pool::{Pool, ThreadCaches};
 use crate::preflight;
+use crate::stats;
+use crate::{decode, fonts};
 
 /// Side of a merged render block in device pixels (16 MiB of RGBA).
 pub(crate) const BLOCK_SIDE: u32 = 2048;
@@ -271,6 +272,10 @@ pub(crate) fn execute_render<'p>(
     if cancelled() {
         return Err(EngineError::Cancelled);
     }
+    // Held until the scene (and the decoded images in it) is released.
+    let estimate = doc.decode_estimate(job.page);
+    let _decode = decode::process().admit(estimate, job.cancel.as_ref())?;
+    let _decoding = stats::Held::new(&doc.decode_bytes, estimate);
 
     let (w, h) = (job.rect.width, job.rect.height);
     check_target(PixelSize::new(w, h), &doc.limits)?;
@@ -292,6 +297,7 @@ pub(crate) fn execute_render<'p>(
         ..InterpreterSettings::default()
     };
 
+    caches.note_context_size(w, h);
     let ctx = match caches.context.as_mut() {
         Some(ctx) => {
             ctx.reset_and_resize(w16, h16);
@@ -309,6 +315,7 @@ pub(crate) fn execute_render<'p>(
     );
     ctx.flush();
     if cancelled() {
+        ctx.reset();
         return Err(EngineError::Cancelled);
     }
 
@@ -325,6 +332,12 @@ pub(crate) fn execute_render<'p>(
             ..RasterizerSettings::default()
         },
     );
+    // The scene's paints hold every decoded image of the page (a 600-dpi
+    // colour scan is ~140 MB as RGBA). Release them now instead of keeping
+    // them alive in this thread's context until its next job, which for an
+    // idle thread may be never (benchmark B-5). The context keeps its
+    // buffer capacities.
+    ctx.reset();
 
     if let Some(stream) = page.page_stream() {
         doc.account_content(generation, job.page, stream.len());
@@ -467,6 +480,7 @@ impl BlockCache {
             return;
         }
         map.bytes += bytes;
+        let mut freed = 0;
         while map.bytes > self.budget {
             let victim = map
                 .slots
@@ -478,8 +492,18 @@ impl BlockCache {
             if let Some(s) = map.slots.remove(&victim)
                 && let SlotState::Ready(r) = &*lock(&s.state)
             {
-                map.bytes = map.bytes.saturating_sub(r.data.len());
+                let len = r.data.len().min(map.bytes);
+                map.bytes -= len;
+                freed += len;
             }
+        }
+        // One net update, so the gauge never shows the block on top of the
+        // ones it evicted.
+        let gauge = &stats::counters().block_bytes;
+        if bytes >= freed {
+            stats::add(gauge, (bytes - freed) as u64);
+        } else {
+            stats::sub(gauge, (freed - bytes) as u64);
         }
     }
 
@@ -488,7 +512,20 @@ impl BlockCache {
         let mut map = lock(&self.map);
         map.slots
             .retain(|_, s| matches!(*lock(&s.state), SlotState::Pending));
+        stats::sub(&stats::counters().block_bytes, map.bytes as u64);
         map.bytes = 0;
+    }
+
+    /// Bytes of finished blocks.
+    pub(crate) fn bytes(&self) -> usize {
+        lock(&self.map).bytes
+    }
+}
+
+impl Drop for BlockCache {
+    fn drop(&mut self) {
+        let map = lock(&self.map);
+        stats::sub(&stats::counters().block_bytes, map.bytes as u64);
     }
 }
 
@@ -576,9 +613,14 @@ mod tests {
             });
             cache.complete(key(x), &slot, Ok(r));
         }
-        let map = lock(&cache.map);
-        assert!(map.bytes <= 1000);
-        assert_eq!(map.slots.len(), 2);
-        assert!(!map.slots.contains_key(&key(0)));
+        {
+            let map = lock(&cache.map);
+            assert!(map.bytes <= 1000);
+            assert_eq!(map.slots.len(), 2);
+            assert!(!map.slots.contains_key(&key(0)));
+        }
+        cache.clear();
+        assert_eq!(cache.bytes(), 0);
+        assert!(lock(&cache.map).slots.is_empty());
     }
 }

@@ -36,6 +36,10 @@ memmap2.workspace = true
 # hayro-syntax (same version and zlib-rs backend), so it adds no crate.
 flate2 = { workspace = true }
 
+[dev-dependencies]
+# Tests check that text layers still select and copy correctly.
+fastpdf-core.workspace = true
+
 [features]
 # Lets FASTPDF_HAYRO_PREFLIGHT switch guardrails off to measure their cost.
 # Enabled by fastpdf-bench only; never in shipping builds.

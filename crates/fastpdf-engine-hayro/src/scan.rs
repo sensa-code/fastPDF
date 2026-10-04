@@ -13,6 +13,9 @@
 //! * contain Flate streams that inflate beyond `max_object_bytes` (images:
 //!   beyond twice their declared size) — decompression bombs.
 //!
+//! It also estimates the largest image decode the page needs, which the
+//! decode budget (`decode.rs`) uses to bound transient decode memory.
+//!
 //! Results are memoized per object across pages, so shared resources are
 //! scanned once per document.
 
@@ -52,6 +55,8 @@ pub(crate) struct ScanSummary {
     /// XObjects incl. soft-mask groups and annotation appearances, tiling
     /// patterns, Type3 fonts). Only such content can fan out exponentially.
     pub(crate) nested: bool,
+    /// Bytes hayro holds while decoding the largest image the page reaches.
+    pub(crate) image_bytes: u64,
 }
 
 /// Memoized result for one object.
@@ -60,6 +65,8 @@ struct Seen {
     /// Height of the object graph below (and including) the object.
     height: u32,
     nested: bool,
+    /// Largest image decode below (and including) the object.
+    image: u64,
 }
 
 /// Per-document memo shared by all page scans.
@@ -84,6 +91,7 @@ struct Frame<'a> {
     next: usize,
     max_child: u32,
     nested: bool,
+    image: u64,
     id: Option<ObjectIdentifier>,
 }
 
@@ -221,6 +229,7 @@ pub(crate) fn scan_page(
         next: 0,
         max_child: 0,
         nested: false,
+        image: 0,
         id: None,
     }];
     let mut summary = ScanSummary::default();
@@ -238,6 +247,7 @@ pub(crate) fn scan_page(
                     Seen {
                         height,
                         nested: frame.nested,
+                        image: frame.image,
                     },
                 );
             }
@@ -245,8 +255,12 @@ pub(crate) fn scan_page(
                 Some(parent) => {
                     parent.max_child = parent.max_child.max(height);
                     parent.nested |= frame.nested;
+                    parent.image = parent.image.max(frame.image);
                 }
-                None => summary.nested = frame.nested,
+                None => {
+                    summary.nested = frame.nested;
+                    summary.image_bytes = frame.image;
+                }
             }
             continue;
         }
@@ -263,6 +277,7 @@ pub(crate) fn scan_page(
                     }
                     top.max_child = top.max_child.max(seen.height);
                     top.nested |= seen.nested;
+                    top.image = top.image.max(seen.image);
                     continue;
                 }
                 if on_stack.contains(&id) {
@@ -282,6 +297,7 @@ pub(crate) fn scan_page(
                         Seen {
                             height: 0,
                             nested: false,
+                            image: 0,
                         },
                     );
                     continue;
@@ -290,9 +306,10 @@ pub(crate) fn scan_page(
             }
             Child::Direct(obj) => (None, obj),
         };
-        if let Object::Stream(s) = &obj {
-            check_stream(s, limits)?;
-        }
+        let image = match &obj {
+            Object::Stream(s) => check_stream(s, limits)?,
+            _ => 0,
+        };
         if depth + 1 > max_depth {
             return Err(ScanError::Limit(LimitKind::Nesting));
         }
@@ -304,19 +321,22 @@ pub(crate) fn scan_page(
             next: 0,
             max_child: 0,
             nested: is_nested_content(&obj),
+            image,
             id,
         });
     }
     Ok(summary)
 }
 
-/// Image size and bomb checks for one stream.
-fn check_stream(stream: &Stream<'_>, limits: &ResourceLimits) -> Result<(), ScanError> {
+/// Image size and bomb checks for one stream. Returns the bytes hayro holds
+/// while decoding it when it is an image (0 otherwise).
+fn check_stream(stream: &Stream<'_>, limits: &ResourceLimits) -> Result<u64, ScanError> {
     let dict = stream.dict();
     let is_image = dict
         .get::<Name<'_>>(b"Subtype")
         .is_some_and(|n| &*n == b"Image");
     let mut cap = limits.max_object_bytes;
+    let mut decode = 0;
     if is_image {
         let w = u64::from(dict.get::<u32>(b"Width").unwrap_or(0));
         let h = u64::from(dict.get::<u32>(b"Height").unwrap_or(0));
@@ -327,11 +347,25 @@ fn check_stream(stream: &Stream<'_>, limits: &ResourceLimits) -> Result<(), Scan
         if let Some(expected) = expected_image_bytes(dict, w, h) {
             cap = cap.min(expected.saturating_mul(2).saturating_add(1024 * 1024));
         }
+        decode = decode_bytes(dict, w, h);
     }
     if inflates_beyond(stream, cap) {
         return Err(ScanError::Limit(LimitKind::ObjectSize));
     }
-    Ok(())
+    Ok(decode)
+}
+
+/// Peak bytes hayro holds while decoding an image: the decoded samples plus
+/// the premultiplied RGBA pixmap it converts them to (at full resolution;
+/// it downsamples afterwards).
+fn decode_bytes(dict: &Dict<'_>, w: u64, h: u64) -> u64 {
+    let components = if dict.get::<bool>(b"ImageMask").unwrap_or(false) {
+        1
+    } else {
+        color_components(dict).unwrap_or(3)
+    };
+    w.saturating_mul(h)
+        .saturating_mul(components.saturating_add(4))
 }
 
 /// CCITT decoding allocates `Columns x max(Rows, Height)` bytes up front.

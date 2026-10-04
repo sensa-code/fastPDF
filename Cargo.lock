@@ -1619,6 +1619,7 @@ dependencies = [
 name = "fastpdf-bench"
 version = "0.0.1"
 dependencies = [
+ "fastpdf-cache",
  "fastpdf-core",
  "fastpdf-engine-api",
  "fastpdf-engine-hayro",
@@ -1655,6 +1656,7 @@ version = "0.0.1"
 name = "fastpdf-engine-hayro"
 version = "0.0.1"
 dependencies = [
+ "fastpdf-core",
  "fastpdf-engine-api",
  "flate2",
  "hayro",
