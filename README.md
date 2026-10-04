@@ -32,7 +32,7 @@
 ## 常用指令
 
 ```bash
-cargo run --release -p fastpdf-app -- path	oile.pdf   # 開啟 FastPDF
+cargo run --release -p fastpdf-app -- path/to/file.pdf   # 開啟 FastPDF
 cargo test --workspace                                  # 單元測試
 uv run tools/fixtures/generate.py                       # 產生測試 PDF 到 fixtures/generated/
 cargo run --release -p fastpdf-bench -- full fixtures/generated/small-text/<file>.pdf
