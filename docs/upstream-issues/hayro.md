@@ -3,6 +3,8 @@
 對象：[LaurenzV/hayro](https://github.com/LaurenzV/hayro)，commit `ced00dd0`（`ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7`，2026-10-03，workspace 0.7.x，vello_cpu 0.3.0）。
 來源：M0 audit（`docs/audit/hayro.md`）、Hayro adapter 實作（`crates/fastpdf-engine-hayro/`）、M4 比對（`docs/engine-comparison.md`）、B-5 記憶體 benchmark（`docs/benchmarks/b5-memory.md`）。
 
+**#1 與 #7 已經有修正 patch**（`patches/hayro-0001-*.patch`、`patches/hayro-0002-*.patch`，本地分支 `fastpdf/transparency-fixes`，base `ced00dd0`），可以直接送 PR 而不只是開 issue。各 issue 的〈Proposed fix〉小節說明改了什麼，驗證與送 PR 前的步驟見〈修正 patch：驗證與送 PR 前的步驟〉。FastPDF 本身仍 pin 在 `ced00dd0`，沒有用這些 patch。
+
 證據：
 
 - 每個重現步驟都在 Windows 11 Pro 10.0.26200 x86_64、rustc 1.99.0 上，對 `ced00dd0` 的 upstream clone（path dependency、預設 features：`embed-fonts`、`embed-cmaps`、`simd`）實際執行過，數字照抄輸出。
@@ -11,7 +13,7 @@
 - #2 的加密檔用 pypdf 6.19.0 產生（附錄 C）。
 - #9 的每執行緒記憶體來自 FastPDF adapter 的 process private bytes 量測（B-5），不是 hayro 單獨的量測。
 
-**本文件只是草稿，沒有在 GitHub 建立任何 issue，也沒有做任何寫入。要不要送出由使用者決定。** 送出前請注意：
+**本文件只是草稿：沒有在 GitHub 建立任何 issue 或 PR，沒有 fork、沒有 push，也沒有做任何寫入。要不要送出由使用者決定。** 送出 issue 前請注意（送 PR 另見〈送 PR 前的步驟〉）：
 
 - 先在最新的 `main` 重跑重現步驟。hayro 更新很快（例如 #1386、#1387、#1389 都是 10/2–10/3 合併的），有些問題可能已經修掉。
 - 先搜尋既有 issue。下表的「相關 issue」是 2026-10-04 用 `gh issue list --search` 唯讀查到的結果。
@@ -22,17 +24,17 @@
 
 | # | 標題 | 類型 | 嚴重度 | 相關 issue | FastPDF 的處理 |
 |---|---|---|---|---|---|
-| 1 | Alpha soft masks whose group has no `/CS` are dropped: the masked content is painted fully opaque | Bug | 高 | — | 無（等 upstream） |
+| 1 | Alpha soft masks whose group has no `/CS` are dropped: the masked content is painted fully opaque | Bug | 高 | — | **patch 0001**（未送出） |
 | 2 | The owner password is rejected for revision 2–4 security handlers (RC4, AES-128) | Bug | 中高 | — | 無 |
 | 3 | Stack overflow on long chains of indirect color spaces (follow-up to #1347) | Bug（robustness） | 高 | #1347 最後一則留言 | adapter 靜態掃描擋下 + 64 MiB thread stack |
 | 4 | No limit on decoded stream size or on up-front image allocations | Feature（security） | 高 | #1259、#273、#1382 | adapter 預先做 bounded inflate、宣告尺寸檢查 |
 | 5 | Data point for #1052: a 6 KB Form XObject DAG takes over 30 s to render — please consider a work budget too | 留言（#1052） | 中高 | #1052 | adapter preflight 有時間預算的 interpretation |
 | 6 | `render()` panics when the page is 65,533 px or more wide or tall | Bug | 中 | — | adapter 把 target 限制在 16,384 px |
-| 7 | Knockout transparency groups (`/K true`) are composited like normal groups | Feature | 中 | README 已列為未支援 | 無 |
+| 7 | Knockout transparency groups (`/K true`) are composited like normal groups | Feature | 中 | README 已列為未支援 | **patch 0002**（未送出；部分支援，見該節） |
 | 8 | Non-embedded CJK fonts silently fall back to Helvetica, so the text disappears | Docs／Feature | 中高（CJK 使用者） | README 已列為未支援 | adapter 的 font resolver 依 character collection 對應 Windows 字型 |
 | 9 | Tiled rendering: images are decoded again on every `render_into` call, and `RenderCache` has no size bound | Feature（效能／記憶體） | 中 | #1375 | adapter：block 合併、decode budget、閒置 5 s 釋放執行緒 |
 
-第 1、7 點對應 M4 比對中 `transparency/softmask-groups.pdf` 的差異（Hayro 把「Alpha soft mask (group ca 0.4)」畫成不透明方塊、knockout group 當成一般 group）。追查後發現第 1 點的原因不是 alpha mask 本身，而是 mask group 沒有 `/CS`；FastPDF fixture 的產生方式見 `tools/fixtures/fxlib/cat_vector.py` 的 `tr_softmask_groups`（`uv run tools/fixtures/generate.py --only transparency`）。issue 裡改用下面的最小重現檔。
+第 1、7 點對應 M4 比對中 `transparency/softmask-groups.pdf` 的差異（Hayro 把「Alpha soft mask (group ca 0.4)」畫成不透明方塊、knockout group 當成一般 group）。追查後發現第 1 點的原因不是 alpha mask 本身，而是 mask group 沒有 `/CS`；FastPDF fixture 的產生方式見 `tools/fixtures/fxlib/cat_vector.py` 的 `tr_softmask_groups`（`uv run tools/fixtures/generate.py --only transparency --out <暫存目錄>`；不加 `--out` 會覆寫共用的 `fixtures/generated/manifest.json`）。issue 裡改用下面的最小重現檔。
 
 ---
 
@@ -96,6 +98,37 @@ pixel 20,20 = [0, 77, 204, 255]
 Only resolve `/CS` for `/S /Luminosity`. For a luminosity mask without `/CS`, falling
 back to a device color space seems better than dropping the mask. A warning when a
 soft mask is dropped would make such cases visible.
+~~~
+
+### Proposed fix（patch 0001）
+
+- **Patch**：`patches/hayro-0001-keep-soft-masks-whose-group-has-no-color-space.patch`（本地分支的 commit `da45b370`，base `ced00dd0`）。和 0002 互相獨立，可以單獨套用、單獨送 PR。
+- **改了什麼**：`hayro-interpret/src/x_object/soft_mask.rs`（+21／−5 行）。soft mask 的 group 沒有 `/CS`、`/CS` 無法解析，或連 `/Group` 字典都沒有時，mask 不再被丟掉。色彩空間只用來解讀 luminosity mask 的 `/BC`：沒有 `/CS` 時依 `/BC` 的元件數推定 DeviceGray／DeviceRGB／DeviceCMYK，推定不了就沿用原本的黑色 backdrop。
+- **測試**：新增 `hayro-tests/pdfs/custom/mask_no_cs.pdf`（render 與 SVG 兩種 snapshot，manifest＋`tests/render.rs`＋`tests/svg.rs`）。左半是 alpha mask（group 沒有 `/CS`，畫一個 ca 0.5 的圓）→ 半透明的藍色圓；右半是 luminosity mask（group 沒有 `/CS`、`/BC [1]`，畫一個黑圓）→ 紅色方塊中間一個圓洞。修正前兩邊都是不透明方塊。
+- **hayro 測試**：見〈修正 patch：驗證與送 PR 前的步驟〉。既有 snapshot 沒有任何像素差異。
+- **FastPDF 驗證**：和 0002 一起驗證，見〈修正 patch：驗證與送 PR 前的步驟〉。`transparency/softmask-groups.pdf` 的 alpha soft mask 從不透明方塊變成 40% 的藍色圓盤，和 zpdf 一致。
+
+PR 描述草稿（最後一段請在跑完完整測試後改成實際結果）：
+
+~~~markdown
+**hayro-interpret: Keep soft masks whose group has no color space**
+
+A soft mask was dropped when the transparency group in its `G` entry had no `CS`
+entry (or one that could not be parsed), so the content it should mask was painted
+fully opaque. The specification only requires `CS` for the group of a luminosity
+mask, and alpha masks commonly leave it out.
+
+The color space is now optional. It is only used for the backdrop color `BC` of
+luminosity masks; without one, `BC` is interpreted in the device color space with
+the same number of components.
+
+Test: `mask_no_cs` (render and SVG). Left: an alpha mask whose group paints a circle
+with opacity 0.5. Right: a luminosity mask with `/BC [1]` whose group paints a black
+circle. Before: two opaque squares. After: a half-transparent blue disc and a red
+square with a round hole.
+
+No existing snapshot changed in the custom, load, SVG and write tests.
+<!-- Replace with the result of the full suite (sync.py) before submitting. -->
 ~~~
 
 ---
@@ -382,6 +415,64 @@ pixel 160,40 = [127, 127, 255, 255]
 ```
 ~~~
 
+### Proposed fix（patch 0002）
+
+- **Patch**：`patches/hayro-0002-support-knockout-groups.patch`（commit `eb8753b1`，base `ced00dd0`）。和 0001 互相獨立。
+- **改了什麼**（+64／−9 行，不含測試）：
+  - `hayro-interpret`：`FormXObject` 讀取 group 的 `/K`；knockout group 改用新的 `Device::push_knockout_group` 推入，pop 仍用 `pop_transparency_group`。新方法的預設實作直接呼叫 `push_transparency_group`，所以 hayro-svg、範例程式、Type3／pattern 的包裝 device、FastPDF adapter 的 device 都不用改（FastPDF adapter 原封不動就能用 `[patch]` 編譯）。
+  - `hayro`：`Renderer` 記錄 blend stack 上每個 group 是不是 knockout；直接畫在 knockout group 裡的 path 與 glyph 用 `Compose::Copy`。group 是畫在一開始透明的 layer 裡，所以這就是「和 group 的初始 backdrop 合成」，反鋸齒邊緣由 vello_cpu 依 coverage 內插，等於規格中依 shape 加權平均。不透明物件的結果和原本完全相同，只有半透明物件會改變。
+- **測試**：新增 `hayro-tests/pdfs/custom/group_knockout.pdf`（manifest＋`tests/render.rs`）：條紋背景上四個 group（`/I`、`/K` 四種組合），每個畫紅、綠、藍三個 50% 的圓。修正前四組一模一樣；修正後兩個 knockout group 裡後畫的圓取代先畫的圓，重疊處只看得到最後一個圓。另外確認 0002 單獨套在 `ced00dd0` 上也能編譯、測試通過。
+- **hayro 測試與 FastPDF 驗證**：同 0001（既有 snapshot 無差異；FastPDF 的 knockout 兩組和 zpdf 一致）。
+
+還沒涵蓋（行為和現在一樣），以及完整支援的設計與工作量估計：
+
+| 項目 | 現況 | 完整做法 | 估計 |
+|---|---|---|---|
+| knockout group 裡的影像與巢狀 group | 仍以 SrcOver 疊在先前物件上（它們各自是一個 layer；用 `Copy` 合成會把整個 layer 範圍清空） | 取得元素的 shape（影像＝影像範圍或 stencil；巢狀 group＝把內容畫成 mask），先以 `DestOut` 依 shape 擦掉先前物件，再正常疊上元素。不需改 vello_cpu；巢狀 group 要多畫一次 | 2–3 天（含測試） |
+| knockout group 裡帶 soft mask（ExtGState `/SMask`）的物件 | soft mask 被 vello_cpu 乘進 coverage，等於當成 shape；規格（`AIS false`）是 opacity | 先用路徑的 shape 做 `DestOut`，再帶 mask 以 SrcOver 畫；每個這種物件多畫一次 | 0.5–1 天 |
+| 非 isolated 的 knockout group 搭配非 Normal 的 blend mode | 和 hayro 目前所有 group 一樣當成 isolated | 需要 non-isolated group：layer 以 backdrop 初始化、合成時扣掉 backdrop 的貢獻；vello_cpu 目前只有 isolated layer，要先改 vello_cpu | 1–2 週（含 vello_cpu） |
+| 頁面 `/Group` 的 `/K`、文字 knockout 參數 `TK` | 忽略 | 頁面 group 用 `push_knockout_group` 包住頁面內容；`TK` 要在 text object 層級處理 | 各約 0.5 天，實務上少見 |
+| hayro-svg | 忽略 knockout（預設實作） | SVG 沒有對應的合成模式，需要 filter 或預先合成 | 不建議 |
+
+PR 描述草稿（同樣補上完整測試的結果）：
+
+~~~markdown
+**hayro: Support knockout groups**
+
+Objects in a transparency group with `/K true` were composited over each other like
+in any other group (the README lists knockout groups as unsupported). In a knockout
+group, each object is composited with the initial backdrop of the group instead, so
+it replaces the objects painted before it wherever it paints.
+
+- hayro-interpret reads `K` from the group attributes of form XObjects and pushes
+  knockout groups with a new `Device::push_knockout_group`. Its default
+  implementation calls `push_transparency_group`, so existing devices (hayro-svg,
+  the Type3/pattern wrapper devices, downstream implementations) keep working
+  unchanged.
+- hayro draws paths and glyphs that are painted directly into a knockout group with
+  `Compose::Copy`. The group is rendered into a layer that starts out transparent, so
+  this composites them with the initial backdrop; vello_cpu interpolates by coverage
+  at anti-aliased edges, which matches the shape-weighted average from the spec.
+  Opaque objects render exactly as before.
+
+Not covered yet (unchanged behavior): images and nested groups inside a knockout
+group are still composited over the earlier objects, since they are separate layers
+and compositing a whole layer with `Copy` would clear its entire area; for objects
+in a knockout group, a soft mask from the graphics state acts as shape instead of
+opacity; non-isolated knockout groups with non-normal blend modes (isolation isn't supported
+yet); `K` of the page group and the text knockout flag `TK`. hayro-svg ignores the
+attribute.
+
+API: I added a provided method so that this is not a breaking change and can go
+into a 0.8.x release. If you prefer, the group attributes (knockout, and later
+isolated) could instead be passed to `push_transparency_group` in the next breaking
+release; happy to change it.
+
+Test: `group_knockout`: four groups (all `I`/`K` combinations), each with three
+overlapping 50% circles over a striped backdrop. Before: all four look the same.
+After: in the knockout groups the later circles replace the earlier ones.
+~~~
+
 ---
 
 ## 8. Non-embedded CJK fonts silently fall back to Helvetica, so the text disappears
@@ -484,6 +575,78 @@ Reproduction of the tile timing: render 512x512 tiles with
 `render_into(page, &cache, &settings, &RenderSettings::default(), &mut ctx, Affine::translate((-x, -y)) * Affine::scale(4.0) * page.initial_transform(true).to_kurbo())`,
 reusing one `RenderCache` and `RenderContext`.
 ~~~
+
+---
+
+## 修正 patch：驗證與送 PR 前的步驟
+
+### Patch 清單
+
+| 檔案 | 對應 | commit（本地分支 `fastpdf/transparency-fixes`） | 範圍 |
+|---|---|---|---|
+| `patches/hayro-0001-keep-soft-masks-whose-group-has-no-color-space.patch` | #1 | `da45b370` | `hayro-interpret/src/x_object/soft_mask.rs`＋測試 `mask_no_cs`（render、SVG） |
+| `patches/hayro-0002-support-knockout-groups.patch` | #7 | `eb8753b1` | `hayro-interpret`（`device.rs`、`x_object/form.rs`）、`hayro`（`lib.rs`、`mask.rs`）＋測試 `group_knockout` |
+| `patches/hayro-transparency-before-after.png` | #1、#7 | — | PR 用的前後對照圖（FastPDF fixture，96 dpi） |
+
+兩個 patch 用 `git format-patch` 產生，各自都能單獨 `git apply --check` 到 `ced00dd0`。0002 單獨套用後也編譯、測試通過。
+
+### hayro 測試（本機，rustc 1.99.0）
+
+- 先在未修改的 `ced00dd0` 產生 baseline snapshot，再切到分支比對。本機能跑的測試：`ced00dd0` 436 個通過；加上兩個 patch 後 439 個通過（436＋新增的 `render::mask_no_cs`、`svg::mask_no_cs`、`render::group_knockout`），**既有 snapshot 沒有任何像素差異**。
+- 另外 1,277 個測試需要 `sync.py` 從 hayro-assets.dev 下載的 PDF（pdf.js、PDFBox、PDFium、corpus 與部分 custom），本次沒有下載，兩邊都是同樣的「找不到檔案」。
+- `hayro-interpret` 單元測試 48 個通過；`cargo test -p hayro-tests -- "load::"`（debug，同 CI）118 個通過；`hayro-syntax` 有 2 個失敗，原因同樣是需要下載的檔案，`ced00dd0` 上也一樣。
+- `cargo fmt --check --all`、`RUSTDOCFLAGS="-D warnings" cargo doc -p hayro-interpret -p hayro --no-deps`、`cargo check -p hayro-interpret --no-default-features` 通過。clippy 1.99 在既有程式碼有新版 lint 的警告（`chunks_exact`→`as_chunks`、`sort_by_key` 等），修改到的程式碼沒有警告；CI 用的是 1.92，本機沒有裝。
+- 為了讓測試 PDF 的位元組和 Linux／CI 相同，本地 clone 已用 `core.autocrlf=false` 重新 checkout（原本 Windows 的 autocrlf 會把文字型 PDF 轉成 CRLF，xref offset 跟著錯位）。
+
+### FastPDF 驗證（不改 `D:\fastPDF`）
+
+方法：`git archive HEAD`（`2f162e0`）匯出到 scratchpad，在匯出的 `Cargo.toml` 加上
+
+```toml
+[patch."https://github.com/LaurenzV/hayro"]
+hayro = { path = "D:/fastPDF/upstream/hayro/hayro" }
+```
+
+`fastpdf-engine-hayro` 不用任何修改就能編譯。以 `--features engine-zpdf` build 未修補（git `ced00dd0`）與修補後兩個 `fastpdf-bench`。本地 clone 平常停在 `main`（＝`ced00dd0`），重現前先 `git -C upstream/hayro -c core.autocrlf=false switch fastpdf/transparency-fixes`。
+
+**`diff-corpus --engine hayro,zpdf`（84 檔、185 頁，tolerance 16）**
+
+| | 未修補 | 修補後 |
+|---|---|---|
+| `transparency/softmask-groups.pdf` 差異像素 | 10.884% | **0.311%** |
+| 同上 PSNR／平均絕對差 | 18.85 dB／8.07 | **43.83 dB／0.64** |
+| 其他 184 頁 | — | 數字完全相同 |
+| 全 corpus 每檔最大差異的中位數／p90 | 3.679%／10.881% | 3.679%／10.502% |
+
+剩下的 0.311% 只在反鋸齒邊緣與文字（兩個 rasterizer 本來就有的差異）。前後對照：`patches/hayro-transparency-before-after.png`（左：`ced00dd0`；右：修補後。上：Alpha soft mask (group ca 0.4)；下：knockout）。
+
+**`corpus --repeat 3` 與 `compare`**
+
+量測時機器上有其他 agent 在編譯（CPU 35–80%），計時噪音大：未修補版本自己跑 4 次，同一個指標的（最大−最小）／中位數，中位數 7%、p90 35%。所以未修補與修補後**交替各跑 4 次**，比較中位數：
+
+- 84 檔的狀態（ok／partial／open_error…）完全相同。
+- 和 `benchmarks/baseline.json` 比（各取 4 次的中位數，>10% 算 regression）：未修補 135 項、修補後 129 項。兩者都大量超標，原因是 baseline（`f033b35`，安靜的機器）之後 FastPDF 本身的變更（2 個 render worker、B-5 等）加上目前的機器負載，不是 hayro patch；兩者的差集只有零星、在噪音範圍內的小數值。**因此不能直接用 baseline 判斷，改用 A/B 比較。**
+- A/B：中位數差超過 10% 且落在未修補 4 次範圍之外的只有 5 項，且都不可能被修補影響：`malformed/deep-nesting-dict-5000.pdf` 的 open（7.40 → 8.30 ms）、time to first page、page render，`flat-2000p` 的 first page（2.20 → 2.46 ms），`bad-xref-offsets` 的 page render（−13%，改善）。開檔根本不會執行修補到的程式碼；用「同樣以 path dependency 編譯、但沒有修補的 `ced00dd0`」當對照組跑 `open --repeat 30` 三輪：deep-nesting 為 git 版 7.34、path 對照 7.79、修補後 8.06 ms（範圍重疊），flat-2000p 為 3.88／3.77／4.32 ms（範圍重疊）。差異來自 git 與 path dependency 的編譯差異加上噪音，不是 patch。
+- **patch 造成的效能差異（正確性的代價）**：只有 `transparency/softmask-groups.pdf`。整頁 render（96 dpi，`render --repeat 40` 三輪）3.8 → 5.4 ms（+1.6 ms），private 峰值 11.2 → 13.1 MB：原本被丟掉的 alpha soft mask 現在真的畫出來（一張全頁的 mask），knockout 物件改走 vello_cpu 的 blend 路徑。只裝 0001 的版本已經佔了大部分（同一輪負載下：未修補 7.1、只裝 0001 9.0、兩個都裝 9.6 ms，private 峰值 11.9／13.1／13.1 MB）。corpus 中位數：first page 5.89 → 6.43 ms，RSS 16.0 → 16.9 MB。
+
+### 送 PR 前的步驟
+
+查核結果（2026-10-04，用 `gh api` 唯讀查 GitHub community profile 與 repo 內容）：hayro **沒有** CONTRIBUTING、PR template、issue template、code of conduct，也沒有 AI policy 檔案。以下依 CI 設定（`.github/workflows/ci.yml`）、`hayro-tests/README.md` 與既有 PR 整理：
+
+1. **基準**：GitHub 上 `main` 已前進到 `ea9c81dc`（Version bump #1390：版本改成 0.8.0，只改各 crate 的 `Cargo.toml` 與 `Cargo.lock`）。兩個 patch 都不碰這些檔案，應該能直接套用；請在最新 `main` 開分支後 `git am` 套用，再跑一次下面的檢查。
+2. **作者資訊**：patch 的 `From:` 是本機 git 身分（`sensa-code <255512260+sensa-code@users.noreply.github.com>`）。請改成要用來送 PR 的 GitHub 身分（`git am` 之後 `git commit --amend --reset-author`）。
+3. **AI 協助揭露**：commit 訊息帶有 `Co-Authored-By: Claude Opus 5.5` trailer。hayro 沒有 AI 政策，但 maintainer 會逐項評估 AI 產生的內容（#1195 只採用有實測效益的部分）。建議 PR 描述簡短、說明是 AI 協助並已人工審閱與驗證，自己讀懂程式碼以便回應 review。
+4. **CI 檢查**（MSRV 1.92；本機只有 1.99，請用 1.92 再跑一次）：
+   - `RUSTFLAGS="-D warnings" cargo clippy --workspace --exclude hayro-demo --exclude hayro-bench --tests --examples`
+   - `cargo fmt --check --all`
+   - `RUSTFLAGS="-D warnings" cargo doc --workspace --exclude hayro-demo --exclude hayro-bench --no-deps`
+   - `RUSTFLAGS="-D warnings" cargo hack check --each-feature --workspace --exclude hayro-demo --exclude hayro-bench`（需要 cargo-hack，本次沒有裝）
+   - `cargo check --workspace`、no_std 檢查、`cargo test -p hayro-tests -- "load::"`
+5. **完整回歸測試**（`hayro-tests/README.md`）：`python3 sync.py` 下載 pdf.js／PDFBox／corpus 與字型（數千個 PDF，本次沒有下載）；在 `main` 跑 `cargo test --release` 產生 baseline snapshot；切到分支再跑，檢查 `diffs/`。0001 只會影響 soft mask 的 group 缺少或無法解析 `/CS`（或沒有 `/Group`）的檔案，0002 只會影響含 `/K true` 的檔案，預期都是改善；把有變化的檔案列在 PR 描述裡。新測試的 snapshot 不進 repo，reviewer 會自己產生。
+6. **Windows 注意**：clone 要用 `core.autocrlf=false`，否則文字型的測試 PDF 會被轉成 CRLF。`git am` 會因為 PDF xref 行尾的空白（PDF 格式要求，既有測試檔也一樣）出現 whitespace 警告，屬正常。
+7. **慣例**：一個 PR 一件事（0001、0002 分開送）；標題以 crate 名稱開頭（`hayro-interpret: …`、`hayro: …`，同 commit 標題）；新測試＝`pdfs/custom/*.pdf`＋`manifest_custom.json`＋`tests/render.rs`（必要時 `tests/svg.rs`），PDF 以未壓縮、可讀的形式提交。PR 描述可直接用上面的草稿，附上前後對照圖，必要時附上 FastPDF fixture。
+8. **0002 的 API 選擇**：目前新增的是有預設實作的 `Device::push_knockout_group`，屬於非破壞性變更，可以進 0.8.x。maintainer 也可能偏好在下一個 breaking release（0.9）讓 `push_transparency_group` 直接接收 group 屬性（knockout，以及之後的 isolated）；PR 描述已經提出這個選項，依 review 調整即可。
+9. README 與 `hayro/src/lib.rs` 的 crate 文件仍寫著 knockout group 未支援（後者也還寫著不支援加密檔）；patch 沒有改文件，交給 maintainer 決定措辭。
 
 ---
 

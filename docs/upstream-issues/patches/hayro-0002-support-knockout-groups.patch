@@ -1,0 +1,537 @@
+From eb8753b1d90749a6e9bd149a5cc6a307a8ed6409 Mon Sep 17 00:00:00 2001
+From: sensa-code <255512260+sensa-code@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 17:46:28 +0800
+Subject: [PATCH] hayro: Support knockout groups
+
+Objects in a transparency group with `/K true` were composited over each
+other like in any other group. In a knockout group, each object is
+composited with the initial backdrop of the group instead, so it replaces
+the objects painted before it wherever it paints.
+
+hayro-interpret now reads the `K` entry of transparency groups and pushes
+knockout groups with the new `Device::push_knockout_group`. Its default
+implementation calls `push_transparency_group`, so existing devices keep
+working unchanged. The renderer in hayro draws paths and glyphs that are
+painted directly into a knockout group with `Compose::Copy`: the layer of
+the group starts out transparent, so this composites them with the initial
+backdrop, and anti-aliased edges are interpolated by coverage.
+
+Not covered yet: images and nested groups inside a knockout group are
+still composited over the earlier objects, and a soft mask in the graphics
+state acts as shape rather than opacity there. hayro-svg ignores the
+attribute.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hayro-interpret/src/device.rs              |  17 ++
+ hayro-interpret/src/x_object/form.rs       |  20 +-
+ hayro-tests/manifest_custom.json           |   4 +
+ hayro-tests/pdfs/custom/group_knockout.pdf | 298 +++++++++++++++++++++
+ hayro-tests/tests/render.rs                |   1 +
+ hayro/src/lib.rs                           |  33 ++-
+ hayro/src/mask.rs                          |   3 +
+ 7 files changed, 367 insertions(+), 9 deletions(-)
+ create mode 100644 hayro-tests/pdfs/custom/group_knockout.pdf
+
+diff --git a/hayro-interpret/src/device.rs b/hayro-interpret/src/device.rs
+index c112c062..9ce2aebe 100644
+--- a/hayro-interpret/src/device.rs
++++ b/hayro-interpret/src/device.rs
+@@ -24,6 +24,23 @@ pub trait Device<'a> {
+         mask: Option<SoftMask<'a>>,
+         blend_mode: BlendMode,
+     );
++    /// Push a new knockout transparency group (a group with `/K true`) to the
++    /// blend stack. It is popped with [`Device::pop_transparency_group`].
++    ///
++    /// Each object painted directly into a knockout group is composited with
++    /// the initial backdrop of the group instead of with the objects painted
++    /// before it, so it replaces them wherever it paints.
++    ///
++    /// The default implementation ignores the knockout attribute and calls
++    /// [`Device::push_transparency_group`].
++    fn push_knockout_group(
++        &mut self,
++        opacity: f32,
++        mask: Option<SoftMask<'a>>,
++        blend_mode: BlendMode,
++    ) {
++        self.push_transparency_group(opacity, mask, blend_mode);
++    }
+     /// Draw a run of positioned glyphs.
+     fn draw_glyph_run(
+         &mut self,
+diff --git a/hayro-interpret/src/x_object/form.rs b/hayro-interpret/src/x_object/form.rs
+index 74a6289f..ebac6df6 100644
+--- a/hayro-interpret/src/x_object/form.rs
++++ b/hayro-interpret/src/x_object/form.rs
+@@ -15,6 +15,7 @@ pub(crate) struct FormXObject<'a> {
+     pub(crate) matrix: Affine,
+     pub(crate) bbox: [f32; 4],
+     is_transparency_group: bool,
++    is_knockout_group: bool,
+     pub(crate) dict: Dict<'a>,
+     resources: Option<Resources<'a>>,
+ }
+@@ -31,12 +32,15 @@ impl<'a> FormXObject<'a> {
+                 .unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+         );
+         let bbox = dict.get::<[f32; 4]>(BBOX)?;
+-        let is_transparency_group = dict.get::<Dict<'_>>(GROUP).is_some();
++        let group = dict.get::<Dict<'_>>(GROUP);
++        let is_transparency_group = group.is_some();
++        let is_knockout_group = group.is_some_and(|g| g.get::<bool>(K).unwrap_or(false));
+ 
+         Some(Self {
+             decoded,
+             matrix,
+             is_transparency_group,
++            is_knockout_group,
+             bbox,
+             dict: dict.clone(),
+             resources,
+@@ -74,11 +78,15 @@ impl<'a> FormXObject<'a> {
+         context.push_root_transform();
+ 
+         if self.is_transparency_group {
+-            device.push_transparency_group(
+-                context.get().graphics_state.non_stroke_alpha,
+-                std::mem::take(&mut context.get_mut().graphics_state.soft_mask),
+-                std::mem::take(&mut context.get_mut().graphics_state.blend_mode),
+-            );
++            let opacity = context.get().graphics_state.non_stroke_alpha;
++            let mask = std::mem::take(&mut context.get_mut().graphics_state.soft_mask);
++            let blend_mode = std::mem::take(&mut context.get_mut().graphics_state.blend_mode);
++
++            if self.is_knockout_group {
++                device.push_knockout_group(opacity, mask, blend_mode);
++            } else {
++                device.push_transparency_group(opacity, mask, blend_mode);
++            }
+ 
+             context.get_mut().graphics_state.non_stroke_alpha = 1.0;
+             context.get_mut().graphics_state.stroke_alpha = 1.0;
+diff --git a/hayro-tests/manifest_custom.json b/hayro-tests/manifest_custom.json
+index 11723030..51dac4a1 100644
+--- a/hayro-tests/manifest_custom.json
++++ b/hayro-tests/manifest_custom.json
+@@ -235,6 +235,10 @@
+     "id": "function_type0_2",
+     "file": "pdfs/custom/function_type0_2.pdf"
+   },
++  {
++    "id": "group_knockout",
++    "file": "pdfs/custom/group_knockout.pdf"
++  },
+   {
+     "id": "image_1_bit_per_component",
+     "file": "pdfs/custom/image_1_bit_per_component.pdf"
+diff --git a/hayro-tests/pdfs/custom/group_knockout.pdf b/hayro-tests/pdfs/custom/group_knockout.pdf
+new file mode 100644
+index 00000000..4f2b839b
+--- /dev/null
++++ b/hayro-tests/pdfs/custom/group_knockout.pdf
+@@ -0,0 +1,298 @@
++%PDF-1.7
++%µ¶
++
++1 0 obj
++<<
++  /Type /Catalog
++  /Pages 2 0 R
++>>
++endobj
++
++2 0 obj
++<<
++  /Type /Pages
++  /Count 1
++  /Kids [ 3 0 R ]
++>>
++endobj
++
++3 0 obj
++<<
++  /Type /Page
++  /Parent 2 0 R
++  /MediaBox [ 0 0 240 240 ]
++  /Resources <<
++    /XObject <<
++      /x0 5 0 R
++      /x1 6 0 R
++      /x2 7 0 R
++      /x3 8 0 R
++    >>
++  >>
++  /Contents 4 0 R
++>>
++endobj
++
++4 0 obj
++<<
++  /Length 382
++>>
++stream
++.6 g
++0 0 10 240 re
++f
++.6 g
++20 0 10 240 re
++f
++.6 g
++40 0 10 240 re
++f
++.6 g
++60 0 10 240 re
++f
++.6 g
++80 0 10 240 re
++f
++.6 g
++100 0 10 240 re
++f
++.6 g
++120 0 10 240 re
++f
++.6 g
++140 0 10 240 re
++f
++.6 g
++160 0 10 240 re
++f
++.6 g
++180 0 10 240 re
++f
++.6 g
++200 0 10 240 re
++f
++.6 g
++220 0 10 240 re
++f
++q
++1 0 0 1 0 120 cm
++/x0 Do
++Q
++q
++1 0 0 1 120 120 cm
++/x1 Do
++Q
++q
++1 0 0 1 0 0 cm
++/x2 Do
++Q
++q
++1 0 0 1 120 0 cm
++/x3 Do
++Q
++endstream
++endobj
++
++5 0 obj
++<<
++  /Length 383
++  /Type /XObject
++  /Subtype /Form
++  /BBox [ 0 0 120 120 ]
++  /Group <<
++    /Type /Group
++    /S /Transparency
++    /I false
++    /K false
++  >>
++  /Resources <<
++    /ExtGState <<
++      /h 9 0 R
++    >>
++  >>
++>>
++stream
++/h gs
++1 0 0 rg
++72 42 m
++72 58.57 58.57 72 42 72 c
++25.43 72 12 58.57 12 42 c
++12 25.43 25.43 12 42 12 c
++58.57 12 72 25.43 72 42 c
++f
++0 .7 0 rg
++108 42 m
++108 58.57 94.57 72 78 72 c
++61.43 72 48 58.57 48 42 c
++48 25.43 61.43 12 78 12 c
++94.57 12 108 25.43 108 42 c
++f
++0 0 1 rg
++90 76 m
++90 92.57 76.57 106 60 106 c
++43.43 106 30 92.57 30 76 c
++30 59.43 43.43 46 60 46 c
++76.57 46 90 59.43 90 76 c
++f
++endstream
++endobj
++
++6 0 obj
++<<
++  /Length 383
++  /Type /XObject
++  /Subtype /Form
++  /BBox [ 0 0 120 120 ]
++  /Group <<
++    /Type /Group
++    /S /Transparency
++    /I false
++    /K true
++  >>
++  /Resources <<
++    /ExtGState <<
++      /h 9 0 R
++    >>
++  >>
++>>
++stream
++/h gs
++1 0 0 rg
++72 42 m
++72 58.57 58.57 72 42 72 c
++25.43 72 12 58.57 12 42 c
++12 25.43 25.43 12 42 12 c
++58.57 12 72 25.43 72 42 c
++f
++0 .7 0 rg
++108 42 m
++108 58.57 94.57 72 78 72 c
++61.43 72 48 58.57 48 42 c
++48 25.43 61.43 12 78 12 c
++94.57 12 108 25.43 108 42 c
++f
++0 0 1 rg
++90 76 m
++90 92.57 76.57 106 60 106 c
++43.43 106 30 92.57 30 76 c
++30 59.43 43.43 46 60 46 c
++76.57 46 90 59.43 90 76 c
++f
++endstream
++endobj
++
++7 0 obj
++<<
++  /Length 383
++  /Type /XObject
++  /Subtype /Form
++  /BBox [ 0 0 120 120 ]
++  /Group <<
++    /Type /Group
++    /S /Transparency
++    /I true
++    /K false
++  >>
++  /Resources <<
++    /ExtGState <<
++      /h 9 0 R
++    >>
++  >>
++>>
++stream
++/h gs
++1 0 0 rg
++72 42 m
++72 58.57 58.57 72 42 72 c
++25.43 72 12 58.57 12 42 c
++12 25.43 25.43 12 42 12 c
++58.57 12 72 25.43 72 42 c
++f
++0 .7 0 rg
++108 42 m
++108 58.57 94.57 72 78 72 c
++61.43 72 48 58.57 48 42 c
++48 25.43 61.43 12 78 12 c
++94.57 12 108 25.43 108 42 c
++f
++0 0 1 rg
++90 76 m
++90 92.57 76.57 106 60 106 c
++43.43 106 30 92.57 30 76 c
++30 59.43 43.43 46 60 46 c
++76.57 46 90 59.43 90 76 c
++f
++endstream
++endobj
++
++8 0 obj
++<<
++  /Length 383
++  /Type /XObject
++  /Subtype /Form
++  /BBox [ 0 0 120 120 ]
++  /Group <<
++    /Type /Group
++    /S /Transparency
++    /I true
++    /K true
++  >>
++  /Resources <<
++    /ExtGState <<
++      /h 9 0 R
++    >>
++  >>
++>>
++stream
++/h gs
++1 0 0 rg
++72 42 m
++72 58.57 58.57 72 42 72 c
++25.43 72 12 58.57 12 42 c
++12 25.43 25.43 12 42 12 c
++58.57 12 72 25.43 72 42 c
++f
++0 .7 0 rg
++108 42 m
++108 58.57 94.57 72 78 72 c
++61.43 72 48 58.57 48 42 c
++48 25.43 61.43 12 78 12 c
++94.57 12 108 25.43 108 42 c
++f
++0 0 1 rg
++90 76 m
++90 92.57 76.57 106 60 106 c
++43.43 106 30 92.57 30 76 c
++30 59.43 43.43 46 60 46 c
++76.57 46 90 59.43 90 76 c
++f
++endstream
++endobj
++
++9 0 obj
++<<
++  /Type /ExtGState
++  /ca .5
++>>
++endobj
++
++xref
++0 10
++0000000000 65535 f 
++0000000016 00000 n 
++0000000070 00000 n 
++0000000136 00000 n 
++0000000342 00000 n 
++0000000777 00000 n 
++0000001413 00000 n 
++0000002048 00000 n 
++0000002683 00000 n 
++0000003317 00000 n 
++trailer
++<<
++  /Size 10
++  /Root 1 0 R
++>>
++startxref
++3367
++%%EOF
+diff --git a/hayro-tests/tests/render.rs b/hayro-tests/tests/render.rs
+index 3f81f053..312a5e52 100644
+--- a/hayro-tests/tests/render.rs
++++ b/hayro-tests/tests/render.rs
+@@ -57,6 +57,7 @@ use crate::{run_render_test, run_render_test_with_password};
+ #[test] fn fonts_type1_latex() { run_render_test("fonts_type1_latex", "pdfs/custom/fonts_type1_latex.pdf", None); }
+ #[test] fn function_type0_1() { run_render_test("function_type0_1", "pdfs/custom/function_type0_1.pdf", None); }
+ #[test] fn function_type0_2() { run_render_test("function_type0_2", "pdfs/custom/function_type0_2.pdf", None); }
++#[test] fn group_knockout() { run_render_test("group_knockout", "pdfs/custom/group_knockout.pdf", None); }
+ #[test] fn image_1_bit_per_component() { run_render_test("image_1_bit_per_component", "pdfs/custom/image_1_bit_per_component.pdf", None); }
+ #[test] fn image_ccit_1() { run_render_test("image_ccit_1", "pdfs/custom/image_ccit_1.pdf", None); }
+ #[test] fn image_ccit_3() { run_render_test("image_ccit_3", "pdfs/custom/image_ccit_3.pdf", None); }
+diff --git a/hayro/src/lib.rs b/hayro/src/lib.rs
+index a8a43773..22c26939 100644
+--- a/hayro/src/lib.rs
++++ b/hayro/src/lib.rs
+@@ -92,6 +92,9 @@ pub(crate) struct Renderer<'a> {
+     pub(crate) inside_pattern: bool,
+     pub(crate) soft_mask_cache: FxHashMap<u128, Mask>,
+     pub(crate) in_type3_glyph: bool,
++    /// For each transparency group on the blend stack, whether it is a
++    /// knockout group.
++    pub(crate) knockout_groups: Vec<bool>,
+ }
+ 
+ impl<'r> Renderer<'r> {
+@@ -102,6 +105,7 @@ impl<'r> Renderer<'r> {
+             inside_pattern: false,
+             soft_mask_cache: FxHashMap::default(),
+             in_type3_glyph: false,
++            knockout_groups: Vec::new(),
+         }
+     }
+ 
+@@ -112,8 +116,22 @@ impl<'r> Renderer<'r> {
+     fn apply_draw_props(&mut self, props: &DrawProps<'_>) {
+         self.ctx.set_transform(props.transform);
+         self.apply_soft_mask(props.soft_mask.as_ref());
+-        self.ctx
+-            .set_blend_mode(convert_blend_mode(props.blend_mode));
++
++        let blend_mode = if self.knockout_groups.last() == Some(&true) {
++            // An object in a knockout group is composited with the initial
++            // backdrop of the group, which is transparent in the (isolated)
++            // layer we render the group into. So it simply replaces what
++            // the earlier objects of the group painted, and anti-aliased
++            // edges are interpolated by coverage, which matches the
++            // shape-weighted average from the specification.
++            //
++            // Images are always wrapped in a separate transparency group by
++            // the interpreter and are therefore still composited normally.
++            peniko::BlendMode::new(Mix::Normal, Compose::Copy)
++        } else {
++            convert_blend_mode(props.blend_mode)
++        };
++        self.ctx.set_blend_mode(blend_mode);
+     }
+ 
+     fn apply_image_props(&mut self, props: &ImageDrawProps<'_>) {
+@@ -143,7 +161,16 @@ impl<'a, 'r> Device<'a> for Renderer<'r> {
+         mask: Option<SoftMask<'a>>,
+         blend_mode: BlendMode,
+     ) {
+-        Self::push_transparency_group(self, opacity, mask, blend_mode);
++        Self::push_transparency_group(self, opacity, mask, blend_mode, false);
++    }
++
++    fn push_knockout_group(
++        &mut self,
++        opacity: f32,
++        mask: Option<SoftMask<'a>>,
++        blend_mode: BlendMode,
++    ) {
++        Self::push_transparency_group(self, opacity, mask, blend_mode, true);
+     }
+ 
+     fn pop_clip(&mut self) {
+diff --git a/hayro/src/mask.rs b/hayro/src/mask.rs
+index 0749df60..df052336 100644
+--- a/hayro/src/mask.rs
++++ b/hayro/src/mask.rs
+@@ -31,6 +31,7 @@ impl Renderer<'_> {
+         opacity: f32,
+         mask: Option<SoftMask<'_>>,
+         blend_mode: BlendMode,
++        knockout: bool,
+     ) {
+         let settings = *self.ctx.render_settings();
+         let global = self.global;
+@@ -50,10 +51,12 @@ impl Renderer<'_> {
+             }),
+             None,
+         );
++        self.knockout_groups.push(knockout);
+     }
+ 
+     pub(super) fn pop_transparency_group(&mut self) {
+         self.ctx.pop_layer();
++        self.knockout_groups.pop();
+     }
+ }
+ 
+-- 
+2.55.0.windows.3
+

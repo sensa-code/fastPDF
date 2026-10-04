@@ -1,0 +1,273 @@
+From da45b3700924e36b5199e2d0942ac232717c0f0a Mon Sep 17 00:00:00 2001
+From: sensa-code <255512260+sensa-code@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 17:43:43 +0800
+Subject: [PATCH] hayro-interpret: Keep soft masks whose group has no color
+ space
+
+A soft mask was dropped when the transparency group in its `G` entry had
+no `CS` entry (or one that could not be parsed), so the content it should
+mask was painted fully opaque. The color space is only needed to interpret
+the backdrop color of luminosity masks; alpha masks commonly leave it out.
+
+Make the color space optional. For a luminosity mask without one, interpret
+`BC` in the device color space with the same number of components.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hayro-interpret/src/x_object/soft_mask.rs |  26 +++-
+ hayro-tests/manifest_custom.json          |   4 +
+ hayro-tests/pdfs/custom/mask_no_cs.pdf    | 153 ++++++++++++++++++++++
+ hayro-tests/tests/render.rs               |   1 +
+ hayro-tests/tests/svg.rs                  |   5 +
+ 5 files changed, 184 insertions(+), 5 deletions(-)
+ create mode 100644 hayro-tests/pdfs/custom/mask_no_cs.pdf
+
+diff --git a/hayro-interpret/src/x_object/soft_mask.rs b/hayro-interpret/src/x_object/soft_mask.rs
+index cdb5d93e..13d9e12c 100644
+--- a/hayro-interpret/src/x_object/soft_mask.rs
++++ b/hayro-interpret/src/x_object/soft_mask.rs
+@@ -86,10 +86,15 @@ impl<'a> SoftMask<'a> {
+         let obj_id = dict.get_ref(G)?.into();
+         let group_stream = dict.get::<Stream<'_>>(G)?;
+         let group = FormXObject::new(&group_stream)?;
+-        let cs = ColorSpace::new(
+-            group.dict.get::<Dict<'_>>(GROUP)?.get::<Object<'_>>(CS)?,
+-            &context.interpreter_cache.object_cache,
+-        )?;
++        // The color space of the group is only needed to interpret the backdrop
++        // color of luminosity masks. It is commonly left out for alpha masks
++        // (and sometimes for luminosity masks as well), so a missing or invalid
++        // entry must not cause the whole mask to be dropped.
++        let cs = group
++            .dict
++            .get::<Dict<'_>>(GROUP)
++            .and_then(|g| g.get::<Object<'_>>(CS))
++            .and_then(|cs| ColorSpace::new(cs, &context.interpreter_cache.object_cache));
+         let transfer_function = dict
+             .get::<Object<'_>>(TR)
+             .and_then(|o| Function::new(&o))
+@@ -98,7 +103,18 @@ impl<'a> SoftMask<'a> {
+             LUMINOSITY => {
+                 let color = dict
+                     .get::<ColorComponents>(BC)
+-                    .map(|c| Color::new(cs, c, 1.0))
++                    .and_then(|c| {
++                        // Without a group color space, assume the device color
++                        // space with the same number of components.
++                        let cs = cs.or_else(|| match c.len() {
++                            1 => Some(ColorSpace::device_gray()),
++                            3 => Some(ColorSpace::device_rgb()),
++                            4 => Some(ColorSpace::device_cmyk()),
++                            _ => None,
++                        })?;
++
++                        Some(Color::new(cs, c, 1.0))
++                    })
+                     .unwrap_or(Color::new(ColorSpace::device_gray(), smallvec![0.0], 1.0));
+ 
+                 (MaskType::Luminosity, color)
+diff --git a/hayro-tests/manifest_custom.json b/hayro-tests/manifest_custom.json
+index f3d1f253..11723030 100644
+--- a/hayro-tests/manifest_custom.json
++++ b/hayro-tests/manifest_custom.json
+@@ -944,6 +944,10 @@
+     "id": "mask_luminosity",
+     "file": "pdfs/custom/mask_luminosity.pdf"
+   },
++  {
++    "id": "mask_no_cs",
++    "file": "pdfs/custom/mask_no_cs.pdf"
++  },
+   {
+     "id": "resvg_masking_clipPath_mixed_clip_rule",
+     "file": "pdfs/custom/resvg_masking_clipPath_mixed_clip_rule.pdf"
+diff --git a/hayro-tests/pdfs/custom/mask_no_cs.pdf b/hayro-tests/pdfs/custom/mask_no_cs.pdf
+new file mode 100644
+index 00000000..ca2c0560
+--- /dev/null
++++ b/hayro-tests/pdfs/custom/mask_no_cs.pdf
+@@ -0,0 +1,153 @@
++%PDF-1.7
++%µ¶
++
++1 0 obj
++<<
++  /Type /Catalog
++  /Pages 2 0 R
++>>
++endobj
++
++2 0 obj
++<<
++  /Type /Pages
++  /Count 1
++  /Kids [ 3 0 R ]
++>>
++endobj
++
++3 0 obj
++<<
++  /Type /Page
++  /Parent 2 0 R
++  /MediaBox [ 0 0 200 100 ]
++  /Resources <<
++    /ExtGState <<
++      /gs0 5 0 R
++      /gs1 7 0 R
++    >>
++  >>
++  /Contents 4 0 R
++>>
++endobj
++
++4 0 obj
++<<
++  /Length 77
++>>
++stream
++q
++/gs0 gs
++0 0 1 rg
++10 10 80 80 re
++f
++Q
++q
++/gs1 gs
++1 0 0 rg
++110 10 80 80 re
++f
++Q
++endstream
++endobj
++
++5 0 obj
++<<
++  /Type /ExtGState
++  /SMask <<
++    /Type /Mask
++    /S /Alpha
++    /G 6 0 R
++  >>
++>>
++endobj
++
++6 0 obj
++<<
++  /Length 125
++  /Type /XObject
++  /Subtype /Form
++  /BBox [ 0 0 100 100 ]
++  /Group <<
++    /Type /Group
++    /S /Transparency
++  >>
++  /Resources <<
++    /ExtGState <<
++      /a0 9 0 R
++    >>
++  >>
++>>
++stream
++/a0 gs
++0 g
++85 50 m
++85 69.33 69.33 85 50 85 c
++30.67 85 15 69.33 15 50 c
++15 30.67 30.67 15 50 15 c
++69.33 15 85 30.67 85 50 c
++f
++endstream
++endobj
++
++7 0 obj
++<<
++  /Type /ExtGState
++  /SMask <<
++    /Type /Mask
++    /S /Luminosity
++    /BC [ 1 ]
++    /G 8 0 R
++  >>
++>>
++endobj
++
++8 0 obj
++<<
++  /Length 131
++  /Type /XObject
++  /Subtype /Form
++  /BBox [ 100 0 200 100 ]
++  /Group <<
++    /Type /Group
++    /S /Transparency
++  >>
++>>
++stream
++0 g
++175 50 m
++175 63.81 163.81 75 150 75 c
++136.19 75 125 63.81 125 50 c
++125 36.19 136.19 25 150 25 c
++163.81 25 175 36.19 175 50 c
++f
++endstream
++endobj
++
++9 0 obj
++<<
++  /Type /ExtGState
++  /ca .5
++>>
++endobj
++
++xref
++0 10
++0000000000 65535 f 
++0000000016 00000 n 
++0000000070 00000 n 
++0000000136 00000 n 
++0000000314 00000 n 
++0000000443 00000 n 
++0000000544 00000 n 
++0000000897 00000 n 
++0000001017 00000 n 
++0000001316 00000 n 
++trailer
++<<
++  /Size 10
++  /Root 1 0 R
++>>
++startxref
++1366
++%%EOF
+diff --git a/hayro-tests/tests/render.rs b/hayro-tests/tests/render.rs
+index 13f1f8db..3f81f053 100644
+--- a/hayro-tests/tests/render.rs
++++ b/hayro-tests/tests/render.rs
+@@ -230,6 +230,7 @@ use crate::{run_render_test, run_render_test_with_password};
+ #[test] fn issue41() { run_render_test("issue41", "pdfs/custom/issue41.pdf", None); }
+ #[test] fn mask_alpha() { run_render_test("mask_alpha", "pdfs/custom/mask_alpha.pdf", None); }
+ #[test] fn mask_luminosity() { run_render_test("mask_luminosity", "pdfs/custom/mask_luminosity.pdf", None); }
++#[test] fn mask_no_cs() { run_render_test("mask_no_cs", "pdfs/custom/mask_no_cs.pdf", None); }
+ #[test] fn resvg_masking_clipPath_mixed_clip_rule() { run_render_test("resvg_masking_clipPath_mixed_clip_rule", "pdfs/custom/resvg_masking_clipPath_mixed_clip_rule.pdf", None); }
+ #[test] fn resvg_masking_clipPath_nested_clip_path() { run_render_test("resvg_masking_clipPath_nested_clip_path", "pdfs/custom/resvg_masking_clipPath_nested_clip_path.pdf", None); }
+ #[test] fn resvg_masking_clipPath_overlapped_shapes_with_evenodd() { run_render_test("resvg_masking_clipPath_overlapped_shapes_with_evenodd", "pdfs/custom/resvg_masking_clipPath_overlapped_shapes_with_evenodd.pdf", None); }
+diff --git a/hayro-tests/tests/svg.rs b/hayro-tests/tests/svg.rs
+index 0ce768d9..f9276329 100644
+--- a/hayro-tests/tests/svg.rs
++++ b/hayro-tests/tests/svg.rs
+@@ -245,6 +245,11 @@ fn mask_bc() {
+     run_svg_test("mask_bc", "pdfs/custom/mask_bc.pdf", None);
+ }
+ 
++#[test]
++fn mask_no_cs() {
++    run_svg_test("mask_no_cs", "pdfs/custom/mask_no_cs.pdf", None);
++}
++
+ #[test]
+ fn pdfjs_issue11279() {
+     run_svg_test("pdfjs_issue11279", "downloads/pdfjs/issue11279.pdf", None);
+-- 
+2.55.0.windows.3
+
