@@ -345,6 +345,35 @@ mask 依本機拓撲選擇：相鄰的兩個邏輯 CPU 是同一個實體核心�
 
 1. **GPUI vsync park patch**：照 `docs/upstream-issues/gpui-idle.md` 的步驟先和 zed 維護者討論。若決定在 FastPDF 先用 `[patch]` 套用，需要新的 ADR（依賴策略，ADR 0001）。
 2. **縮放延遲**：用 app 內逐次輸入的時間戳記確認縮放沒有變慢，再送 upstream。
-3. **508 px tile**：若要採用，先重跑 B-3，再合併 `fastpdf-render` 與 `fastpdf-core` 的 diff。
+3. **508 px tile**：已採用（`1a252c6`）。B-3 的配對重測在雜訊範圍內，見下一節的最終量測。
 4. **低階機器**：iGPU 筆電、高更新率螢幕上重量 idle CPU 與 RAM（R12）。NVIDIA driver 那條每秒 60 次的 thread，在其他 GPU 上不一定存在。
 5. **probe**：`-AppProbe` 的 FastPDF 端目前只在 scratch。若要讓之後的 B-8 自動檢查「idle 不畫 frame」，可以把 probe 併入 `fastpdf-app`／`fastpdf-ui`，只在 `FASTPDF_BENCH=1` 時啟用。
+
+## 最終版（第七輪，`21dd4da`）
+
+- **build**：`tools/package.ps1` 的 dist build，exe 16,823,296 B（16.0 MiB）。內容包含 508 px tile、render host（opt-in，預設不啟動）、MSIX 打包工具，以及 B-8 工具 1.1.0。
+- **量測前**：先執行 5 次 `--version`，讓新 exe 完成 Defender 掃描並載入快取。
+- **背景負載**：使用者的 WSL VM、本機的 llama-server、Defender、Google Drive 都在跑。每次啟動前的瞬間負載常常是 79–97%，idle 窗口是 13–99%。這些都不是 FastPDF 的程式，量測時沒有動它們。
+- **情境與次數**：3 頁情境量了兩組，每組 3 次。第一組帶 `-ThreadDetail`，開始時負載 93–97%；第二組在負載降下來後重跑。300 頁情境 3 次。
+
+| 指標（中位數） | 3 頁（重跑） | 3 頁（第一組） | 300 頁 |
+|---|---|---|---|
+| `window_visible`（ms） | 205.6（190.8–367.6） | 223.4（199.8–410.4） | 326.9（302.3–661.3） |
+| `first_page_exact`（ms） | **218.2**（204.6–368.5） | 235.9（201.1–411.6） | 336.7（304.8–662.7） |
+| idle private working set（MB）＝ KPI | **24.7** | 24.6 | 26.5 |
+| idle private bytes（MB） | 107.4 | 107.3 | 109.3 |
+| idle commit charge（MB） | — | 124.4 | 126.4 |
+| idle CPU（% 單核） | 0.2（0–1.4） | 1.1（0.3–2.0） | 0.3（0.2–1.7） |
+| 主執行緒／vsync thread 喚醒（次／秒） | — | 97／65 | — |
+| peak private bytes（MB） | 121.6 | 122.2 | **280.5** |
+| 互動後 idle：private bytes／private working set（MB） | — | — | **217.3**／86.0 |
+| 滾輪／PageDown／縮放的首次畫面變化（ms） | — | — | 13.6／22.1／30.0 |
+
+- **KPI 判定**（定義見 `benchmarks/README.md`）：
+  - Idle RAM < 50 MB：**達成**，24.7 MB。
+  - 小檔首頁 < 200 ms：**未達成**，中位數 218 ms，最快 205 ms，和 ADR 0009 安靜回合的 211–230 ms 一致。下限是 GPUI 的啟動；G1、G2 兩個 upstream 草稿合計預期可降到約 170–190 ms。
+  - Idle CPU：**未達成定義**。CPU time 已經很低（0.2–1.1% 單核），但主執行緒每秒仍被 GPUI 的 vsync 迴圈喚醒約 100 次。草稿 `gpui-idle` 可以降為 0。
+  - exe < 30 MB：**達成**。
+- **與 F 回合相比（300 頁）**：peak private 311.9 → 280.5 MB，互動後 idle 260.1 → 217.3 MB，和 508 px tile 實驗的減少量相符。
+- **300 頁情境的啟動時間比 F 回合高約 120 ms**，是因為這 3 次啟動時系統負載偏高（idle 窗口中位數 55%，最高 99%），不代表程式路徑有變。可以對照同一個 build 在 3 頁重跑時的 218 ms。
+

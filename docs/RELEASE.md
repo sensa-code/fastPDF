@@ -303,6 +303,14 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 
 ## 5. 本次（0.0.1）實測紀錄（2026-10-04，不是正式發佈）
 
+> **最新一次打包（2026-10-05，HEAD `21dd4da`）**：
+> - `package.ps1 -NoGuiSmoke`：exe 16,823,296 bytes，zip 8,634,700 bytes。
+> - zip 共 625 個 entry，其中 620 個在 `licenses/third-party/`，沒有目錄 entry。
+> - CLI smoke 通過。
+> - B-8 的 GUI 量測見 `docs/benchmarks/b8-app.md`〈最終版（第七輪）〉。
+>
+> 以下是第一次打包的紀錄。
+
 **來源**：HEAD `2f162e0` 的乾淨匯出（`git archive`），加上本次發佈相關的修改。當時 working tree 中有其他工作尚未 commit 的 `fastpdf-ui` 修改，無法 build，所以沒有在 working tree build（這正是 §1.2 要求從乾淨 checkout build 的原因）。
 
 **環境**：

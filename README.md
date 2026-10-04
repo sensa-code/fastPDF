@@ -25,6 +25,19 @@
 | 發佈 | 可攜版 zip：icon／版本資訊、第三方授權全文、SHA-256、smoke test | ✅ `tools/package.ps1`、`docs/RELEASE.md`（公開發佈前仍有 4 個 crate 缺授權全文） |
 | Render host | engine 移到獨立 process（ADR 0008）：crash、配置失敗、卡住只會結束 host | 已實作，opt-in：`--engine hayro-isolated`；預設仍是 in-process，PR 4 的驗收完成前不切換 |
 
+## KPI（spec §29，最終版 `21dd4da` 實測）
+
+| 指標 | 目標 | 實測 | |
+|---|---|---|---|
+| 執行檔 | < 30 MB | 16.0 MiB | ✅ |
+| 小檔首頁 | < 200 ms | 中位數 218 ms（最快 205 ms）；第一個 frame 就是清晰的第一頁，下限是 GPUI 啟動（ADR 0009） | ❌ |
+| Idle RAM（private working set） | < 50 MB | 24.7 MB（3 頁文件）；commit 107 MB，大部分是 GPU driver | ✅ |
+| 大型 PDF | 不需完整掃描 | 2000 頁捲到底，private 穩定在 190–220 MiB（B-5） | ✅ |
+| Idle CPU | 接近 0 | 0.2–1.1% 單核，GPUI 的 vsync 迴圈仍每秒喚醒主執行緒約 100 次 | ⚠️ |
+| 網路／telemetry | 0 | 0 | ✅ |
+
+量測機是高階桌機，量測時有背景負載。定義與細節見 `benchmarks/README.md`、`docs/benchmarks/b8-app.md`。
+
 ## 需求
 
 - Windows 11、Visual Studio 2022 Build Tools（C++ workload）、Windows SDK
