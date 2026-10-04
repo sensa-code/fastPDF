@@ -31,6 +31,10 @@ gpui.workspace = true
 gpui_platform.workspace = true
 log.workspace = true
 
+[build-dependencies]
+# Windows icon + VERSIONINFO resources (build.rs); a no-op on other targets.
+embed-resource.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

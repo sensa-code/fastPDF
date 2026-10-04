@@ -12,6 +12,7 @@ members = [
     "crates/fastpdf-app",
     "crates/fastpdf-bench",
     "crates/fastpdf-print",
+    "crates/fastpdf-shell",
 ]
 # Upstream clones are audit references only; they must never join this workspace.
 exclude = ["upstream"]
@@ -35,6 +36,7 @@ fastpdf-search = { path = "crates/fastpdf-search" }
 fastpdf-core = { path = "crates/fastpdf-core" }
 fastpdf-ui = { path = "crates/fastpdf-ui" }
 fastpdf-print = { path = "crates/fastpdf-print" }
+fastpdf-shell = { path = "crates/fastpdf-shell" }
 
 # Third-party. Every entry here needs a reason (spec §36); see
 # THIRD_PARTY_LICENSES.md for the license review.
@@ -50,6 +52,10 @@ windows-sys = "0.61.2"      # Win32 process metrics / file APIs; no runtime cost
 futures = "0.3"             # render workers -> UI thread wake channel
 image = { version = "0.25", default-features = false } # GPUI RenderImage frames
 log = "0.4"                 # logging facade (FASTPDF_LOG, spec §31)
+# Build-time only: compiles fastpdf.exe's icon + VERSIONINFO (fastpdf-app
+# build.rs, spec §33). Already a GPUI build-dependency (windows-manifest), so
+# no new crate; MIT.
+embed-resource = "3.0.11"
 
 # GPUI from Zed's repository, pinned (ADR 0001, docs/audit/gpui.md). Only
 # fastpdf-ui and fastpdf-app may depend on it. The rev must stay at or after

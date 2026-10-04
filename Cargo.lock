@@ -1604,6 +1604,7 @@ dependencies = [
 name = "fastpdf-app"
 version = "0.0.1"
 dependencies = [
+ "embed-resource",
  "fastpdf-core",
  "fastpdf-engine-api",
  "fastpdf-engine-hayro",
@@ -1705,6 +1706,13 @@ version = "0.0.1"
 dependencies = [
  "fastpdf-cache",
  "fastpdf-engine-api",
+]
+
+[[package]]
+name = "fastpdf-shell"
+version = "0.0.1"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

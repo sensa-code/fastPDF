@@ -12,6 +12,9 @@
 # Benchmark scratch output (committed baselines live in benchmarks/*.json)
 /benchmarks/runs/
 
+# Release packages (tools/package.ps1)
+/dist/
+
 # Editor / OS noise
 .vs/
 .vscode/
