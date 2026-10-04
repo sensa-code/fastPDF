@@ -26,6 +26,7 @@ use crate::cache::Weighted;
 use crate::convert::{
     self, PageGeometry, ZPDF_INTERPRET_BUDGET, ZPDF_MAX_COMMANDS, map_error, map_render_error,
 };
+use crate::fonts;
 use crate::hairline::{HAIRLINE_GRID_PX, HairlinePolicy, Replacements};
 
 /// Page-space (display-list space) bounding box of one paint command;
@@ -113,8 +114,8 @@ impl DocState {
         let page = doc.page(page_index as usize).map_err(map_error)?;
         let geometry = PageGeometry::new(page.effective_box(), page.rotate);
         let total = geometry.rotation.then(user_rotation);
-        let mut fonts = doc.load_page_fonts(&page);
         let content = doc.page_content_bytes(&page).map_err(map_error)?;
+        let mut fonts = fonts::page_fonts(doc, &page, &content);
         let mut annots = if annotations {
             doc.page_annotations(&page)
         } else {
@@ -193,8 +194,8 @@ impl DocState {
         let Self { doc, icc, oc, .. } = self;
         let page = doc.page(page_index as usize).map_err(map_error)?;
         let geometry = PageGeometry::new(page.effective_box(), page.rotate);
-        let mut fonts = doc.load_page_fonts(&page);
         let content = doc.page_content_bytes(&page).map_err(map_error)?;
+        let mut fonts = fonts::page_fonts(doc, &page, &content);
         let mut spans = Vec::new();
         {
             // No image cache: zpdf then skips image and shading decoding.

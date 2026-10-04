@@ -23,11 +23,15 @@
 //!   grid are drawn 1.01 px wide, because tiny-skia's hairline algorithm
 //!   places a clipped segment differently in differently clipped rasters
 //!   (see `hairline.rs`).
+//! * **Font fixes.** Unused WinAnsiEncoding codes render as bullets (zpdf
+//!   drew ReportLab's list bullets as "ù") and the standard Times styles get
+//!   their bold / italic faces on Windows (see `fonts.rs`).
 //!
 //! [`PreparedPage`]: prepare::PreparedPage
 
 mod cache;
 mod convert;
+mod fonts;
 mod hairline;
 mod password;
 mod prepare;
