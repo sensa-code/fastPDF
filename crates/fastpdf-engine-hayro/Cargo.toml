@@ -9,5 +9,37 @@ publish.workspace = true
 [dependencies]
 fastpdf-engine-api.workspace = true
 
+# hayro (Apache-2.0 OR MIT) from git, pinned to a full commit hash on purpose
+# (docs/audit/hayro.md). crates.io 0.7.1 (2026-06) is not enough:
+# - `hayro::render_into` (any affine transform into a caller-owned vello_cpu
+#   RenderContext) is what makes tile/region rendering possible; it only exists
+#   on main (LaurenzV/hayro#1375, 2026-09-25).
+# - main fixes the races/panics when several threads resolve objects of one
+#   shared `Pdf` (object-stream publication, concurrent xref repair; #1343,
+#   2026-10-03). The parallel render workers depend on that.
+# - ced00dd0 adds reference-cycle detection for object streams (#1389).
+# hayro-syntax / hayro-interpret / vello_cpu / kurbo are used through hayro's
+# re-exports so the three crates can never drift apart.
+# Bumping: re-run `cargo test -p fastpdf-engine-hayro` and the fastpdf-bench
+# corpus, and update docs/audit/hayro.md.
+# Features: embed-fonts (~240 KB Foxit Symbol/ZapfDingbats + last-resort
+# standard 14), embed-cmaps (~250 KB, required for non-embedded CJK fonts such
+# as MSung-Light + UniCNS-UCS2-H), simd (pic-scale image resampling).
+hayro = { git = "https://github.com/LaurenzV/hayro", rev = "ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7", default-features = false, features = ["embed-fonts", "embed-cmaps", "simd"] }
+
+# Map system CJK fonts (msjh.ttc 21 MB, mingliu.ttc 28 MB) instead of reading
+# them: only touched pages become resident and they are file-backed.
+memmap2.workspace = true
+
+# Bounded pre-decode of Flate streams to stop decompression bombs before hayro
+# inflates them without a limit. Already in the dependency graph through
+# hayro-syntax (same version and zlib-rs backend), so it adds no crate.
+flate2 = { workspace = true }
+
+[features]
+# Lets FASTPDF_HAYRO_PREFLIGHT switch guardrails off to measure their cost.
+# Enabled by fastpdf-bench only; never in shipping builds.
+diagnostics = []
+
 [lints]
 workspace = true

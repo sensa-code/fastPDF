@@ -11,7 +11,7 @@ default = ["engine-hayro"]
 # Engine adapters are selected per build (spec §43) and at runtime with
 # `--engine NAME`:
 #   cargo run --release -p fastpdf-bench --features engine-zpdf -- full file.pdf --engine zpdf
-engine-hayro = ["dep:fastpdf-engine-hayro"]
+engine-hayro = ["dep:fastpdf-engine-hayro", "fastpdf-engine-hayro/diagnostics"]
 engine-zpdf = ["dep:fastpdf-engine-zpdf"]
 
 [dependencies]

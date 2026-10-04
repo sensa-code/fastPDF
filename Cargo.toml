@@ -37,6 +37,9 @@ fastpdf-ui = { path = "crates/fastpdf-ui" }
 # Third-party. Every entry here needs a reason (spec §36); see
 # THIRD_PARTY_LICENSES.md for the license review.
 memmap2 = "0.9.11"          # map large PDFs instead of reading them (ADR 0006)
+# Bounded pre-decode against decompression bombs (hayro adapter); already in
+# hayro's dependency graph with the same backend.
+flate2 = { version = "1", features = ["zlib-rs"] }
 serde = { version = "1.0.229", features = ["derive"] } # bench JSON only
 serde_json = "1.0.151"      # bench JSON only
 windows-sys = "0.61.2"      # Win32 process metrics / file APIs; no runtime cost

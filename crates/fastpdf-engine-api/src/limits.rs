@@ -38,7 +38,9 @@ impl Default for ResourceLimits {
             max_decoded_image_pixels: 256 * 1024 * 1024,
             max_nesting_depth: 256,
             max_recursion_depth: 64,
-            max_object_bytes: 512 * 1024 * 1024,
+            // Real content streams stay far below this; the corpus's 512 MiB
+            // decompression bombs must be refused (docs/audit/hayro.md).
+            max_object_bytes: 128 * 1024 * 1024,
             max_render_time: Some(Duration::from_secs(20)),
         }
     }
