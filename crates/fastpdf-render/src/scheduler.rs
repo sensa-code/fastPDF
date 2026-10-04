@@ -42,12 +42,12 @@ pub struct SchedulerConfig {
 }
 
 impl SchedulerConfig {
-    /// Provisional default until the 2/4/6/8-worker benchmark lands
-    /// (spec §18): a quarter of the hardware threads, between 2 and 4.
+    /// Two workers: B-3/B-4 (docs/benchmarks/b3-b4-tiles-workers.md)
+    /// measured no viewport-fill latency gain from 4, 6 or 8 workers, while
+    /// every extra render thread keeps its own engine caches (spec §18:
+    /// latency first, not throughput).
     pub fn default_workers() -> usize {
-        std::thread::available_parallelism()
-            .map(|n| (n.get() / 4).clamp(2, 4))
-            .unwrap_or(2)
+        2
     }
 }
 

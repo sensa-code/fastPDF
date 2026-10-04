@@ -1,6 +1,6 @@
 # ADR 0003 — Tile Rendering, Scale Buckets and the Render Scheduler
 
-- 狀態：Accepted（資料結構與 scheduler 已實作於 `crates/fastpdf-render`；tile size 與 worker 數待 benchmark 定案）
+- 狀態：Accepted（實作於 `crates/fastpdf-render`；tile size 512 與 worker 數 2 已由 B-3／B-4 定案，見 `docs/benchmarks/b3-b4-tiles-workers.md`）
 - 日期：2026-10-04
 - 相關 spec：§1、§12、§13、§14、§17、§18
 
@@ -14,7 +14,7 @@
 
 ## Decision
 
-1. **Tile grid**：頁面在某個 render scale 下旋轉後的 pixel 空間切成正方形 tile（`TileGrid`），邊緣 tile 裁切到頁面大小。預設 512 px（`DEFAULT_TILE_SIZE`），最小 64 px；256 與 512 的取捨由 benchmark 決定（benchmark plan B-3）。
+1. **Tile grid**：頁面在某個 render scale 下旋轉後的 pixel 空間切成正方形 tile（`TileGrid`），邊緣 tile 裁切到頁面大小。預設 512 px（`DEFAULT_TILE_SIZE`），最小 64 px。B-3 實測 256／512／1024 的 viewport fill 時間相同（±3%）；512 只比 256 多約 4 MB，atlas 項目卻少四倍。每個 tile render 時四周多畫 2 px gutter，只顯示內部區域，避免縮放時的接縫。
 2. **Scale bucket**：display scale = zoom × window scale factor（1.0 = 96 dpi 下的 100%）。tile 只會以 26 個固定 bucket 之一 render（0.125 … 48）。這些 bucket 剛好涵蓋 Windows 常見的 scale factor（1.25、1.5、1.75、2.0），所以最常見的情況不需要任何縮放。任意 zoom（例如 137%）會選「略低於需求但放大 ≤ 6%」的 bucket，否則選上一個 bucket（縮小顯示，文字較銳利）。cache 種類因此有上界（每頁 × 每 rotation × 26）。
 3. **TileKey** = `PageId`（document + page）+ `ScaleBucket` + user `Rotation` + `ColorMode` + tile size + `TileCoord`。page 的 intrinsic `/Rotate` 每頁固定，不需要放進 key。
 4. **Layout 與 viewport**：`DocumentLayout` 以 point 為單位垂直排列所有頁面；未知頁面先用估計尺寸（通常是第 1 頁的尺寸），之後再修正（spec §11：開檔不需要解析全部頁面）。修正尺寸時以 `ScrollAnchor`（頁 + 頁內比例）維持畫面不跳動。`Viewport` 的 scroll offset 以 point 表示，所以 zoom 時不會漂移；`zoom_around` 讓滑鼠位置下的內容保持不動（Ctrl + 滾輪）。
@@ -26,7 +26,7 @@
    - P4 `Thumbnail`、P5 `Background`：保留給 sidebar 與搜尋。
    - 同一優先序內依與 viewport 中心的距離排序。page info 尚未解析的頁面不規劃。near margin 以外的東西永遠不規劃（§1 "Never render what the user cannot see"）。
 6. **RenderScheduler**：
-   - 固定大小的 worker pool（預設 `available_parallelism / 4`，限制在 2–4，待 2/4/6/8 benchmark 定案）。不支援 `parallel_render` 的 engine 由 core 配置單一 worker。
+   - 固定大小的 worker pool，預設 2 個（B-4：4／6／8 個 worker 沒有降低延遲，只增加 engine 每條 thread 的 cache）。不支援 `parallel_render` 的 engine 由 core 配置單一 worker。
    - `submit_plan()` 以新 plan 取代整個 queue：不再需要的 queued job 直接丟棄（discarded），仍在 render 但已不需要的 job 透過 `CancelToken` 取消（cancelled），仍需要且正在 render 的 job 保留，不重複排入。
    - 結果透過 sink callback 在 worker thread 交出（UI 端只做 channel push + 喚醒），被取消的 job 不產生結果。統計數據（queued／in-flight／completed／failed／cancelled／discarded）供 development overlay 使用。
 7. **Progressive rendering（§13）**：UI 在新 bucket 的 tile 抵達之前，先用 cache 中同頁其他 bucket 的 tile 縮放顯示（`ScaleBucket::screen_factor`）；新 tile 抵達後逐塊替換。這部分邏輯在 M5 由 core／UI 實作。
