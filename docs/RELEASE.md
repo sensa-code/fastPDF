@@ -70,8 +70,13 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
     - 各 crate 原始碼目錄的 `LICENSE*`、`LICENCE*`、`COPYING*`、`NOTICE*`、`COPYRIGHT*`、`UNLICENSE*`，原樣複製到 `<crate>-<version>/`；
     - git 依賴另外收錄 repository 根目錄的 `NOTICE*`，放在 `<crate>-<version>/repository-root/`；
     - git 依賴在 Windows 上 checkout 時，symlink 會變成只含相對路徑的文字檔（stub），例如 `../../LICENSE-APACHE`。bundle 會沿路徑複製真正的檔案。找不到檔案、或路徑超出該 crate 的原始碼範圍時，不複製，列在 `MISSING.md`；
-    - 沒有附授權檔的 crate 不會補寫 copyright 行，一律列在 `MISSING.md`。授權可選 Apache-2.0 的，由共用的 `Apache-2.0.txt` 涵蓋，在 `MISSING.md` 另外註記。
-  - 2026-10-04 實測（HEAD `cec1839`，default features，`x86_64-pc-windows-msvc`）：
+    - 沒有附授權檔的 crate，先使用 `licenses/overrides/` 的檔案（見下一項）。仍然沒有的不會補寫 copyright 行，列在 `MISSING.md`。授權可選 Apache-2.0 的，由共用的 `Apache-2.0.txt` 涵蓋，在 `MISSING.md` 另外註記。
+  - override（`licenses/overrides/<crate>-<version>/`）：
+    - 只放在本機找到、來源明確的授權全文：同一個 crate 的其他版本，或同一個 repository 的其他套件，逐位元組複製。不可自行撰寫或拼湊 copyright 行；
+    - 每個檔案都要在 `licenses/overrides/SOURCES.md` 登記來源與 SHA-256。沒有登記或 SHA-256 不符的資料夾，整個不會被使用；
+    - 資料夾的版本必須和 `Cargo.lock` 完全相同。依賴升級後，舊版本的 override 會列為 stale 並顯示警告，該 crate 回到缺漏清單；
+    - `MISSING.md` 另外列出「Filled in from licenses/overrides」與「Overrides not used」兩節。補上缺漏的步驟見 `licenses/overrides/README.md`。
+  - 2026-10-04 實測（HEAD `cec1839`，加入 override 之前，default features，`x86_64-pc-windows-msvc`）：
     - 範圍內有 362 個 crate，輸出 618 個檔案，未壓縮約 3.1 MB。其中 344 個 crate 有自己的授權全文；
     - 範圍是用 `cargo metadata` 的 resolve 計算，會包含 weak 依賴（`dep?/feature`），所以比實際連結的多。對照 `cargo tree -p fastpdf-app -e normal`：實際的 315 個 crate 全部在範圍內，另外多收 47 個（例如 `image` → `ravif` → `rav1e` 這條 AVIF 依賴）；
     - 33 個檔案是從 stub 解析而來：zed 的 17 個 crate 各 1 個（`LICENSE-APACHE`），hayro 的 8 個 crate 各 2 個（`LICENSE-APACHE`、`LICENSE-MIT`）。抽查 zed 7 個、hayro 3 個 crate（含 `gpui`、`hayro-syntax`），內容與 repository 中的原檔逐位元組相同，是完整的授權全文；
@@ -79,10 +84,17 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
     - 13 個 crate 沒有附授權檔，但授權可選 Apache-2.0，由共用的 `Apache-2.0.txt` 涵蓋：accesskit 系列 3 個、lyon 系列 5 個、profiling 系列 2 個、`sval_nested`、`svg_fmt`、`zune-inflate`。其中 `sval_nested` 的 2 個 stub 指向套件以外，無法解析；
     - `package.ps1` 完整執行一次（HEAD 的乾淨匯出加上本次工具修改）：zip 共 623 個 entry（`licenses/third-party/` 佔 618 個），entry 清單檢查與 smoke test 都通過；
     - zip 為 8,415,819 bytes（8.03 MB）。同一批檔案不含 `licenses/third-party/` 時為 7,065,748 bytes，增加 1,350,071 bytes（+19.1%）。
-  - **仍有缺口（公開發佈前必須補上）**：下列 5 個 crate 沒有附授權檔，授權也不能選 Apache-2.0。需要從 upstream 取得含 copyright 的授權全文，以人工補上；工具目前沒有人工補檔的機制。
-    - `alloc-stdlib` 0.2.4（BSD-3-Clause）；
-    - `pulp-wasm-simd-flag` 0.1.1、`seahash` 4.1.0、`simd_helpers` 0.1.0、`taffy` 0.13.0（MIT）。
-  - 其中 `simd_helpers` 只經由 `rav1e` 進入範圍，`cargo tree` 顯示它沒有連結進 exe。實際連結的缺口是其餘 4 個。
+  - 加入 override 之後的實測（HEAD `8270b3e`，條件相同，只執行 `--bundle`，沒有重新打包）：
+    - 輸出 620 個檔案（多了 2 個 override 檔）。344 個 crate 有自己的授權全文，2 個由 override 補上，13 個由共用的 `Apache-2.0.txt` 涵蓋，3 個仍然缺漏；
+    - `alloc-stdlib` 0.2.4（BSD-3-Clause）：使用同一個 repository 的 `alloc-no-stdlib` 2.0.4 套件內的 `LICENSE`（Copyright (c) 2016 Dropbox, Inc.）；
+    - `pulp-wasm-simd-flag` 0.1.1（MIT）：使用同一個 repository、同一個 commit 的 `pulp` 0.22.3 套件內的 `LICENSE`（Copyright (c) 2021 sarah）；
+    - 兩者的來源判斷（`repository` 欄位、`.cargo_vcs_info.json` 的 commit 與子目錄）和 SHA-256 記錄在 `licenses/overrides/SOURCES.md`。
+  - **仍有缺口（公開發佈前必須補上）**：下列 crate 沒有附授權檔，授權也不能選 Apache-2.0，本機也找不到來源明確的全文。
+    - `seahash` 4.1.0（MIT）：本機只有這個版本；
+    - `taffy` 0.13.0（MIT）：本機的 0.9.0、0.10.1、0.13.0 都沒有附授權檔；
+    - `simd_helpers` 0.1.0（MIT）也列在缺漏中，但它只經由 `rav1e` 進入範圍，`cargo tree -p fastpdf-app -e normal` 顯示它沒有連結進 exe。實際連結的缺口是 `seahash` 與 `taffy`。
+    - 已搜尋：cargo registry 的 `src` 與 `cache`、cargo git checkouts、`upstream/` 的 clone、其他 crate 內附的授權檔。
+    - 需要由 owner 從 upstream 取得含 copyright 的授權全文，依 `licenses/overrides/README.md` 的步驟補上。
   - 這些缺口不會讓 `package.ps1` 失敗，只會顯示警告。清單在 zip 內的 `licenses/third-party/MISSING.md`。
 - [ ] 確認 exe 中的資產授權：
   - app icon 是 `tools/icon/make_icon.py` 原創繪製，沒有使用第三方素材；

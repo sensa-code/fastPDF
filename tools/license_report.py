@@ -29,6 +29,12 @@ crate's copyright notice and license text, Apache-2.0 needs any NOTICE file.
     be followed are listed in DIR/MISSING.md. A crate without a license text
     whose license allows Apache-2.0 is covered by one shared DIR/Apache-2.0.txt
     (a copy of licenses/Apache-2.0.txt) and noted separately there.
+  - Overrides: a crate without a license text of its own gets the files of
+    licenses/overrides/<crate>-<version>/ (texts found in another version of
+    the same crate or in another package of the same repository; see
+    licenses/overrides/README.md). Only the exact version is matched, and only
+    files listed in licenses/overrides/SOURCES.md with the same SHA-256 are
+    used. Overrides that are stale or not used are reported in MISSING.md.
   - Output is deterministic (sorted, no timestamps). DIR must be empty or absent.
 With --bundle the report is written only when --out is given.
 
@@ -44,6 +50,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -80,6 +87,9 @@ LICENSE_FILE = re.compile(r"^(licen[cs]e|copying|notice|copyright|unlicense)", r
 LICENSE_TEXT = re.compile(r"^(licen[cs]e|copying|unlicense)", re.IGNORECASE)
 NOTICE_FILE = re.compile(r"^notice", re.IGNORECASE)
 SHARED_APACHE = ROOT / "licenses" / "Apache-2.0.txt"
+# License texts kept in the repository for crates that ship none (README.md there).
+OVERRIDES = ROOT / "licenses" / "overrides"
+OVERRIDE_FOLDER = re.compile(r"^(?P<name>[A-Za-z0-9_-]+?)-(?P<version>\d+\.\d+\.\d+\S*)$")
 
 
 def cargo_metadata(features: str | None, all_features: bool, target: str) -> dict:
@@ -312,8 +322,57 @@ def label(p: dict) -> str:
     return f"{p['name']} {p['version']}"
 
 
+def load_overrides(root: Path) -> tuple[dict[tuple[str, str], list[tuple[str, Path, str]]],
+                                        list[tuple[str, str]]]:
+    """License texts kept in the repository for crates that ship none:
+    root/<crate>-<version>/<file>, each file listed in root/SOURCES.md as a table
+    row "| `<crate>-<version>/<file>` | `<sha256>` | source |".
+
+    Returns ({(crate, version): [(name, file, sha256)]}, [(folder, problem)]).
+    A folder with an unlisted file or a SHA-256 mismatch is not used at all.
+    """
+    if not root.is_dir():
+        return {}, []
+    documented: dict[str, str] = {}
+    sources = root / "SOURCES.md"
+    if sources.is_file():
+        for line in sources.read_text(encoding="utf-8").splitlines():
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if line.lstrip().startswith("|") and len(cells) >= 2:
+                path = re.fullmatch(r"`([^`]+/[^`]+)`", cells[0])
+                sha = re.fullmatch(r"`([0-9A-Fa-f]{64})`", cells[1])
+                if path and sha:
+                    documented[path.group(1)] = sha.group(1).lower()
+    overrides, problems = {}, []
+    for folder in sorted((d for d in root.iterdir() if d.is_dir()), key=lambda d: d.name):
+        match = OVERRIDE_FOLDER.match(folder.name)
+        files = sorted((f for f in folder.rglob("*") if f.is_file()), key=lambda f: f.as_posix())
+        if not match:
+            problems.append((folder.name, "folder name is not `<crate>-<version>`"))
+            continue
+        if not files:
+            problems.append((folder.name, "no files"))
+            continue
+        entries, bad = [], []
+        for f in files:
+            rel = f.relative_to(root).as_posix()
+            sha = hashlib.sha256(f.read_bytes()).hexdigest()
+            if rel not in documented:
+                bad.append(f"`{rel}` is not listed in SOURCES.md")
+            elif documented[rel] != sha:
+                bad.append(f"`{rel}` does not match its SHA-256 in SOURCES.md")
+            entries.append((f.relative_to(folder).as_posix(), f, sha))
+        if bad:
+            problems.append((folder.name, "; ".join(bad)))
+        else:
+            overrides[(match["name"], match["version"])] = entries
+    return overrides, problems
+
+
 def render_missing(scope: str, without_text: list[dict], shared_apache: list[dict],
-                   unresolved: list[tuple[dict, str, str]]) -> str:
+                   unresolved: list[tuple[dict, str, str]],
+                   overridden: list[tuple[dict, list[tuple[str, Path, str]]]],
+                   override_problems: list[tuple[str, str]]) -> str:
     def crates(packages: list[dict]) -> list[str]:
         if not packages:
             return ["None."]
@@ -332,13 +391,45 @@ def render_missing(scope: str, without_text: list[dict], shared_apache: list[dic
         "- Each `<crate>-<version>/` folder holds the crate's own `LICENSE*`, `LICENCE*`, `COPYING*`,",
         "  `NOTICE*`, `COPYRIGHT*` and `UNLICENSE*` files, copied byte for byte. For git dependencies,",
         "  `repository-root/` holds the `NOTICE*` files at the root of the repository.",
+        "- A crate without a license file of its own gets the files of `licenses/overrides/<crate>-<version>/`",
+        "  in the FastPDF repository, if that exact version is there; `licenses/overrides/SOURCES.md`",
+        "  records where each file was found and its SHA-256.",
         "",
         f"## Crates without a license text ({len(without_text)})",
         "",
-        "Their source package has no license file. No copyright line is made up for them;",
-        "add the license text from the upstream repository before a public release.",
+        "Their source package has no license file and `licenses/overrides/` has no text for this",
+        "version. No copyright line is made up for them; `licenses/overrides/README.md` in the",
+        "FastPDF repository explains how to add one before a public release.",
         "",
         *crates(without_text),
+        "",
+        f"## Filled in from licenses/overrides ({len(overridden)})",
+        "",
+        "These crates ship no license file. Their texts were found in another version of the same",
+        "crate or in another package of the same repository (see `licenses/overrides/SOURCES.md`).",
+        "",
+    ]
+    if overridden:
+        lines += ["| Crate | Version | License | File | SHA-256 |", "|---|---|---|---|---|", *(
+            f"| {p['name']} | {p['version']} | {p.get('license') or '—'} | `{name}` | `{sha}` |"
+            for p, files in overridden for name, _, sha in files)]
+    else:
+        lines.append("None.")
+    lines += [
+        "",
+        f"## Overrides not used ({len(override_problems)})",
+        "",
+        "An override applies only to the crate version in its folder name and only when every file",
+        "matches `licenses/overrides/SOURCES.md`. After an upgrade the crate is listed as missing",
+        "until a text for the new version is added.",
+        "",
+    ]
+    if override_problems:
+        lines += ["| Override | Reason |", "|---|---|", *(
+            f"| `{folder}` | {reason} |" for folder, reason in override_problems)]
+    else:
+        lines.append("None.")
+    lines += [
         "",
         f"## Covered by the shared Apache-2.0 text ({len(shared_apache)})",
         "",
@@ -368,10 +459,11 @@ def write_bundle(packages: list[dict], dest: Path, scope: str) -> list[str]:
     if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
         sys.exit(f"error: --bundle {dest} must be a new or empty directory")
     dest.mkdir(parents=True, exist_ok=True)
+    overrides, override_problems = load_overrides(OVERRIDES)
     written: list[str] = []
     folders: set[str] = set()
-    without_text, shared_apache, unresolved, notices, renamed = [], [], [], [], []
-    followed = 0
+    without_text, shared_apache, unresolved, notices, renamed, overridden = [], [], [], [], [], []
+    followed = own_text = 0
     for p in sorted(packages, key=lambda p: (p["name"], p["version"], p["id"])):
         files, broken = crate_license_files(p)
         folder, n = f"{p['name']}-{p['version']}", 1
@@ -381,6 +473,20 @@ def write_bundle(packages: list[dict], dest: Path, scope: str) -> list[str]:
         folders.add(folder.lower())
         if n > 1:
             renamed.append(f"{folder} ({p.get('source')})")
+        has_text = any(LICENSE_TEXT.match(name.split("/")[0]) for name, _, _ in files)
+        own_text += has_text
+        override = overrides.pop((p["name"], p["version"]), None)
+        if override is not None:
+            own = {name.lower() for name, _, _ in files}
+            clash = [name for name, _, _ in override if name.lower() in own]
+            if has_text:
+                override_problems.append((folder, "not needed: the crate ships its own license text"))
+            elif clash:
+                override_problems.append((folder, f"same file name as the crate's own: {', '.join(clash)}"))
+            else:
+                files += [(name, src, False) for name, src, _ in override]
+                overridden.append((p, override))
+                has_text = any(LICENSE_TEXT.match(name.split("/")[0]) for name, _, _ in override)
         for name, src, via_link in files:
             out = dest / folder / name
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -390,24 +496,39 @@ def write_bundle(packages: list[dict], dest: Path, scope: str) -> list[str]:
         unresolved += [(p, name, target) for name, target in broken]
         if any(NOTICE_FILE.match(part) for name, _, _ in files for part in name.split("/")):
             notices.append(p)
-        if not any(LICENSE_TEXT.match(name.split("/")[0]) for name, _, _ in files):
+        if not has_text:
             (shared_apache if allows_apache(p.get("license")) else without_text).append(p)
+    # Overrides left over: for another version (stale after an upgrade) or another graph.
+    versions: dict[str, set[str]] = {}
+    for p in packages:
+        versions.setdefault(p["name"], set()).add(p["version"])
+    for name, version in overrides:
+        if name in versions:
+            reason = (f"stale: the dependency graph has {name} {', '.join(sorted(versions[name]))}; "
+                      "an override applies only to its exact version")
+        else:
+            reason = f"not used: no {name} in this dependency graph"
+        override_problems.append((f"{name}-{version}", reason))
+    override_problems.sort()
     if shared_apache:
         shutil.copyfile(SHARED_APACHE, dest / "Apache-2.0.txt")
         written.append("Apache-2.0.txt")
-    missing_md = render_missing(scope, without_text, shared_apache, unresolved)
+    missing_md = render_missing(scope, without_text, shared_apache, unresolved, overridden, override_problems)
     (dest / "MISSING.md").write_text(missing_md, encoding="utf-8", newline="\n")
     written.append("MISSING.md")
 
-    with_text = len(packages) - len(without_text) - len(shared_apache)
     print(f"wrote {dest} ({len(written)} files)")
-    print(f"  crates: {len(packages)}, {with_text} with a license text; files reached through a "
+    print(f"  crates: {len(packages)}, {own_text} with their own license text; files reached through a "
           f"symlink or symlink stub: {followed}")
+    print(f"  licenses/overrides: {len(overridden)} crate(s) filled in "
+          f"({', '.join(label(p) for p, _ in overridden) or 'none'}); not used: {len(override_problems)}")
     print(f"  no license text: {len(without_text)} missing, {len(shared_apache)} covered by "
           f"Apache-2.0.txt; links not followed: {len(unresolved)} (see MISSING.md)")
     print(f"  NOTICE ({len(notices)}): {', '.join(label(p) for p in notices) or 'none'}")
     if renamed:
         print(f"  same name and version twice: {', '.join(renamed)}")
+    for folder, reason in override_problems:
+        print(f"  WARNING: override {folder}: {reason}")
     if without_text or unresolved:
         print("  WARNING: license texts are incomplete; resolve MISSING.md before a public release")
     return sorted(written)
