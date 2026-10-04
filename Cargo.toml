@@ -1,0 +1,89 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/fastpdf-engine-api",
+    "crates/fastpdf-engine-hayro",
+    "crates/fastpdf-engine-zpdf",
+    "crates/fastpdf-cache",
+    "crates/fastpdf-render",
+    "crates/fastpdf-search",
+    "crates/fastpdf-core",
+    "crates/fastpdf-ui",
+    "crates/fastpdf-app",
+    "crates/fastpdf-bench",
+]
+# Upstream clones are audit references only; they must never join this workspace.
+exclude = ["upstream"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.92"
+# No open-source license is declared on purpose: the project wants to keep
+# commercial options open (spec §37). Choosing one is the owner's decision.
+publish = false
+repository = "https://example.invalid/fastpdf" # placeholder until a public home exists
+
+[workspace.dependencies]
+fastpdf-engine-api = { path = "crates/fastpdf-engine-api" }
+fastpdf-engine-hayro = { path = "crates/fastpdf-engine-hayro" }
+fastpdf-engine-zpdf = { path = "crates/fastpdf-engine-zpdf" }
+fastpdf-cache = { path = "crates/fastpdf-cache" }
+fastpdf-render = { path = "crates/fastpdf-render" }
+fastpdf-search = { path = "crates/fastpdf-search" }
+fastpdf-core = { path = "crates/fastpdf-core" }
+fastpdf-ui = { path = "crates/fastpdf-ui" }
+
+# Third-party. Every entry here needs a reason (spec §36); see
+# THIRD_PARTY_LICENSES.md for the license review.
+memmap2 = "0.9.11"          # map large PDFs instead of reading them (ADR 0006)
+serde = { version = "1.0.229", features = ["derive"] } # bench JSON only
+serde_json = "1.0.151"      # bench JSON only
+windows-sys = "0.61.2"      # Win32 process metrics / file APIs; no runtime cost
+
+# GPUI from Zed's repository, pinned (ADR 0001, docs/audit/gpui.md). Only
+# fastpdf-ui and fastpdf-app may depend on it. The rev must stay at or after
+# zed ac5af8b9e1 (2026-09-01), which relicensed zlog/ztracing (pulled in via
+# sum_tree) from GPL-3.0-or-later to Apache-2.0; `tools/license_report.py
+# --check` guards every bump.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", default-features = false, features = ["windows-manifest"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", default-features = false }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+# The reader must not panic on hostile input (spec §24); unwraps need a reason.
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+# panic = "unwind" is deliberate: engine calls are isolated with catch_unwind
+# so a single-page failure cannot take down the reader (ADR 0002).
+panic = "unwind"
+lto = "thin"
+codegen-units = 16
+debug = "line-tables-only"
+
+# Optimized dependencies keep debug builds usable for rendering work.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Shipping / size-measurement profile.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+debug = false
+strip = "symbols"
+
+# Profiling profile: release speed with full symbols (docs/profiling.md).
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"

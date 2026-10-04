@@ -1,0 +1,5 @@
+# Windows build settings, mirroring Zed's own (docs/audit/gpui.md):
+# - +crt-static: no VC++ redistributable needed on user machines.
+# - windows_slim_errors: shrinks windows::core::Error from 16 to 4 bytes.
+[target.'cfg(target_os = "windows")']
+rustflags = ["--cfg", "windows_slim_errors", "-C", "target-feature=+crt-static"]

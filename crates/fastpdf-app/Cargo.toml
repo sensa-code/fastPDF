@@ -1,0 +1,19 @@
+[package]
+name = "fastpdf-app"
+description = "FastPDF desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "fastpdf"
+path = "src/main.rs"
+
+[dependencies]
+fastpdf-engine-api.workspace = true
+fastpdf-core.workspace = true
+fastpdf-ui.workspace = true
+
+[lints]
+workspace = true

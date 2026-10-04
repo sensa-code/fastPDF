@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    # Windows first (spec §33).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Engine isolation (spec §42)
+        run: python tools/check_engine_isolation.py
+      - name: License review (spec §37)
+        run: python tools/license_report.py --check --out ${{ runner.temp }}/licenses.md
+
+  bench-smoke:
+    # Runs the harness on the quick corpus so crashes and hangs fail CI.
+    # Timing numbers from shared runners are NOT comparable to
+    # benchmarks/baseline.json; regressions are judged on a fixed machine.
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Generate fixtures
+        run: uv run tools/fixtures/generate.py --profile quick
+      - name: Corpus (crash/timeout detection)
+        run: cargo run --release --locked -p fastpdf-bench -- corpus fixtures/generated/manifest.json --timeout 120 --out ${{ runner.temp }}/corpus.json

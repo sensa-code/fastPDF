@@ -1,0 +1,14 @@
+[package]
+name = "fastpdf-render"
+description = "Tile grid, scale quantization, viewport planning and the render scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fastpdf-engine-api.workspace = true
+fastpdf-cache.workspace = true
+
+[lints]
+workspace = true

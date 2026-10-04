@@ -1,0 +1,131 @@
+use crate::{
+    CancelToken, DocumentMetadata, DocumentSource, EngineError, Link, OutlineItem, PageIndex,
+    PageSize, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, Rotation, TextLayer,
+};
+
+/// Static description of an engine adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineInfo {
+    /// Short identifier used on the command line (`--engine hayro`).
+    pub name: &'static str,
+    /// Version of the underlying engine library.
+    pub version: &'static str,
+    pub capabilities: EngineCapabilities,
+}
+
+/// What an adapter can do natively. The scheduler and UI adapt to these
+/// instead of assuming every engine behaves the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EngineCapabilities {
+    /// Renders a sub-rectangle without rasterizing the whole page. Without
+    /// it, tiles are still correct but cost a full-page rasterization each.
+    pub region_render: bool,
+    /// One document can render on several threads at once.
+    pub parallel_render: bool,
+    /// Long renders poll the [`CancelToken`] and stop early.
+    pub cooperative_cancel: bool,
+    pub text_extraction: bool,
+    pub outline: bool,
+    pub links: bool,
+    pub encryption: bool,
+    /// Renders on the GPU.
+    pub gpu: bool,
+}
+
+/// Options for [`PdfEngine::open`].
+#[derive(Debug, Clone, Default)]
+pub struct OpenOptions {
+    pub password: Option<String>,
+    pub limits: ResourceLimits,
+}
+
+/// Geometry of one page, as stored in the PDF.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageInfo {
+    /// Visible box (CropBox, falling back to MediaBox) before rotation.
+    pub size: PageSize,
+    /// Intrinsic `/Rotate` of the page.
+    pub rotation: Rotation,
+}
+
+impl PageInfo {
+    /// Size as displayed, after the intrinsic and the user's rotation.
+    pub fn display_size(&self, user_rotation: Rotation) -> PageSize {
+        self.size.rotated(self.rotation.then(user_rotation))
+    }
+}
+
+/// Memory pressure level broadcast by the memory budget manager (spec §16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum MemoryPressure {
+    #[default]
+    Normal,
+    /// Evict aggressively.
+    Soft,
+    /// Drop everything that is not needed for the current view.
+    Hard,
+}
+
+/// A PDF engine: a factory for documents.
+///
+/// The trait is object-safe on purpose so engines can be chosen at runtime
+/// (command line, per-document fallback) as well as at compile time
+/// (cargo features). See ADR 0002.
+pub trait PdfEngine: Send + Sync {
+    fn info(&self) -> EngineInfo;
+
+    /// Opens a document. Implementations must do the minimum work needed to
+    /// answer `page_count` (spec §11): no full parse, no text extraction, no
+    /// rendering.
+    fn open(
+        &self,
+        source: DocumentSource,
+        options: &OpenOptions,
+    ) -> Result<Box<dyn EngineDocument>, EngineError>;
+}
+
+/// An opened document.
+///
+/// Implementations must be shareable across render worker threads. Engines
+/// whose documents are not thread-safe serialize internally and report
+/// `parallel_render: false`.
+pub trait EngineDocument: Send + Sync {
+    fn page_count(&self) -> u32;
+
+    /// Size and intrinsic rotation of one page; must be cheap after the
+    /// first call for that page.
+    fn page_info(&self, page: PageIndex) -> Result<PageInfo, EngineError>;
+
+    fn metadata(&self) -> Result<DocumentMetadata, EngineError> {
+        Ok(DocumentMetadata::default())
+    }
+
+    /// Renders `request.region` of a page into `target`, whose size equals
+    /// the region size. The engine paints `request.background` first.
+    fn render(
+        &self,
+        request: &RenderRequest,
+        target: &mut PixmapMut<'_>,
+        cancel: &CancelToken,
+    ) -> Result<RenderOutcome, EngineError>;
+
+    fn text_layer(&self, page: PageIndex, cancel: &CancelToken) -> Result<TextLayer, EngineError> {
+        let _ = (page, cancel);
+        Err(EngineError::Unsupported("text extraction".into()))
+    }
+
+    fn outline(&self) -> Result<Vec<OutlineItem>, EngineError> {
+        Err(EngineError::Unsupported("outline".into()))
+    }
+
+    fn links(&self, page: PageIndex) -> Result<Vec<Link>, EngineError> {
+        let _ = page;
+        Err(EngineError::Unsupported("links".into()))
+    }
+
+    /// Lets the engine drop internal caches (fonts, decoded images) when the
+    /// memory budget manager reports pressure.
+    fn trim_memory(&self, pressure: MemoryPressure) {
+        let _ = pressure;
+    }
+}

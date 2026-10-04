@@ -1,0 +1,13 @@
+[package]
+name = "fastpdf-cache"
+description = "Byte-budgeted caches and the global memory budget manager"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fastpdf-engine-api.workspace = true
+
+[lints]
+workspace = true

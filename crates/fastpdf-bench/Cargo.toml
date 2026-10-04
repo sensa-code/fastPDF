@@ -1,0 +1,36 @@
+[package]
+name = "fastpdf-bench"
+description = "GUI-independent benchmark harness for FastPDF engines and the tile pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["engine-hayro"]
+# Engine adapters are selected per build (spec §43) and at runtime with
+# `--engine NAME`:
+#   cargo run --release -p fastpdf-bench --features engine-zpdf -- full file.pdf --engine zpdf
+engine-hayro = ["dep:fastpdf-engine-hayro"]
+engine-zpdf = ["dep:fastpdf-engine-zpdf"]
+
+[dependencies]
+fastpdf-engine-api.workspace = true
+fastpdf-render.workspace = true
+fastpdf-core.workspace = true
+fastpdf-engine-hayro = { workspace = true, optional = true }
+fastpdf-engine-zpdf = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true
