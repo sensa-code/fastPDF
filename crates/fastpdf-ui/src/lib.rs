@@ -29,6 +29,10 @@
 //! * Print (Ctrl+P) opens a small panel; jobs run on their own thread
 //!   through `fastpdf_print` (Win32 GDI, banded) and report progress
 //!   through the same wake-up channel.
+//! * Chrome follows the Windows light/dark app mode unless the user picks
+//!   one; night mode inverts the pages (`ColorMode::Inverted`). Both, the
+//!   sidebar, the default zoom and the window placement persist in a small
+//!   `key = value` settings file (`settings.rs`, std only).
 
 mod actions;
 mod bench;
@@ -39,6 +43,8 @@ mod overlay;
 mod print;
 mod reader;
 mod select;
+mod settings;
+mod settings_panel;
 mod sidebar;
 mod text_input;
 mod textures;

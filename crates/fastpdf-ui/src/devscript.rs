@@ -27,6 +27,11 @@
 //! | `print-cancel` | cancels the running print job |
 //! | `mark=PATH` | writes `PATH.mark`, then waits (60 s at most) for `PATH.ack` |
 //! | `memory=LABEL` | logs the memory breakdown (info level) |
+//! | `appearance=system`, `=light`, `=dark` | sets the appearance setting |
+//! | `night=on`, `=off`, `=toggle` | sets night mode (inverted pages) |
+//! | `sidebar=off`, `=outline`, `=pages` | closes the sidebar or shows a tab |
+//! | `default-zoom=fit-width`, `=fit-page`, `=actual-size` | sets the default zoom |
+//! | `settings` | shows (or hides) the settings panel |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
@@ -40,6 +45,8 @@ use gpui::{Context, Window};
 
 use crate::print::PageChoice;
 use crate::reader::{DocState, ReaderView};
+use crate::settings::{Appearance, DefaultZoom, tab_from_name};
+use crate::sidebar::SidebarTab;
 
 /// How often a waiting step checks its condition.
 const POLL: Duration = Duration::from_millis(50);
@@ -67,6 +74,13 @@ pub(crate) enum Step {
     PrintCancel,
     Mark(PathBuf),
     Memory(String),
+    Appearance(Appearance),
+    /// `None`: toggle.
+    Night(Option<bool>),
+    /// `None`: closed.
+    Sidebar(Option<SidebarTab>),
+    DefaultZoom(DefaultZoom),
+    SettingsPanel,
 }
 
 /// What a step reports after one poll.
@@ -112,6 +126,14 @@ fn parse_step(step: &str) -> Option<Step> {
         ("print-cancel", None) => Step::PrintCancel,
         ("mark", Some(path)) if !path.is_empty() => Step::Mark(PathBuf::from(path)),
         ("memory", label) => Step::Memory(label.unwrap_or_default().to_string()),
+        ("appearance", Some(name)) => Step::Appearance(Appearance::from_name(name)?),
+        ("night", Some("on")) => Step::Night(Some(true)),
+        ("night", Some("off")) => Step::Night(Some(false)),
+        ("night", Some("toggle")) => Step::Night(None),
+        ("sidebar", Some("off")) => Step::Sidebar(None),
+        ("sidebar", Some(tab)) => Step::Sidebar(Some(tab_from_name(tab)?)),
+        ("default-zoom", Some(name)) => Step::DefaultZoom(DefaultZoom::from_name(name)?),
+        ("settings", None) => Step::SettingsPanel,
         _ => return None,
     })
 }
@@ -360,6 +382,35 @@ impl ReaderView {
                 }
                 Done
             }
+            Step::Appearance(appearance) => {
+                self.set_appearance(*appearance, cx);
+                Done
+            }
+            Step::Night(on) => {
+                let on = on.unwrap_or(!self.settings.night_mode);
+                self.set_night_mode(on, cx);
+                Done
+            }
+            Step::Sidebar(tab) => {
+                match tab {
+                    Some(tab) => {
+                        if !self.sidebar.open {
+                            self.set_sidebar_open(true, window, cx);
+                        }
+                        self.set_sidebar_tab(*tab, window, cx);
+                    }
+                    None => self.set_sidebar_open(false, window, cx),
+                }
+                Done
+            }
+            Step::DefaultZoom(zoom) => {
+                self.set_default_zoom(*zoom, cx);
+                Done
+            }
+            Step::SettingsPanel => {
+                self.toggle_settings_panel(cx);
+                Done
+            }
         }
     }
 }
@@ -390,6 +441,35 @@ mod tests {
         assert_eq!(steps[9], Step::PrintPages("1-3, 5".into()));
         assert_eq!(steps[15], Step::Mark(PathBuf::from(r"C:\shots\a")));
         assert_eq!(steps[17], Step::Memory(String::new()));
+    }
+
+    #[test]
+    fn settings_steps_parse() {
+        let steps = parse(
+            "appearance=dark; night=on; night=toggle; sidebar=pages; sidebar=off; \
+             default-zoom=fit-page; settings",
+        )
+        .unwrap();
+        assert_eq!(
+            steps,
+            vec![
+                Step::Appearance(Appearance::Dark),
+                Step::Night(Some(true)),
+                Step::Night(None),
+                Step::Sidebar(Some(SidebarTab::Pages)),
+                Step::Sidebar(None),
+                Step::DefaultZoom(DefaultZoom::FitPage),
+                Step::SettingsPanel,
+            ]
+        );
+        for bad in [
+            "appearance=sepia",
+            "night=maybe",
+            "sidebar=left",
+            "default-zoom=200",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

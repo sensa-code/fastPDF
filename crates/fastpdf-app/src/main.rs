@@ -9,7 +9,9 @@
 //! stdout), `FASTPDF_DEV_OVERLAY=1` (development overlay, spec §46),
 //! `FASTPDF_UPLOAD_BUDGET_MB` (per-frame texture upload budget; tuning),
 //! `FASTPDF_RECENT_FILE` (recent-files list location; empty disables it, so
-//! benchmarks and tests do not touch the user's list).
+//! benchmarks and tests do not touch the user's list), `FASTPDF_SETTINGS_FILE`
+//! (UI settings, `%APPDATA%\FastPDF\settings.toml` by default; empty: defaults
+//! for this run and nothing written).
 //!
 //! Development switches, honored only in debug builds or together with
 //! `FASTPDF_DEV_OVERLAY=1`: `FASTPDF_PRINT_TO_FILE=<path>` (every print job
@@ -91,6 +93,8 @@ struct Env {
     upload_budget_mb: Option<usize>,
     /// `Some(None)`: disabled; `Some(Some(path))`: custom location.
     recent_file: Option<Option<PathBuf>>,
+    /// Same convention as `recent_file`.
+    settings_file: Option<Option<PathBuf>>,
     print_to_file: Option<PathBuf>,
     dev_script: Option<String>,
 }
@@ -106,6 +110,8 @@ impl Env {
             dev_overlay: flag("FASTPDF_DEV_OVERLAY"),
             upload_budget_mb: var("FASTPDF_UPLOAD_BUDGET_MB").and_then(|v| v.trim().parse().ok()),
             recent_file: std::env::var_os("FASTPDF_RECENT_FILE")
+                .map(|v| (!v.is_empty()).then(|| PathBuf::from(v))),
+            settings_file: std::env::var_os("FASTPDF_SETTINGS_FILE")
                 .map(|v| (!v.is_empty()).then(|| PathBuf::from(v))),
             print_to_file: std::env::var_os("FASTPDF_PRINT_TO_FILE")
                 .filter(|v| !v.is_empty())
@@ -139,7 +145,7 @@ fn main() {
     };
     if args.help {
         println!(
-            "{USAGE}\n\nengines: {}\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE\ndevelopment: FASTPDF_PRINT_TO_FILE, FASTPDF_DEV_SCRIPT",
+            "{USAGE}\n\nengines: {}\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE, FASTPDF_SETTINGS_FILE\ndevelopment: FASTPDF_PRINT_TO_FILE, FASTPDF_DEV_SCRIPT",
             engines::names().join(", ")
         );
         return;
@@ -176,6 +182,9 @@ fn main() {
     options.bench = env.bench.then(|| clock.hook());
     if let Some(recent) = env.recent_file {
         options.recent_files = recent;
+    }
+    if let Some(settings) = env.settings_file {
+        options.settings_file = settings.map(|p| std::path::absolute(&p).unwrap_or(p));
     }
     if let Some(mb) = env.upload_budget_mb {
         options.upload_budget = mb.max(1).saturating_mul(1024 * 1024);

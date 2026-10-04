@@ -11,7 +11,7 @@ use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_core::memory::MemoryMonitor;
 use fastpdf_core::recent::RecentFiles;
 use fastpdf_core::{DocumentSession, SessionConfig};
-use fastpdf_engine_api::{CancelToken, EngineDocument, PageIndex, PageRect, PdfEngine};
+use fastpdf_engine_api::{CancelToken, ColorMode, EngineDocument, PageIndex, PageRect, PdfEngine};
 use fastpdf_search::TextCache;
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -19,20 +19,24 @@ use gpui::{
     App, AppContext, Bounds, ClickEvent, ClipboardItem, Context, Entity, ExternalPaths,
     FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
     PathPromptOptions, PinchEvent, Pixels, Render, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, TitlebarOptions, Window, WindowBounds,
-    WindowHandle, WindowOptions, canvas, div, prelude::FluentBuilder, px, size,
+    StatefulInteractiveElement, Styled, Subscription, Task, TitlebarOptions, Window,
+    WindowAppearance, WindowBounds, WindowHandle, WindowOptions, canvas, div,
+    prelude::FluentBuilder, px, size,
 };
 
-use crate::actions::{KEY_CONTEXT, all_actions};
+use crate::actions::{KEY_CONTEXT, ToggleNightMode, all_actions};
 use crate::bench::{BenchEvent, BenchHook};
 use crate::document::{OpenFailure, OpenedDocument, PendingOpen, open_document_blocking};
 use crate::find::{FindBar, SearchTarget};
 use crate::overlay::DevOverlay;
 use crate::print::PrintPanel;
 use crate::select::{PagePoint, TextSelection};
+use crate::settings::{
+    Appearance, DefaultZoom, MIN_WINDOW, Settings, SettingsStore, WindowPlacement,
+};
 use crate::sidebar::Sidebar;
 use crate::textures::{DEFAULT_UPLOAD_BUDGET, TileImage, TileTextures, to_render_image};
-use crate::theme::{Theme, UI_FONT};
+use crate::theme::{ActiveTheme, Theme, UI_FONT};
 use crate::toolbar;
 
 /// Scroll distance of one wheel "line" and of the arrow keys, in logical
@@ -62,6 +66,9 @@ pub struct ReaderOptions {
     pub print_to_file: Option<PathBuf>,
     /// Development only: a script of steps to run (`crate::devscript`).
     pub dev_script: Option<String>,
+    /// Where UI settings (appearance, night mode, sidebar, default zoom,
+    /// window placement) are kept; `None`: defaults, nothing is written.
+    pub settings_file: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ReaderOptions {
@@ -73,6 +80,7 @@ impl std::fmt::Debug for ReaderOptions {
             .field("dev_overlay", &self.dev_overlay)
             .field("print_to_file", &self.print_to_file)
             .field("dev_script", &self.dev_script.is_some())
+            .field("settings_file", &self.settings_file)
             .finish_non_exhaustive()
     }
 }
@@ -89,6 +97,7 @@ impl ReaderOptions {
             recent_files: RecentFiles::default_location(),
             print_to_file: None,
             dev_script: None,
+            settings_file: crate::settings::default_location(),
         }
     }
 }
@@ -100,28 +109,93 @@ pub fn open_reader_window(
     initial: Option<PendingOpen>,
 ) -> gpui::Result<WindowHandle<ReaderView>> {
     let bench = options.bench.clone();
-    let window_size = default_window_size(cx);
+    // A few hundred bytes; read before the window exists so it opens where
+    // it was left, in the chosen appearance.
+    let settings = options
+        .settings_file
+        .as_deref()
+        .map(Settings::load)
+        .unwrap_or_default();
+    apply_window_appearance(settings.appearance, cx);
+    let window_bounds = initial_window_bounds(settings.window, cx);
     let handle = cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                window_size,
-                cx,
-            ))),
+            window_bounds: Some(window_bounds),
             titlebar: Some(TitlebarOptions {
                 title: Some(APP_TITLE.into()),
                 ..Default::default()
             }),
-            window_min_size: Some(size(px(360.0), px(240.0))),
+            window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
             app_id: Some(APP_TITLE.into()),
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| ReaderView::new(options, initial, window, cx)),
+        move |window, cx| cx.new(|cx| ReaderView::new(options, settings, initial, window, cx)),
     )?;
     if let Some(hook) = bench {
         hook(BenchEvent::WindowVisible);
     }
     Ok(handle)
+}
+
+/// How long the window must stay put before its placement is saved.
+const PLACEMENT_SETTLE: std::time::Duration = std::time::Duration::from_millis(600);
+/// Part of a restored window's top edge that must lie on a display, so the
+/// title bar can still be grabbed (a monitor may have been unplugged).
+const GRIP: (f32, f32) = (120.0, 24.0);
+
+/// Asks the platform to draw native window chrome in the chosen appearance.
+/// GPUI implements this on macOS only; on Windows (this GPUI revision) the
+/// title bar keeps following the system, while everything FastPDF paints
+/// follows the setting.
+pub(crate) fn apply_window_appearance(appearance: Appearance, cx: &mut App) {
+    cx.set_window_appearance(match appearance {
+        Appearance::System => None,
+        Appearance::Light => Some(WindowAppearance::Light),
+        Appearance::Dark => Some(WindowAppearance::Dark),
+    });
+}
+
+/// The saved placement when it is still on a display, else a default
+/// window centered on the primary display.
+fn initial_window_bounds(saved: Option<WindowPlacement>, cx: &App) -> WindowBounds {
+    if let Some(p) = saved.filter(WindowPlacement::is_plausible) {
+        let bounds = Bounds::new(
+            gpui::point(px(p.x), px(p.y)),
+            size(px(p.width), px(p.height)),
+        );
+        let displays: Vec<Bounds<Pixels>> = cx.displays().iter().map(|d| d.bounds()).collect();
+        if grip_visible(bounds, &displays) {
+            return if p.maximized {
+                WindowBounds::Maximized(bounds)
+            } else {
+                WindowBounds::Windowed(bounds)
+            };
+        }
+        log::info!("the saved window placement is off screen; using the default");
+    }
+    WindowBounds::Windowed(Bounds::centered(None, default_window_size(cx), cx))
+}
+
+/// Whether enough of the window's top edge is on one of `displays`.
+fn grip_visible(window: Bounds<Pixels>, displays: &[Bounds<Pixels>]) -> bool {
+    let top = Bounds::new(window.origin, size(window.size.width, px(GRIP.1)));
+    displays.iter().any(|d| {
+        let seen = d.intersect(&top);
+        seen.size.width >= px(GRIP.0) && seen.size.height >= px(GRIP.1)
+    })
+}
+
+/// What to save for the window's current bounds (the restore bounds when
+/// maximized; full screen is saved as its windowed bounds).
+fn placement_of(bounds: WindowBounds) -> WindowPlacement {
+    let b = bounds.get_bounds();
+    WindowPlacement {
+        x: f32::from(b.origin.x),
+        y: f32::from(b.origin.y),
+        width: f32::from(b.size.width),
+        height: f32::from(b.size.height),
+        maximized: matches!(bounds, WindowBounds::Maximized(_)),
+    }
 }
 
 /// A portrait window that fits the primary display.
@@ -186,10 +260,21 @@ pub struct ReaderView {
     pub(crate) first_paint_reported: bool,
     pub(crate) waker: Waker,
     pub(crate) memory: MemoryMonitor,
+    /// UI settings, saved whenever they change (`crate::settings`).
+    pub(crate) settings: Settings,
+    settings_store: SettingsStore,
+    /// The settings panel is shown.
+    pub(crate) settings_open: bool,
+    /// Window bounds when the window opened: a window the user never moved
+    /// or resized does not overwrite the saved placement.
+    initial_bounds: WindowBounds,
+    /// Saves the placement once the window stops moving (debounce).
+    bounds_task: Option<Task<()>>,
     open_task: Option<Task<()>>,
     pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
     _appearance: Subscription,
+    _bounds: Subscription,
 }
 
 impl std::fmt::Debug for ReaderView {
@@ -204,12 +289,22 @@ impl std::fmt::Debug for ReaderView {
 impl ReaderView {
     fn new(
         options: ReaderOptions,
+        settings: Settings,
         initial: Option<PendingOpen>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+
+        // Settings are saved as they change, the window placement shortly
+        // after the window stops moving: nothing depends on how the process
+        // ends (close button, Ctrl+Q, logoff, a crash).
+        let initial_bounds = window.window_bounds();
+        let bounds = cx.observe_window_bounds(window, |this, window, cx| {
+            this.window_moved(window.window_bounds(), cx);
+        });
+        let settings_store = SettingsStore::new(options.settings_file.clone(), &settings);
 
         // Render workers, searches and cache evictions wake the UI through
         // this channel: a foreground task awaits it and notifies the view.
@@ -237,8 +332,12 @@ impl ReaderView {
             options,
             focus,
             doc: DocState::Empty,
-            theme: Theme::for_appearance(window.appearance()),
-            sidebar: Sidebar::default(),
+            theme: Theme::resolve(settings.appearance, window.appearance()),
+            sidebar: Sidebar {
+                open: settings.sidebar_open,
+                tab: settings.sidebar_tab,
+                ..Sidebar::default()
+            },
             selection: TextSelection::default(),
             texts,
             recent: Vec::new(),
@@ -248,11 +347,18 @@ impl ReaderView {
             first_paint_reported: false,
             waker: Waker(tx),
             memory,
+            settings,
+            settings_store,
+            settings_open: false,
+            initial_bounds,
+            bounds_task: None,
             open_task: None,
             dev_script: None,
             _wake_task: wake_task,
             _appearance: appearance,
+            _bounds: bounds,
         };
+        cx.set_global(ActiveTheme(view.theme));
         if let Some(pending) = initial {
             let PendingOpen { path, result } = pending;
             let result = async move { result.await.unwrap_or(Err(OpenFailure::Abandoned)) };
@@ -374,7 +480,7 @@ impl ReaderView {
         let waker = self.waker.clone();
         let evict_waker = self.waker.clone();
         let retire = self.textures.retire_queue();
-        let session = DocumentSession::new(
+        let mut session = DocumentSession::new(
             Arc::clone(&opened.doc),
             self.options.session.clone(),
             view_size,
@@ -389,6 +495,13 @@ impl ReaderView {
                 }
             },
         );
+        // Before the first frame, so no tile renders in the wrong colors or
+        // at the wrong zoom.
+        session.set_color_mode(self.color_mode());
+        if self.settings.default_zoom != DefaultZoom::FitWidth {
+            // Fit width is the session's own start.
+            apply_default_zoom(&mut session, self.settings.default_zoom);
+        }
         self.memory
             .manager()
             .register(session.tile_cache().budgeted());
@@ -592,13 +705,15 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// Esc: stops printing or closes the print panel, then closes the find
-    /// bar, then clears the selection.
+    /// Esc: stops printing or closes the print panel, then the settings
+    /// panel, then the find bar, then clears the selection.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.print.printing() {
             self.print.cancel_job();
         } else if self.print.open {
             self.close_print_panel(window, cx);
+        } else if self.settings_open {
+            self.settings_open = false;
         } else if self.find.open {
             self.close_find(window, cx);
         } else {
@@ -871,6 +986,54 @@ fn navigate(session: &mut DocumentSession<TileImage>, command: ReaderCommand) {
     }
 }
 
+/// Puts a session in the zoom new documents start with.
+pub(crate) fn apply_default_zoom(session: &mut DocumentSession<TileImage>, zoom: DefaultZoom) {
+    match zoom {
+        DefaultZoom::FitWidth => session.fit_width(),
+        DefaultZoom::FitPage => session.fit_page(),
+        DefaultZoom::ActualSize => session.actual_size(),
+    }
+}
+
+impl ReaderView {
+    /// Page colors for the night mode setting.
+    pub(crate) fn color_mode(&self) -> ColorMode {
+        if self.settings.night_mode {
+            ColorMode::Inverted
+        } else {
+            ColorMode::Normal
+        }
+    }
+
+    /// Saves changed settings in the background.
+    pub(crate) fn save_settings(&mut self, cx: &mut Context<'_, Self>) {
+        let executor = cx.background_executor().clone();
+        self.settings_store.save(&self.settings, &executor);
+    }
+
+    /// The window moved, was resized, maximized or restored: remember the
+    /// placement once it has been still for a moment. A window that never
+    /// left its initial (default) placement writes nothing.
+    fn window_moved(&mut self, bounds: WindowBounds, cx: &mut Context<'_, Self>) {
+        if bounds == self.initial_bounds && self.settings.window.is_none() {
+            self.bounds_task = None;
+            return;
+        }
+        // Replacing the task cancels the previous wait.
+        self.bounds_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(PLACEMENT_SETTLE).await;
+            let _ = this.update(cx, |this, cx| {
+                this.settings.window = Some(placement_of(bounds));
+                this.save_settings(cx);
+            });
+        }));
+    }
+
+    pub(crate) fn settings_path(&self) -> Option<&Path> {
+        self.settings_store.path()
+    }
+}
+
 /// Scrolls so `rect` on `page` is visible, about a third from the top when
 /// the view has to move.
 fn reveal(session: &mut DocumentSession<TileImage>, page: PageIndex, rect: PageRect) {
@@ -914,8 +1077,13 @@ impl Render for ReaderView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         self.render_started = Some(Instant::now());
         self.frame_seq = self.frame_seq.wrapping_add(1);
-        self.theme = Theme::for_appearance(window.appearance());
-        let theme = self.theme;
+        // Every frame: a system theme switch arrives as a window appearance
+        // change (observed in `new`), a settings change as a notify.
+        let theme = Theme::resolve(self.settings.appearance, window.appearance());
+        if theme != self.theme {
+            self.theme = theme;
+            cx.set_global(ActiveTheme(theme));
+        }
         let view = cx.entity();
 
         let root = div()
@@ -939,7 +1107,10 @@ impl Render for ReaderView {
                         row.child(self.render_sidebar(view.clone(), cx))
                     })
                     .child(self.render_document_area(view, cx)),
-            );
+            )
+            .on_action(cx.listener(|this, _: &ToggleNightMode, _, cx| {
+                this.toggle_night_mode(cx);
+            }));
         all_actions!(root, cx)
     }
 }
@@ -990,6 +1161,9 @@ impl ReaderView {
             .when(self.find.open, |area| area.child(self.render_find_bar(cx)))
             .when(self.print.open, |area| {
                 area.child(self.render_print_panel(cx))
+            })
+            .when(self.settings_open, |area| {
+                area.child(self.render_settings_panel(cx))
             })
     }
 

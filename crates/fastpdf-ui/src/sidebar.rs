@@ -217,15 +217,26 @@ pub(crate) struct ThumbFrame {
 
 impl ReaderView {
     pub(crate) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.sidebar.open = !self.sidebar.open;
-        if self.sidebar.open {
+        self.set_sidebar_open(!self.sidebar.open, window, cx);
+    }
+
+    pub(crate) fn set_sidebar_open(
+        &mut self,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.sidebar.open = open;
+        if open {
             self.ensure_outline(cx);
         }
         self.sync_thumbnails(window);
+        self.settings.sidebar_open = open;
+        self.save_settings(cx);
         cx.notify();
     }
 
-    fn set_sidebar_tab(
+    pub(crate) fn set_sidebar_tab(
         &mut self,
         tab: SidebarTab,
         window: &mut Window,
@@ -235,6 +246,8 @@ impl ReaderView {
         // Show the current page when the list appears.
         self.sidebar.thumbs.followed = None;
         self.sync_thumbnails(window);
+        self.settings.sidebar_tab = tab;
+        self.save_settings(cx);
         cx.notify();
     }
 
@@ -536,7 +549,10 @@ impl ReaderView {
             return;
         };
         let theme = self.theme;
-        let paper = crate::viewport::color(self.options.session.paper);
+        // Thumbnails are rendered in the session's color mode (their keys
+        // include it); unrendered ones show matching paper.
+        let mode = self.session().map(|s| s.color_mode()).unwrap_or_default();
+        let paper = crate::theme::paper(self.options.session.paper, mode);
         let list = self.sidebar.thumbs.clone();
         let box_height = list.row_height - ROW_PAD - LABEL_HEIGHT - ROW_PAD / 2.0;
         let label_font = font(UI_FONT);

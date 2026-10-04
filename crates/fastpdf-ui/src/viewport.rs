@@ -11,7 +11,6 @@
 use std::time::Instant;
 
 use fastpdf_core::Frame;
-use fastpdf_engine_api::Rgba8;
 use gpui::{
     App, Bounds, ContentMask, DispatchPhase, Entity, MouseMoveEvent, MouseUpEvent, Pixels, Rgba,
     SharedString, TextAlign, TextRun, Window, fill, point, px, size,
@@ -20,6 +19,7 @@ use gpui::{
 use crate::bench::BenchEvent;
 use crate::reader::{DocState, ReaderView};
 use crate::textures::TileImage;
+use crate::theme::PageHighlights;
 
 /// Longest page error message painted on a page.
 const MAX_ERROR_CHARS: usize = 160;
@@ -43,15 +43,6 @@ fn view_bounds(origin: gpui::Point<Pixels>, rect: [f32; 4]) -> Bounds<Pixels> {
         point(origin.x + px(rect[0]), origin.y + px(rect[1])),
         size(px(rect[2]), px(rect[3])),
     )
-}
-
-pub(crate) fn color(c: Rgba8) -> Rgba {
-    Rgba {
-        r: f32::from(c.r) / 255.0,
-        g: f32::from(c.g) / 255.0,
-        b: f32::from(c.b) / 255.0,
-        a: f32::from(c.a) / 255.0,
-    }
 }
 
 impl ReaderView {
@@ -119,7 +110,10 @@ impl ReaderView {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let paper = color(self.options.session.paper);
+        let mode = self.session().map(|s| s.color_mode()).unwrap_or_default();
+        // Unrendered paper matches the tiles (black in night mode).
+        let paper = crate::theme::paper(self.options.session.paper, mode);
+        let marks = PageHighlights::for_mode(mode);
         let theme = self.theme;
         let mut pending = 0;
         let mut deferred = 0;
@@ -144,9 +138,9 @@ impl ReaderView {
                 }
                 for (rect, kind) in highlights {
                     let color = match kind {
-                        HighlightKind::SearchHit => theme.search_hit,
-                        HighlightKind::ActiveHit => theme.search_active,
-                        HighlightKind::Selection => theme.selection,
+                        HighlightKind::SearchHit => marks.search_hit,
+                        HighlightKind::ActiveHit => marks.search_active,
+                        HighlightKind::Selection => marks.selection,
                     };
                     window.paint_quad(fill(view_bounds(origin, *rect), color));
                 }

@@ -111,6 +111,12 @@ pub(crate) fn render(
         ))
         .child(separator(&theme))
         .child(toggle("find", "Find", C::Find, view.find.open, &theme, cx))
+        // Night mode (inverted pages); a setting, so it works without a
+        // document too.
+        .child(
+            styled_button("night", "Night", true, view.settings.night_mode, &theme)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_night_mode(cx))),
+        )
         .child(div().flex_1())
         .child(
             div()
@@ -122,14 +128,27 @@ pub(crate) fn render(
                 .max_w(px(360.0))
                 .child(title),
         )
+        .child(
+            styled_button("settings", "\u{2699}", true, view.settings_open, &theme)
+                .text_size(px(16.0))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.toggle_settings_panel(cx);
+                })),
+        )
 }
 
 fn separator(theme: &Theme) -> Div {
-    div().w(px(1.0)).h(px(20.0)).mx_1().bg(theme.toolbar_border)
+    div()
+        .flex_none()
+        .w(px(1.0))
+        .h(px(20.0))
+        .mx_1()
+        .bg(theme.toolbar_border)
 }
 
 fn label(text: String, min_width: f32) -> Div {
     div()
+        .flex_none()
         .min_w(px(min_width))
         .flex()
         .justify_center()
@@ -137,7 +156,8 @@ fn label(text: String, min_width: f32) -> Div {
         .child(text)
 }
 
-/// A small flat button; `selected` shows it pressed (toggles, tabs).
+/// A small flat button; `selected` shows it pressed (toggles, tabs). It
+/// never shrinks: in a narrow window the document title gives way first.
 pub(crate) fn styled_button(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
@@ -147,6 +167,7 @@ pub(crate) fn styled_button(
 ) -> Stateful<Div> {
     let base = div()
         .id(id.into())
+        .flex_none()
         .flex()
         .items_center()
         .justify_center()

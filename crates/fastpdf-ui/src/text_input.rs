@@ -20,8 +20,10 @@ use gpui::{
     InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, NoAction, PaintQuad, ParentElement, Pixels, Point, Render, ShapedLine,
     SharedString, Style, Styled, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window,
-    actions, div, fill, hsla, point, px, relative, size,
+    actions, div, fill, point, px, relative, size,
 };
+
+use crate::theme::ActiveTheme;
 
 /// Key context shared by every text field; the editing keys below are bound
 /// in it and take precedence over the reader's bindings.
@@ -629,7 +631,8 @@ impl Element for TextField {
         let line = window
             .text_system()
             .shape_line(display, font_size, &runs, None);
-        let accent = hsla(0.58, 0.9, 0.5, 1.0);
+        // Caret and selection in the theme's accent (light or dark).
+        let accent = gpui::Hsla::from(ActiveTheme::get(cx).accent);
         let (selection, caret) = if input.selected.is_empty() {
             let x = if input.text.is_empty() {
                 px(0.0)
