@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: FastPDF contributor <replace-me@example.invalid>
+Date: Sun, 4 Oct 2026 22:45:01 +0800
+Subject: [PATCH] gpui_windows: Skip the font update check when creating the text system
+
+GetSystemFontCollection(checkForUpdates = true) makes DirectWrite check
+the system font set before it answers. When the text system is created
+at start-up, that took 27-38 ms on the main thread in our measurements;
+without the check the call returns in under 1 ms.
+
+The factory was created a moment earlier, so its collection is current,
+and DirectWrite still applies changes that the font cache service
+reports. Fonts installed while the app runs are also picked up by
+select_and_cache_font, which retries with the update check when a font
+is missing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/gpui_windows/src/direct_write.rs | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/crates/gpui_windows/src/direct_write.rs b/crates/gpui_windows/src/direct_write.rs
+index 304dc38..639dc25 100644
+--- a/crates/gpui_windows/src/direct_write.rs
++++ b/crates/gpui_windows/src/direct_write.rs
+@@ -195,9 +195,13 @@ impl DirectWriteTextSystem {
+ 
+         let system_font_collection = unsafe {
+             let mut result = None;
++            // No immediate update check: the factory was just created, so its
++            // collection is current, and the check costs tens of
++            // milliseconds at start-up. Fonts installed later are picked up
++            // by `select_and_cache_font`, which checks when a font is missing.
+             components
+                 .factory
+-                .GetSystemFontCollection(false, &mut result, true)?;
++                .GetSystemFontCollection(false, &mut result, false)?;
+             result.context("Failed to get system font collection")?
+         };
+         let custom_font_set = unsafe { components.builder.CreateFontSet()? };
+-- 
+2.55.0.windows.3
+

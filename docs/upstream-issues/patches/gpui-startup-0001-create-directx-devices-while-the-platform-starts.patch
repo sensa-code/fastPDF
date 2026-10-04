@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: FastPDF contributor <replace-me@example.invalid>
+Date: Sun, 4 Oct 2026 22:45:00 +0800
+Subject: [PATCH] gpui_windows: Create DirectX devices while the platform starts
+
+Creating the D3D11 device is the slowest step of a windowed start on
+Windows: D3D11CreateDevice took 100-120 ms with an RTX 5090 in our
+measurements, and CreateDXGIFactory2 another 8-15 ms. Both ran on the
+main thread in attach_gpu, after WindowsPlatform::new had spent 35-50 ms
+on OLE, DirectWrite and the drag-and-drop helper.
+
+Start DirectXDevices::new on its own thread at the top of
+WindowsPlatform::new (windowed platforms only) and hand the result to
+the first attach_gpu in run. If the thread fails or panics, attach_gpu
+creates the devices on the main thread as before. When the app starts
+headless, the handle is dropped and the thread releases the devices when
+it finishes. Later switches to windowed are unchanged.
+
+D3D11 devices and DXGI factories are free-threaded, and the immediate
+context is not used until the thread has been joined.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/gpui_windows/src/platform.rs | 42 ++++++++++++++++++++++++++---
+ 1 file changed, 38 insertions(+), 4 deletions(-)
+
+diff --git a/crates/gpui_windows/src/platform.rs b/crates/gpui_windows/src/platform.rs
+index 995017f..1100332 100644
+--- a/crates/gpui_windows/src/platform.rs
++++ b/crates/gpui_windows/src/platform.rs
+@@ -8,6 +8,7 @@ use std::{
+         Arc,
+         atomic::{AtomicBool, Ordering},
+     },
++    thread::JoinHandle,
+ };
+ 
+ use anyhow::{Context as _, Result, anyhow};
+@@ -66,6 +67,9 @@ pub struct WindowsPlatform {
+     text_system: Arc<dyn PlatformTextSystem>,
+     direct_write_text_system: Option<Arc<DirectWriteTextSystem>>,
+     drop_target_helper: Option<IDropTargetHelper>,
++    /// DirectX devices being created on their own thread since `new`, for the
++    /// first attach in `run`.
++    early_devices: RefCell<Option<JoinHandle<Result<DirectXDevices>>>>,
+     /// Flag to instruct the `VSyncProvider` thread to invalidate the directx devices
+     /// as resizing them has failed, causing us to have lost at least the render target.
+     invalidate_devices: Arc<AtomicBool>,
+@@ -178,6 +182,20 @@ impl Drop for PowerRequest {
+ 
+ impl WindowsPlatform {
+     pub fn new(headless: bool) -> Result<Self> {
++        // Creating the D3D11 device is the slowest step of a windowed start
++        // (over 100 ms with some discrete GPUs) and needs nothing from the
++        // rest of the platform, so it runs on its own thread while OLE,
++        // DirectWrite and the message window are set up.
++        // D3D11 devices and DXGI factories are free-threaded; the immediate
++        // context is not used before `attach_gpu` joins the thread.
++        let early_devices = if headless {
++            None
++        } else {
++            std::thread::Builder::new()
++                .name("DirectXDevices".to_owned())
++                .spawn(DirectXDevices::new)
++                .log_err()
++        };
+         unsafe {
+             OleInitialize(None).context("unable to initialize Windows OLE")?;
+         }
+@@ -277,6 +295,7 @@ impl WindowsPlatform {
+             disable_direct_composition,
+             has_package_identity: has_package_identity(),
+             drop_target_helper,
++            early_devices: RefCell::new(early_devices),
+             invalidate_devices: Arc::new(AtomicBool::new(false)),
+             app_identity: RefCell::new(None),
+             system_notifications: RefCell::new(SystemNotificationState::new()),
+@@ -390,6 +409,9 @@ impl WindowsPlatform {
+     /// Panics if DirectX can't be initialized, since the app can't start. Starts headless if this
+     /// process can't show windows, for example when started over SSH.
+     fn connect_initially(&self) {
++        // Dropped without waiting when the app starts headless; the thread
++        // then releases the devices when it finishes.
++        let early_devices = self.early_devices.borrow_mut().take();
+         let request = self
+             .initial_windowing
+             .borrow_mut()
+@@ -402,13 +424,25 @@ impl WindowsPlatform {
+             log::info!("starting headless: {error:#}");
+             return;
+         }
+-        self.attach_gpu()
++        self.attach_gpu(early_devices)
+             .unwrap_or_else(|error| panic!("failed to initialize DirectX: {error:#}"));
+     }
+ 
+     /// Creates the DirectX devices that windows draw with, and starts vsync.
+-    fn attach_gpu(&self) -> Result<()> {
+-        let devices = DirectXDevices::new().context("Creating DirectX devices")?;
++    fn attach_gpu(&self, early_devices: Option<JoinHandle<Result<DirectXDevices>>>) -> Result<()> {
++        // Devices that failed to start early are created here, as are the
++        // devices of a later switch to windowed.
++        let early_devices = early_devices.and_then(|thread| {
++            thread
++                .join()
++                .map_err(|_| anyhow!("DirectX device thread panicked"))
++                .and_then(|devices| devices.context("Creating DirectX devices early"))
++                .log_err()
++        });
++        let devices = match early_devices {
++            Some(devices) => devices,
++            None => DirectXDevices::new().context("Creating DirectX devices")?,
++        };
+         if let Some(text_system) = &self.direct_write_text_system {
+             text_system.handle_gpu_lost(&devices)?;
+         }
+@@ -639,7 +673,7 @@ impl Platform for WindowsPlatform {
+             }
+             WindowingRequest::Windowed(_) if windowed => Err(anyhow!("already windowed")),
+             WindowingRequest::Windowed(environment) => {
+-                check_can_show_windows(&environment).and_then(|()| self.attach_gpu())
++                check_can_show_windows(&environment).and_then(|()| self.attach_gpu(None))
+             }
+         })
+     }
+-- 
+2.55.0.windows.3
+
