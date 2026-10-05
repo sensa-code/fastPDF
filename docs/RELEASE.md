@@ -336,7 +336,9 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 
 ## 5. 本次（0.0.1）實測紀錄（2026-10-04，不是正式發佈）
 
-> **最新一次打包（2026-10-05，HEAD `b7797fc`，可重現）**：exe 16,875,008 bytes（SHA-256 `78bb4ba8…`），zip 625 個 entry，時間戳為 commit 時間。
+> **最新一次打包（2026-10-05，HEAD `1704287`，可重現）**：exe 16,879,616 bytes（SHA-256 `72c5186f…`），zip 628 個 entry（其中 623 個在 `licenses/third-party/`，缺漏 0），含 GPUI 本地 patch（ADR 0011）。
+>
+> **再前一次（HEAD `b7797fc`）**：exe 16,875,008 bytes（SHA-256 `78bb4ba8…`），zip 625 個 entry。
 >
 > **前一次打包（2026-10-05，HEAD `21dd4da`）**：
 > - `package.ps1 -NoGuiSmoke`：exe 16,823,296 bytes，zip 8,634,700 bytes。

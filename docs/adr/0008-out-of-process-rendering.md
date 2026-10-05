@@ -440,6 +440,21 @@ engine 的快取與文件 bytes 整批移到 host，總量不變；額外成本�
 - **正確性**：84 個 fixture 0 差異；取消、crash 歸責、deadline、slot 回收、空檔、只交 handle 的整合測試全部通過；新增 slot channel、event／semaphore、R／B 換位與 BGRA＋夜間模式＋大於 slot 的比對測試。
 - **還沒做**：in-process 的 `copy_from_rgba` 也是逐像素換位（engine-api 的 `PixmapMut`），改成同樣的遮罩寫法可以讓 in-process 的 cache 命中也變快。這不影響 remote（host 已不換位）。
 
+### 最終驗收重測（2026-10-05，`1704287`，GPUI 本地 patch 之後）
+
+- **條件**：A＝in-process、B＝isolated，每個情境 6 對交替，啟動前負載 5–11%。細節見 `docs/benchmarks/b8-app.md`〈第十輪〉。
+- **`first_page_exact`**：
+  - 3 頁：中位數 164.7 對 165.8 ms，中位數相減 +1.2 ms；配對差中位數 **+8.9 ms**，超過 5 ms 的門檻；
+  - 300 頁：中位數相減 −0.6 ms，配對差 −2.7 ms，通過。
+- **`window_visible`**：配對差 +3.2 ms 與 +1.5 ms，通過。
+- **其他項目**：記憶體（private working set +3.6 MB、private bytes +5.5–6.2 MB）、idle（兩者主執行緒都是 0 次喚醒）、吞吐量與每個 tile 的 CPU（`render-host.md` 第三輪），全部通過。
+- **未達門檻的原因**：GPUI 本地 patch 讓視窗提早了約 30 ms，文件 host 的開檔與第一頁剛好落在第一個 frame 的邊緣。3 頁情境的 6 對中，有 4 對 isolated 晚了一個 frame（約 8–11 ms），2 對反而比較快。不開 UI 時，開檔加第一頁只多 1.2 ms。
+- **決定：維持 isolated 為 Windows 的預設**，3 頁情境的配對門檻列為已知未達成：
+  - 差距最多是偶爾晚一個 frame，兩種模式的首頁都在 165 ms 左右，遠低於 spec §29 的 200 ms；
+  - isolation 換來的是 hostile PDF 無法讓 reader 結束，這是本 ADR 的主要目的；
+  - 需要最低延遲的使用者可以用 `--engine hayro`。
+- **後續**：在 GPUI 啟動期間更早啟動文件 host 並開檔（目前只有待命 host 是提早啟動的），讓第一頁穩定落在第一個 frame。
+
 ## Consequences
 
 - UI process 不再因為 engine 的 stack overflow、配置失敗、mmap I/O 錯誤或失控運算而消失，§24、§25 的要求從「盡量 contain」變成由 OS 保證。R1 的「中期緩解」與 R10 都由這個 ADR 承接。
