@@ -52,7 +52,7 @@ PR 4 第二輪與第三輪的量測紀錄。第二輪確認 render host 的吞�
 
 ### 結果
 
-B 相對 A 的差距，7 對的中位數〔範圍〕。吞吐量的正值表示 remote 較快；CPU 的正值表示 remote 每個 tile 用較多 cycles。修改前是 HEAD `a199559`，修改後是本輪。
+B 相對 A 的差距，7 對的中位數〔範圍〕。吞吐量的正值表示 remote 較快；CPU 的正值表示 remote 每個 tile 用較多 cycles。修改前是 HEAD `9cf3b8a`，修改後是本輪。
 
 | 檔案 | 修改前 cold | 修改前 cache 命中 | 修改後 cold | 修改後 cache 命中 | CPU／tile 修改前（cold／cache） | CPU／tile 修改後（cold／cache） |
 |---|---|---|---|---|---|---|
@@ -208,7 +208,7 @@ B 有 3 個 process（app、文件 host、待命 host）。
 - **量測程式**：與第二輪相同（scratch，經由 `RenderScheduler`，2 個 worker、BGRA、508 px tile 加 2 px gutter；A 在新的子 process，B 在新的 host）。
 - **配對**：每輪各版本執行一次（每個檔案 1 對 AB），版本的順序每輪輪替、AB 的先後每輪交替，共 7 輪，所以每個版本都有 7 對。
 - **負載閘門**：每次執行前等系統忙碌度 < 20%（最多 5 分鐘），量測程式在每對之前再確認 < 30%。每對開始前的負載最高 16–25%。
-- **版本**：修改前是 HEAD `3f4d104`（pipe、BGRA、pipelining）；修改後是本輪。拆解貢獻的那一組另外加入只有 slot channel、以及 slot channel 加 RGBA 但保留 pipelining 的版本（負載閘門只有 30%）。
+- **版本**：修改前是 HEAD `dc9cd32`（pipe、BGRA、pipelining）；修改後是本輪。拆解貢獻的那一組另外加入只有 slot channel、以及 slot channel 加 RGBA 但保留 pipelining 的版本（負載閘門只有 30%）。
 
 ### 結果
 

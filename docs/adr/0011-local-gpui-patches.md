@@ -13,7 +13,7 @@
 
 ## Context
 
-B-8 第八輪（`b7797fc`）時，spec §29 只剩兩項沒有達成，兩項都卡在 GPUI 的 Windows platform crate `gpui_windows`：
+B-8 第八輪（`8135107`）時，spec §29 只剩兩項沒有達成，兩項都卡在 GPUI 的 Windows platform crate `gpui_windows`：
 
 - **小檔首頁**：中位數 204.4 ms，目標 < 200 ms。ADR 0009 的時間線顯示，剩下的時間幾乎都是 GPUI 啟動：
   - 主執行緒先花約 37 ms 做 platform 初始化，其中系統字型集合的 update check 占 27 ms；
@@ -69,7 +69,7 @@ B-8 第八輪（`b7797fc`）時，spec §29 只剩兩項沒有達成，兩項都
 
 ## 量測
 
-B-8 配對量測：A 是 HEAD（`3f4d104`），B 是 A 加上本 ADR 的 vendored crate，FastPDF 的程式碼相同。兩者都是 dist build，A、B 交替啟動，每次啟動前等系統負載降到 30% 以下。細節與每對的數字見 `docs/benchmarks/b8-app.md`〈第九輪〉。
+B-8 配對量測：A 是 HEAD（`dc9cd32`），B 是 A 加上本 ADR 的 vendored crate，FastPDF 的程式碼相同。兩者都是 dist build，A、B 交替啟動，每次啟動前等系統負載降到 30% 以下。細節與每對的數字見 `docs/benchmarks/b8-app.md`〈第九輪〉。
 
 | 指標（中位數） | A | B |
 |---|---|---|

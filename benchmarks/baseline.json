@@ -9,7 +9,7 @@
   },
   "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
   "profile": "release",
-  "git_rev": "52c573682aa6-dirty",
+  "git_rev": "a920ea8a3b1d-dirty",
   "engine": "hayro",
   "display_scale": 1.0,
   "tile_size": null,

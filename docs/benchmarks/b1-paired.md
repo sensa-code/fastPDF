@@ -15,8 +15,8 @@
 ## 方法
 
 - **工具**：`tools/bench_paired.py`。對每個檔案，用兩個 build 交替執行 `fastpdf-bench full <file>`（A B、B A、…），每次都是新的 process，取每對比值（B／A）的中位數。負載的慢速漂移會在每一對之間抵消。
-- **A（M1）**：`target/baseline` 的 release `fastpdf-bench`，產生 `baseline.json` 的 build（`52c5736`）。
-- **B（HEAD）**：`d3970eb` 的 `git archive` 匯出、release build。
+- **A（M1）**：`target/baseline` 的 release `fastpdf-bench`，產生 `baseline.json` 的 build（`a920ea8`）。
+- **B（HEAD）**：`756dfe1` 的 `git archive` 匯出、release build。
 - **語料與次數**：`fixtures/generated/manifest.json` 的 84 個檔案，每個檔案 3 對，engine Hayro（in-process）。
 - **背景負載**：使用者的 WSL VM 等工作負載都在跑，量測期間沒有編譯。
 - **判定規則**：

@@ -2,7 +2,7 @@
 
 對應 spec §15（Memory Budget）、§16（Memory Pressure）、§46（M6）。目的：用接近實際閱讀的操作驗證「大型 PDF 不爆 RAM、每個 cache 守住 budget」，並把 engine（Hayro adapter）內部的記憶體拆出來。
 
-量測日期 2026-10-04；程式基準 `501bc2c` 加上本次對 `crates/fastpdf-bench`、`crates/fastpdf-engine-hayro` 的修改（未 commit）。**只看記憶體，不看時間**（量測時機器上有其他 agent 在編譯；表中的秒數只供參考）。
+量測日期 2026-10-04；程式基準 `31828e9` 加上本次對 `crates/fastpdf-bench`、`crates/fastpdf-engine-hayro` 的修改（未 commit）。**只看記憶體，不看時間**（量測時機器上有其他 agent 在編譯；表中的秒數只供參考）。
 
 ## 結論
 

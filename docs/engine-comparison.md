@@ -48,7 +48,7 @@
 
 ## 2. 效能
 
-量測條件：機器安靜（量測前 CPU 2.8%，沒有編譯中的 process）、release build（`git 52c5736`，從乾淨匯出目錄 build）、`fastpdf-bench corpus --repeat 3`（每檔 3 個獨立子 process，取中位數）、display scale 1.0（96 dpi 下 100%）。原始數據：`benchmarks/baseline.json`（Hayro，M1 baseline）與 `benchmarks/runs/m4-zpdf.json`（zpdf，不 commit）。
+量測條件：機器安靜（量測前 CPU 2.8%，沒有編譯中的 process）、release build（`git a920ea8`，從乾淨匯出目錄 build）、`fastpdf-bench corpus --repeat 3`（每檔 3 個獨立子 process，取中位數）、display scale 1.0（96 dpi 下 100%）。原始數據：`benchmarks/baseline.json`（Hayro，M1 baseline）與 `benchmarks/runs/m4-zpdf.json`（zpdf，不 commit）。
 
 ### 2.1 全 corpus
 

@@ -76,7 +76,7 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
     - 每個檔案都要在 `licenses/overrides/SOURCES.md` 登記來源與 SHA-256。沒有登記或 SHA-256 不符的資料夾，整個不會被使用；
     - 資料夾的版本必須和 `Cargo.lock` 完全相同。依賴升級後，舊版本的 override 會列為 stale 並顯示警告，該 crate 回到缺漏清單；
     - `MISSING.md` 另外列出「Filled in from licenses/overrides」與「Overrides not used」兩節。補上缺漏的步驟見 `licenses/overrides/README.md`。
-  - 2026-10-04 實測（HEAD `cec1839`，加入 override 之前，default features，`x86_64-pc-windows-msvc`）：
+  - 2026-10-04 實測（HEAD `eae58c0`，加入 override 之前，default features，`x86_64-pc-windows-msvc`）：
     - 範圍內有 362 個 crate，輸出 618 個檔案，未壓縮約 3.1 MB。其中 344 個 crate 有自己的授權全文；
     - 範圍是用 `cargo metadata` 的 resolve 計算，會包含 weak 依賴（`dep?/feature`），所以比實際連結的多。對照 `cargo tree -p fastpdf-app -e normal`：實際的 315 個 crate 全部在範圍內，另外多收 47 個（例如 `image` → `ravif` → `rav1e` 這條 AVIF 依賴）；
     - 33 個檔案是從 stub 解析而來：zed 的 17 個 crate 各 1 個（`LICENSE-APACHE`），hayro 的 8 個 crate 各 2 個（`LICENSE-APACHE`、`LICENSE-MIT`）。抽查 zed 7 個、hayro 3 個 crate（含 `gpui`、`hayro-syntax`），內容與 repository 中的原檔逐位元組相同，是完整的授權全文；
@@ -84,7 +84,7 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
     - 13 個 crate 沒有附授權檔，但授權可選 Apache-2.0，由共用的 `Apache-2.0.txt` 涵蓋：accesskit 系列 3 個、lyon 系列 5 個、profiling 系列 2 個、`sval_nested`、`svg_fmt`、`zune-inflate`。其中 `sval_nested` 的 2 個 stub 指向套件以外，無法解析；
     - `package.ps1` 完整執行一次（HEAD 的乾淨匯出加上本次工具修改）：zip 共 623 個 entry（`licenses/third-party/` 佔 618 個），entry 清單檢查與 smoke test 都通過；
     - zip 為 8,415,819 bytes（8.03 MB）。同一批檔案不含 `licenses/third-party/` 時為 7,065,748 bytes，增加 1,350,071 bytes（+19.1%）。
-  - 加入 override 之後的實測（HEAD `8270b3e`，條件相同，只執行 `--bundle`，沒有重新打包）：
+  - 加入 override 之後的實測（HEAD `5b9f222`，條件相同，只執行 `--bundle`，沒有重新打包）：
     - 輸出 620 個檔案（多了 2 個 override 檔）。344 個 crate 有自己的授權全文，2 個由 override 補上，13 個由共用的 `Apache-2.0.txt` 涵蓋，3 個仍然缺漏；
     - `alloc-stdlib` 0.2.4（BSD-3-Clause）：使用同一個 repository 的 `alloc-no-stdlib` 2.0.4 套件內的 `LICENSE`（Copyright (c) 2016 Dropbox, Inc.）；
     - `pulp-wasm-simd-flag` 0.1.1（MIT）：使用同一個 repository、同一個 commit 的 `pulp` 0.22.3 套件內的 `LICENSE`（Copyright (c) 2021 sarah）；
@@ -306,7 +306,7 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
   - `TargetDeviceFamily` 為 Windows.Desktop 10.0.19041.0 以上；
   - 不宣告網路 capability。
 - 版本：Cargo 的 `X.Y.Z` 對應 MSIX 的 `X.Y.Z.0`。Publisher 是明顯的佔位值，簽章時必須改成憑證 subject。
-- 2026-10-04 實測（HEAD `8270b3e` 的乾淨匯出加上本次修改；SDK 10.0.26100.0 的 `makeappx`）：
+- 2026-10-04 實測（HEAD `5b9f222` 的乾淨匯出加上本次修改；SDK 10.0.26100.0 的 `makeappx`）：
 
 | 項目 | 結果 |
 |---|---|
@@ -336,11 +336,11 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 
 ## 5. 本次（0.0.1）實測紀錄（2026-10-04，不是正式發佈）
 
-> **最新一次打包（2026-10-05，HEAD `1704287`，可重現）**：exe 16,879,616 bytes（SHA-256 `72c5186f…`），zip 628 個 entry（其中 623 個在 `licenses/third-party/`，缺漏 0），含 GPUI 本地 patch（ADR 0011）。
+> **最新一次打包（2026-10-05，HEAD `658b47a`，可重現）**：exe 16,879,616 bytes（SHA-256 `72c5186f…`），zip 628 個 entry（其中 623 個在 `licenses/third-party/`，缺漏 0），含 GPUI 本地 patch（ADR 0011）。
 >
-> **再前一次（HEAD `b7797fc`）**：exe 16,875,008 bytes（SHA-256 `78bb4ba8…`），zip 625 個 entry。
+> **再前一次（HEAD `8135107`）**：exe 16,875,008 bytes（SHA-256 `78bb4ba8…`），zip 625 個 entry。
 >
-> **前一次打包（2026-10-05，HEAD `21dd4da`）**：
+> **前一次打包（2026-10-05，HEAD `1dda1b4`）**：
 > - `package.ps1 -NoGuiSmoke`：exe 16,823,296 bytes，zip 8,634,700 bytes。
 > - zip 共 625 個 entry，其中 620 個在 `licenses/third-party/`，沒有目錄 entry。
 > - CLI smoke 通過。
@@ -348,7 +348,7 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 >
 > 以下是第一次打包的紀錄。
 
-**來源**：HEAD `2f162e0` 的乾淨匯出（`git archive`），加上本次發佈相關的修改。當時 working tree 中有其他工作尚未 commit 的 `fastpdf-ui` 修改，無法 build，所以沒有在 working tree build（這正是 §1.2 要求從乾淨 checkout build 的原因）。
+**來源**：HEAD `6189995` 的乾淨匯出（`git archive`），加上本次發佈相關的修改。當時 working tree 中有其他工作尚未 commit 的 `fastpdf-ui` 修改，無法 build，所以沒有在 working tree build（這正是 §1.2 要求從乾淨 checkout build 的原因）。
 
 **環境**：
 - Windows 11 Pro 10.0.26200；
@@ -382,7 +382,7 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 - 現在 exe 與 zip 都逐位元可重現，見 §1.6〈可重現性〉與下方實測。公告的雜湊仍然要對**實際發佈的那個 zip** 計算。
 
 **可重現性實測**（2026-10-05）：
-- 來源：HEAD `a199559` 用 `git clone` 建立的兩個 checkout，加上本次的 `package.ps1`／`package-msix.ps1` 修改；
+- 來源：HEAD `9cf3b8a` 用 `git clone` 建立的兩個 checkout，加上本次的 `package.ps1`／`package-msix.ps1` 修改；
 - 環境：PowerShell 7.6.6、.NET 10.0.12，其餘同上；
 - 每次都用 `-NoGuiSmoke`。
 

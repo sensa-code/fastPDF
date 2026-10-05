@@ -3,7 +3,7 @@
 - 狀態：Accepted（2026-10-05）。PR 1–4 已實作（`crates/fastpdf-engine-remote`）。**Windows 的預設 engine 是 `hayro-isolated`**；`--engine hayro` 在 process 內 render，`fastpdf-bench` 一律在 process 內。PR 5（降低權限）還沒做。實作與本文的差異見〈實作現況〉，驗收見〈PR 4 第二輪〉，每個 tile 的 CPU 見〈PR 4 第三輪〉。
 - 日期：2026-10-04
 - 相關 spec：§12、§18、§24、§25、§29、§33；風險：`docs/PROJECT_AUDIT.md` R1、R10；`docs/audit/hayro.md` R1–R3
-- 原型：scratchpad 的 `oop/proto`（不在 repo 內），以 path dependency 指向 HEAD `956c573` 的 `git archive` 快照，避免受其他 agent 未 commit 的修改影響
+- 原型：scratchpad 的 `oop/proto`（不在 repo 內），以 path dependency 指向 HEAD `c69460c` 的 `git archive` 快照，避免受其他 agent 未 commit 的修改影響
 
 ## Context
 
@@ -140,7 +140,7 @@ host 在 `CREATE_SUSPENDED` 狀態下建立，先 `AssignProcessToJobObject` 再
 
 ### 4. 成本量測
 
-環境：AMD Ryzen 9 9950X（16C/32T）、125 GB RAM、Windows 11 10.0.26200、release（thin LTO）、Hayro 與 zpdf adapter 取自 HEAD `956c573`。量測期間 CPU 負載 6–11%，開始與結束時都沒有其他 cargo／rustc 在執行（其他 agent 可能在中途短暫編譯）。Hayro 各組態跑 3 次取中位數，zpdf 兩組各跑 2 次取平均；IPC 每次 1000 回合，共 3 次；啟動時間每組 15 次。原型 render 一律 scale 1.5、512² tile；in-process 與 OOP 平行度相同（4 條 thread 對 4 個在途 request＋host 4 個 worker，另有一組 8 對 8）。
+環境：AMD Ryzen 9 9950X（16C/32T）、125 GB RAM、Windows 11 10.0.26200、release（thin LTO）、Hayro 與 zpdf adapter 取自 HEAD `c69460c`。量測期間 CPU 負載 6–11%，開始與結束時都沒有其他 cargo／rustc 在執行（其他 agent 可能在中途短暫編譯）。Hayro 各組態跑 3 次取中位數，zpdf 兩組各跑 2 次取平均；IPC 每次 1000 回合，共 3 次；啟動時間每組 15 次。原型 render 一律 scale 1.5、512² tile；in-process 與 OOP 平行度相同（4 條 thread 對 4 個在途 request＋host 4 個 worker，另有一組 8 對 8）。
 
 **Host 啟動**
 
@@ -440,7 +440,7 @@ engine 的快取與文件 bytes 整批移到 host，總量不變；額外成本�
 - **正確性**：84 個 fixture 0 差異；取消、crash 歸責、deadline、slot 回收、空檔、只交 handle 的整合測試全部通過；新增 slot channel、event／semaphore、R／B 換位與 BGRA＋夜間模式＋大於 slot 的比對測試。
 - **還沒做**：in-process 的 `copy_from_rgba` 也是逐像素換位（engine-api 的 `PixmapMut`），改成同樣的遮罩寫法可以讓 in-process 的 cache 命中也變快。這不影響 remote（host 已不換位）。
 
-### 最終驗收重測（2026-10-05，`1704287`，GPUI 本地 patch 之後）
+### 最終驗收重測（2026-10-05，`658b47a`，GPUI 本地 patch 之後）
 
 - **條件**：A＝in-process、B＝isolated，每個情境 6 對交替，啟動前負載 5–11%。細節見 `docs/benchmarks/b8-app.md`〈第十輪〉。
 - **`first_page_exact`**：

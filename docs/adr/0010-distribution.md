@@ -30,7 +30,7 @@ FastPDF 要開始交到使用者手上。發佈形態決定了五件事：
 
 - **可攜版 zip 已可重複產生，而且逐位元可重現**：`tools/package.ps1`。
   - 流程：dist build（fat LTO、去除符號、改寫 build 路徑）→ 檢查 VERSIONINFO 與 PE resource → 附上各 crate 授權全文 → zip 與 SHA-256 → 驗證 zip 內容 → 解壓後做 CLI 與 GUI smoke test。
-  - exe 約 16 MB（HEAD `8270b3e` 為 16,732,672 bytes），zip 約 8.2 MB（含授權全文）。
+  - exe 約 16 MB（HEAD `5b9f222` 為 16,732,672 bytes），zip 約 8.2 MB（含授權全文）。
   - 同一個 commit、同一套工具鏈，打包出來的 exe 與 zip 逐位元相同：zip entry 的時間使用 commit 時間，link 時加上 `/Brepro`（`docs/RELEASE.md` §1.6〈可重現性〉）。
 - **per-user 檔案關聯已可用**：`crates/fastpdf-shell` 加上 `fastpdf --register-file-types`／`--unregister-file-types [--dry-run]`。
   - 全部寫在 `HKCU`，不需要 admin，不寫 `UserChoice`。
@@ -82,7 +82,7 @@ FastPDF 要開始交到使用者手上。發佈形態決定了五件事：
 
 ## Validation
 
-**已驗證**（2026-10-04；HEAD `8270b3e` 的乾淨匯出加上本次修改）：
+**已驗證**（2026-10-04；HEAD `5b9f222` 的乾淨匯出加上本次修改）：
 
 - `tools/package-msix.ps1`：
   - dist build 與 zip 共用 staging；
@@ -104,7 +104,7 @@ FastPDF 要開始交到使用者手上。發佈形態決定了五件事：
 | zip 流程回歸 | `package.ps1` 在 `-StageOnly` 重構後完整執行一次：zip 623 個 entry、CLI 與 GUI smoke 通過（`first_paint` 212 ms）。之後 `%APPDATA%\FastPDF` 不存在，沒有殘留 process |
 | 加入 `licenses/overrides/` 後 | staging 只複製 `licenses/` 最上層的檔案，並拒絕空資料夾與 zip 目錄 entry。zip 為 625 個 entry（沒有目錄 entry），MSIX 為 629 個檔案，round-trip 通過 |
 
-**可重現性實測**（2026-10-05；HEAD `a199559` 的兩個 `git clone`，分別使用 `target\agent-pkg` 與 `target\agent-pkg2`；細節見 `docs/RELEASE.md` §5）：
+**可重現性實測**（2026-10-05；HEAD `9cf3b8a` 的兩個 `git clone`，分別使用 `target\agent-pkg` 與 `target\agent-pkg2`；細節見 `docs/RELEASE.md` §5）：
 
 | 項目 | 修改前 | 修改後 |
 |---|---|---|

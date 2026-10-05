@@ -28,9 +28,9 @@
 
 | 回合 | 程式 | exe 大小 | 量測時的背景負載 |
 |---|---|---|---|
-| R2 | `335b81f`（UI 第二輪） | 15,898,624 B | 4–77%，多數時間偏低 |
-| R5 | `2f162e0` 加上 UI 第五輪（`8687f17`） | 16,366,592 B | 40–77%（其他 agent 在編譯） |
-| F | `8a3ac54`（最終版：`tools/package.ps1` 的 dist build，含路徑改寫） | 16,730,624 B | 300 頁：11–27%；3 頁：23–95%（WSL 的 VM，不是 FastPDF） |
+| R2 | `9a8b709`（UI 第二輪） | 15,898,624 B | 4–77%，多數時間偏低 |
+| R5 | `6189995` 加上 UI 第五輪（`32fab4d`） | 16,366,592 B | 40–77%（其他 agent 在編譯） |
+| F | `1f93ba0`（最終版：`tools/package.ps1` 的 dist build，含路徑改寫） | 16,730,624 B | 300 頁：11–27%；3 頁：23–95%（WSL 的 VM，不是 FastPDF） |
 
 - R5 的 exe 多了 icon、VERSIONINFO 和繁中字串表。F 再加上 render host（`fastpdf-engine-remote`，opt-in，預設不啟動）與檔案關聯的命令列。
 - R5 的絕對時間受背景負載影響：視窗出現時間慢了 11–25 ms，這段時間沒有任何 FastPDF 的程式在跑。比較 R2 與 R5 時，請看不受負載影響的指標，例如第一個 frame 到完全清晰的差距。
@@ -137,11 +137,11 @@
   - `-MemoryDetail`：`VirtualQueryEx` 分類加上 working set；
   - `-AppProbe`、`-Affinity`；
   - 新的記憶體欄位：`private_ws_mb`、`commit_charge_mb`。
-- Build：全部是 dist profile，從 HEAD `8270b3e` 以 `git archive` 匯出後在 scratch 建置，不修改 repo 的 `Cargo.toml`。
+- Build：全部是 dist profile，從 HEAD `5b9f222` 以 `git archive` 匯出後在 scratch 建置，不修改 repo 的 `Cargo.toml`。
 
   | 代號 | 內容 |
   |---|---|
-  | HEAD | `8270b3e` 原樣 |
+  | HEAD | `5b9f222` 原樣 |
   | instr | HEAD 加上 scratch instrumentation：view 的 render、prepaint、paint、wake 計數、輸入到 paint 的延遲、paint 間隔，以及 `HeapSummary`／`HeapWalk` 的 heap 統計。只在 `FASTPDF_BENCH=1` 時多一條等待 event 的 thread，平常不醒來 |
   | instr+patch | instr，加上以 `[patch]` 指向套了 vsync park patch 的 GPUI（zed `a84689073` 的副本） |
   | instr+508 | instr，`DEFAULT_TILE_SIZE` 512 → 508 |
@@ -347,7 +347,7 @@ mask 依本機拓撲選擇：相鄰的兩個邏輯 CPU 是同一個實體核心�
 
 1. **GPUI vsync park patch**：照 `docs/upstream-issues/gpui-idle.md` 的步驟先和 zed 維護者討論。若決定在 FastPDF 先用 `[patch]` 套用，需要新的 ADR（依賴策略，ADR 0001）。
 2. **縮放延遲**：用 app 內逐次輸入的時間戳記確認縮放沒有變慢，再送 upstream。
-3. **508 px tile**：已採用（`1a252c6`）。B-3 的配對重測在雜訊範圍內，見下一節的最終量測。
+3. **508 px tile**：已採用（`7506c65`）。B-3 的配對重測在雜訊範圍內，見下一節的最終量測。
 4. **低階機器**：iGPU 筆電、高更新率螢幕上重量 idle CPU 與 RAM（R12）。NVIDIA driver 那條每秒 60 次的 thread，在其他 GPU 上不一定存在。
 5. **probe：完成**（2026-10-05，bench-app 1.2.0）。「idle 時 FastPDF 不畫 frame」已是自動檢查的回歸防線。
    - **FastPDF 端**：
@@ -358,7 +358,7 @@ mask 依本機拓撲選擇：相鄰的兩個邏輯 CPU 是同一個實體核心�
      - preset `fastpdf` 預設開啟 `-AppProbe`，在 idle 窗口、互動後 idle 窗口與每項互動的前後，用 `ReadProcessMemory` 讀計數器；
      - idle 窗口內 render 或 paint 不為 0 時，summary 的 `idle.app_frames` 標成 `frames_while_idle` 並發出警告；
      - 互動期間計數器沒動時另外警告，表示 probe 沒在計數。
-   - **實測**（`a199559` 加上這次的修改，dist build，3 頁文件，20 格滾輪、5 次 PageDown、3 次 Ctrl+滾輪；idle 窗口忙碌 7–12%，量測前沒有 cargo、rustc、link 在跑）：
+   - **實測**（`9cf3b8a` 加上這次的修改，dist build，3 頁文件，20 格滾輪、5 次 PageDown、3 次 Ctrl+滾輪；idle 窗口忙碌 7–12%，量測前沒有 cargo、rustc、link 在跑）：
 
      | | 3 次 run | 驗證 run（多記每項互動） |
      |---|---|---|
@@ -373,7 +373,7 @@ mask 依本機拓撲選擇：相鄰的兩個邏輯 CPU 是同一個實體核心�
      - 其他數字（4 次 run）與前面各輪一致：idle private working set 24.7 MB（24.6–24.9）、idle CPU 0.2%（0.16–0.62%）單核、`first_page_exact` 202 ms（195–219 ms）。這幾次是在安靜時段量的（啟動前瞬間負載 11–34%），不能和第七輪的 218 ms 直接比較。
      - 滾輪 20 格只畫了 29 個 frame：bench-app 不把視窗移到前景，GPUI 對非焦點視窗限制在約 30 fps（`docs/audit/gpui.md`）。
 
-## 最終版（第七輪，`21dd4da`）
+## 最終版（第七輪，`1dda1b4`）
 
 - **build**：`tools/package.ps1` 的 dist build，exe 16,823,296 B（16.0 MiB）。內容包含 508 px tile、render host（opt-in，預設不啟動）、MSIX 打包工具，以及 B-8 工具 1.1.0。
 - **量測前**：先執行 5 次 `--version`，讓新 exe 完成 Defender 掃描並載入快取。
@@ -401,7 +401,7 @@ mask 依本機拓撲選擇：相鄰的兩個邏輯 CPU 是同一個實體核心�
 - **與 F 回合相比（300 頁）**：peak private 311.9 → 280.5 MB，互動後 idle 260.1 → 217.3 MB，和 508 px tile 實驗的減少量相符。
 - **300 頁情境的啟動時間比 F 回合高約 120 ms**，是因為這 3 次啟動時系統負載偏高（idle 窗口中位數 55%，最高 99%），不代表程式路徑有變。可以對照同一個 build 在 3 頁重跑時的 218 ms。
 
-## 最終版（第八輪，`b7797fc`，預設 render host）
+## 最終版（第八輪，`8135107`，預設 render host）
 
 - **build**：`tools/package.ps1`，exe 16,875,008 B，可重現打包（`/Brepro`）。預設 engine 是 `hayro-isolated`，所以 idle 時有 3 個 process：app、文件 host、待命 host。
 - **量測工具**：bench-app 1.2.0，含 `-AppProbe` 與 `-ThreadDetail`。
@@ -429,7 +429,7 @@ mask 依本機拓撲選擇：相鄰的兩個邏輯 CPU 是同一個實體核心�
 
 ## 第九輪：本地套用 GPUI patch（2026-10-05，ADR 0011）
 
-這一輪只比較 GPUI 的差別：A 是 HEAD（`3f4d104`），B 是 A 加上 vendored `gpui_windows`，也就是 ADR 0011 的 3 個 patch。FastPDF 自己的程式碼完全相同。
+這一輪只比較 GPUI 的差別：A 是 HEAD（`dc9cd32`），B 是 A 加上 vendored `gpui_windows`，也就是 ADR 0011 的 3 個 patch。FastPDF 自己的程式碼完全相同。
 
 ### 結論
 
@@ -585,11 +585,11 @@ bench-app 每次啟動只做一輪滾輪與縮放，CPU time 又以 15.6 ms 為�
 4. **低階機器**（R12）：在 iGPU 筆電、高更新率螢幕上重量。NVIDIA driver 那條每秒 60 次的 thread，在其他 GPU 上不一定存在。
 5. **device lost**：沒有實測。需要能觸發 TDR 的測試環境。
 
-## 最終版（第十輪，`1704287`）：in-process 與 render host 的配對比較
+## 最終版（第十輪，`658b47a`）：in-process 與 render host 的配對比較
 
 - **build**：`tools/package.ps1`，可重現打包，exe 16,879,616 B。內容包含：
   - GPUI 本地 patch（ADR 0011）；
-  - render host 的 slot channel（`1704287`）；
+  - render host 的 slot channel（`658b47a`）；
   - 跨行搜尋。
 - **方法**：
   - A = `--engine hayro`（in-process），B = 預設的 `hayro-isolated`。

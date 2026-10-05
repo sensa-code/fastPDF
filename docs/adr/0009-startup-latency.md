@@ -4,7 +4,7 @@
 - 日期：2026-10-05（量測在 2026-10-04 晚間）
 - 相關：spec §28–§29（小檔首頁 < 200 ms）；B-8（`docs/benchmarks/b8-app.md`）；`docs/PROJECT_AUDIT.md` R12（低階機器）；ADR 0001（使用 GPUI，不 fork）
 - 量測對象：
-  - HEAD `8270b3e` 的 `git archive` 匯出；
+  - HEAD `5b9f222` 的 `git archive` 匯出；
   - pin 的 zed rev `a84689073`（`a84689073d296dfd39987bc7dd478e43ef76d83a`）的複本，用 `[patch."https://github.com/zed-industries/zed"]` 指過去；
   - 兩者都在 scratchpad。repo 的 `Cargo.toml` 沒有改，GPUI 沒有加進 workspace。
 

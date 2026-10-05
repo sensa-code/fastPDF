@@ -600,7 +600,7 @@ reusing one `RenderCache` and `RenderContext`.
 
 ### FastPDF 驗證（不改 `D:\fastPDF`）
 
-方法：`git archive HEAD`（`2f162e0`）匯出到 scratchpad，在匯出的 `Cargo.toml` 加上
+方法：`git archive HEAD`（`6189995`）匯出到 scratchpad，在匯出的 `Cargo.toml` 加上
 
 ```toml
 [patch."https://github.com/LaurenzV/hayro"]
@@ -625,7 +625,7 @@ hayro = { path = "D:/fastPDF/upstream/hayro/hayro" }
 量測時機器上有其他 agent 在編譯（CPU 35–80%），計時噪音大：未修補版本自己跑 4 次，同一個指標的（最大−最小）／中位數，中位數 7%、p90 35%。所以未修補與修補後**交替各跑 4 次**，比較中位數：
 
 - 84 檔的狀態（ok／partial／open_error…）完全相同。
-- 和 `benchmarks/baseline.json` 比（各取 4 次的中位數，>10% 算 regression）：未修補 135 項、修補後 129 項。兩者都大量超標，原因是 baseline（`f033b35`，安靜的機器）之後 FastPDF 本身的變更（2 個 render worker、B-5 等）加上目前的機器負載，不是 hayro patch；兩者的差集只有零星、在噪音範圍內的小數值。**因此不能直接用 baseline 判斷，改用 A/B 比較。**
+- 和 `benchmarks/baseline.json` 比（各取 4 次的中位數，>10% 算 regression）：未修補 135 項、修補後 129 項。兩者都大量超標，原因是 baseline（`4471c2e`，安靜的機器）之後 FastPDF 本身的變更（2 個 render worker、B-5 等）加上目前的機器負載，不是 hayro patch；兩者的差集只有零星、在噪音範圍內的小數值。**因此不能直接用 baseline 判斷，改用 A/B 比較。**
 - A/B：中位數差超過 10% 且落在未修補 4 次範圍之外的只有 5 項，且都不可能被修補影響：`malformed/deep-nesting-dict-5000.pdf` 的 open（7.40 → 8.30 ms）、time to first page、page render，`flat-2000p` 的 first page（2.20 → 2.46 ms），`bad-xref-offsets` 的 page render（−13%，改善）。開檔根本不會執行修補到的程式碼；用「同樣以 path dependency 編譯、但沒有修補的 `ced00dd0`」當對照組跑 `open --repeat 30` 三輪：deep-nesting 為 git 版 7.34、path 對照 7.79、修補後 8.06 ms（範圍重疊），flat-2000p 為 3.88／3.77／4.32 ms（範圍重疊）。差異來自 git 與 path dependency 的編譯差異加上噪音，不是 patch。
 - **patch 造成的效能差異（正確性的代價）**：只有 `transparency/softmask-groups.pdf`。整頁 render（96 dpi，`render --repeat 40` 三輪）3.8 → 5.4 ms（+1.6 ms），private 峰值 11.2 → 13.1 MB：原本被丟掉的 alpha soft mask 現在真的畫出來（一張全頁的 mask），knockout 物件改走 vello_cpu 的 blend 路徑。只裝 0001 的版本已經佔了大部分（同一輪負載下：未修補 7.1、只裝 0001 9.0、兩個都裝 9.6 ms，private 峰值 11.9／13.1／13.1 MB）。corpus 中位數：first page 5.89 → 6.43 ms，RSS 16.0 → 16.9 MB。
 

@@ -25,7 +25,7 @@
 | 發佈 | 可攜版 zip：icon／版本資訊、第三方授權全文、SHA-256、smoke test | ✅ `tools/package.ps1`、`docs/RELEASE.md`（公開發佈前仍有 4 個 crate 缺授權全文） |
 | Render host | engine 移到獨立 process（ADR 0008）：crash、配置失敗、卡住只會結束 host | ✅ Windows 的預設（`hayro-isolated`）；`--engine hayro` 在 process 內 render。吞吐量與啟動時間和 in-process 相同（`docs/benchmarks/render-host.md`） |
 
-## KPI（spec §29，最終版 `1704287` 實測）
+## KPI（spec §29，最終版 `658b47a` 實測）
 
 - 預設 engine 是 render host（`hayro-isolated`），idle 時有 3 個 process：app、文件 host、待命 host。
 - GPUI 的 Windows 平台套用了 3 個本地 patch（ADR 0011）。

@@ -1,6 +1,6 @@
 # B-3 / B-4 — Tile Size × Render Workers
 
-- 日期：2026-10-04；FastPDF `853b376`（release，從 `git archive` 匯出的乾淨目錄 build）；engine Hayro（`ced00dd0`）
+- 日期：2026-10-04；FastPDF `eb51a05`（release，從 `git archive` 匯出的乾淨目錄 build）；engine Hayro（`ced00dd0`）
 - 機器：AMD Ryzen 9 9950X（16C/32T）、128 GB RAM；量測前 CPU 6.4%，沒有編譯中的 process
 - 工具：`python tools/bench_tile_matrix.py --bench <fastpdf-bench.exe> --repeat 3`
 - 量測：`fastpdf-bench render --tile T --workers W --viewport 1920x1080`。每個組合 3 次，每次都是全新 process（engine cache 是冷的），取中位數。指標是「頁面頂端 1920×1080 viewport 的所有 tile 都 render 完成」的時間（viewport fill）。
@@ -44,7 +44,7 @@ peak RSS 中位數（MB）：tile 256 約 37–38、512 約 41–43、1024 約 4
 - **方法**：
   - 和本文相同的 6 個 fixture 與 3 種 scale（1、2、6），2 個 worker，viewport 1920×1080；
   - 每種組合 5 對，順序交替（508、512 ／ 512、508 …），每次都是新的 `fastpdf-bench render` process；
-  - release build（HEAD `dc372f4`），量測時沒有編譯在跑。
+  - release build（HEAD `b9e9d59`），量測時沒有編譯在跑。
 - **結果**：
 
 | Fixture | ×1 | ×2 | ×6 |
