@@ -122,6 +122,7 @@ BEGIN
             VALUE "FileDescription", "FastPDF"
             VALUE "FileVersion", {text}
             VALUE "InternalName", "fastpdf"
+            VALUE "LegalCopyright", "Copyright (c) 2026 sensa-code and FastPDF contributors. MIT OR Apache-2.0."
             VALUE "OriginalFilename", "fastpdf.exe"
             VALUE "ProductName", "FastPDF"
             VALUE "ProductVersion", {text}

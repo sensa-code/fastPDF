@@ -23,7 +23,8 @@
 - [ ] exe 的 VERSIONINFO 由 `build.rs` 從 Cargo 版本自動產生：
   - `FILEVERSION` 是 `major.minor.patch.0`，每個欄位必須 ≤ 65535，超過時 build 會失敗；
   - `ProductName`、`FileDescription` 為 `FastPDF`；
-  - 不寫 `CompanyName`、`LegalCopyright`。在決定法律主體與授權之前不要加上（spec §37）。
+  - `LegalCopyright` 為 `Copyright (c) 2026 sensa-code and FastPDF contributors. MIT OR Apache-2.0.`（ADR 0012）；
+  - 不寫 `CompanyName`：個人發行，沒有公司。`package.ps1` 會檢查它是空的。
 - [ ] commit：`chore(release): vX.Y.Z`。
 
 ### 1.2 Toolchain 與乾淨的 build 環境
@@ -113,6 +114,7 @@ pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 
 |---|---|
 | `FastPDF-X.Y.Z-win-x64/fastpdf.exe` | `--profile dist`：fat LTO、`codegen-units=1`、strip symbols；link 時加上 `/Brepro`（見下方〈可重現性〉） |
 | `README.md` | 專案 README |
+| `LICENSE-MIT`、`LICENSE-APACHE` | FastPDF 本身的授權（`MIT OR Apache-2.0`，ADR 0012） |
 | `THIRD_PARTY_LICENSES.md`、`licenses/Apache-2.0.txt` | 第三方 crate 清單與授權審查結果；Apache-2.0 全文 |
 | `licenses/third-party/` | 連結進 exe 的每個 crate 自己的授權檔（`<crate>-<version>/`）、共用的 `Apache-2.0.txt`、缺漏清單 `MISSING.md`。由 `license_report.py --bundle` 產生，見 §1.5 |
 | `BUILDINFO.txt` | 版本、完整的 git commit hash（含 dirty 標記）、source date、rustc 版本、profile、exe 的 SHA-256。**不記錄打包時間** |
@@ -273,10 +275,14 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 - 用 `signtool verify /pa /v` 驗證；
 - 私鑰不能出現在 repo 或一般的 CI secret 中。
 
-**建議**：
-- V0.1 公開 beta 使用 A：未簽章的 zip，並公告 SHA-256；
-- V1.0 前由 owner 先決定發行主體（公司或個人），再依資格選 D（若適用）或 B，並與 §4 的安裝程式一起導入；
-- 要做決策時寫一份 ADR。
+**建議**（2026-10-06 更新：個人發行、開源，ADR 0012）：
+- V0.1 公開 beta 使用 A：未簽章的 zip，並公告 SHA-256。
+- 正式簽章優先考慮開源專案適用、適合個人的方案。條件常變動，申請前要以官方文件確認：
+  1. **開源專案的免費簽章服務**，例如 SignPath Foundation：專案通過審核後，在他們的基礎設施上簽章，不必自己保管私鑰；
+  2. **發給個人的開源 code signing 憑證**，例如 Certum：價格較低，需要身分驗證，私鑰放在卡片或雲端 HSM；
+  3. **Microsoft Store 個人開發者帳號**：由 Store 簽章 MSIX，沒有 SmartScreen 問題，但要走審核流程（§4）。
+- D（Microsoft 的雲端簽章服務）要確認是否開放給台灣的個人；C（EV）通常只發給組織，不適用。
+- 選定後寫一份 ADR，並依憑證或 Store 指定的值填入 MSIX 的 `Publisher`。
 
 ---
 

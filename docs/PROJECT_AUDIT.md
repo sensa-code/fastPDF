@@ -206,7 +206,7 @@ Dependency policy（spec §36）的落實方式：
 | gpui-component | Apache-2.0 | 不採用（依賴成本） |
 | GPUI 0.2.2 的編譯期依賴 | `option-ext`（MPL-2.0），只經由 proc-macro 使用 | 不進 exe；改用 main 後需要重新檢查 |
 | 測試語料 | 自行合成 | 嵌入系統字型的 fixture 只在本機產生，不 commit；upstream 的測試 PDF（PDFBox／pdf.js 等來源，授權混雜）只在本機引用 |
-| FastPDF 本身 | **尚未選定** | 保留商業化選項（spec §37）是擁有者的決定，manifest 中刻意不宣告授權 |
+| FastPDF 本身 | **MIT OR Apache-2.0** | 2026-10-06 owner 決定不商業化、開源、個人發行（ADR 0012），取代 spec §37「保留商業化選項」 |
 
 `tools/license_report.py` 會依 `cargo metadata` 產生 `THIRD_PARTY_LICENSES.md`，並以 `--check` 在 CI 擋下任何不在 permissive allowlist 內的授權。
 

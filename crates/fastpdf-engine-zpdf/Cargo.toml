@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 # zpdf is pinned to the audited commit fe0ed23 (v0.14.0-1-gfe0ed23, see
 # docs/audit/zpdf.md). We depend on the individual zpdf crates rather than the

@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 # No PDF engine here on purpose: the host gets its engine from a factory the
 # application passes to `run_host`, so this crate stays engine-neutral

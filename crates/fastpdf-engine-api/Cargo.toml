@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 # Intentionally dependency-free: this crate is the leaf every other crate
 # builds on, and third-party engine types must never leak through it.

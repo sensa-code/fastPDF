@@ -44,6 +44,8 @@ python tools/vendor_gpui_windows.py --check               # vendor/gpui_windows 
 - Rust edition 2024, toolchain pinned in `rust-toolchain.toml` (bump deliberately; re-run the baseline).
 - Code comments in English; project documents in Traditional Chinese (Taiwan) with English technical terms.
 - Commit messages: Conventional Commits in English (`feat(render): ...`).
+- License: FastPDF is `MIT OR Apache-2.0` (ADR 0012). New dependencies must be permissive and
+  compatible (`python tools/license_report.py --all-features --check`).
 - `vendor/gpui_windows` is generated (ADR 0011): never edit it by hand. Change a patch in
   `vendor/gpui_windows-patches/` and run `python tools/vendor_gpui_windows.py`; drop a patch
   once upstream GPUI has it.

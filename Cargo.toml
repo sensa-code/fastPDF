@@ -24,10 +24,10 @@ exclude = ["upstream", "vendor/gpui_windows"]
 version = "0.0.1"
 edition = "2024"
 rust-version = "1.92"
-# No open-source license is declared on purpose: the project wants to keep
-# commercial options open (spec §37). Choosing one is the owner's decision.
+# Open source, not commercialized (owner's decision, ADR 0012).
+license = "MIT OR Apache-2.0"
 publish = false
-repository = "https://example.invalid/fastpdf" # placeholder until a public home exists
+repository = "https://github.com/sensa-code/fastPDF"
 
 [workspace.dependencies]
 fastpdf-engine-api = { path = "crates/fastpdf-engine-api" }

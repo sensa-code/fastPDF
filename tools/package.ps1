@@ -170,6 +170,8 @@ if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 New-Item -ItemType Directory -Force (Join-Path $Stage 'licenses') | Out-Null
 Copy-Item $Exe (Join-Path $Stage 'fastpdf.exe')
 Copy-Item (Join-Path $Repo 'README.md') $Stage
+Copy-Item (Join-Path $Repo 'LICENSE-MIT') $Stage
+Copy-Item (Join-Path $Repo 'LICENSE-APACHE') $Stage
 Copy-Item (Join-Path $Repo 'THIRD_PARTY_LICENSES.md') $Stage
 # Top-level files only, matching the expected entry list below: subfolders (licenses/overrides/)
 # feed license_report.py --bundle, which writes what ships into licenses/third-party/.
@@ -288,7 +290,7 @@ $zipHash = (Get-FileHash -Algorithm SHA256 $Zip).Hash.ToLowerInvariant()
 
 # ------------------------------------------------------------------ verify zip
 Step 'verify zip contents'
-$expected = @("$Name/fastpdf.exe", "$Name/README.md", "$Name/THIRD_PARTY_LICENSES.md", "$Name/BUILDINFO.txt") +
+$expected = @("$Name/fastpdf.exe", "$Name/README.md", "$Name/LICENSE-MIT", "$Name/LICENSE-APACHE", "$Name/THIRD_PARTY_LICENSES.md", "$Name/BUILDINFO.txt") +
     @(Get-ChildItem (Join-Path $Repo 'licenses') -File | ForEach-Object { "$Name/licenses/$($_.Name)" }) +
     @($bundleFiles | ForEach-Object { "$Name/licenses/third-party/$_" })
 $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)

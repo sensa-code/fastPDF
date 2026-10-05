@@ -68,6 +68,7 @@ FastPDF 要開始交到使用者手上。發佈形態決定了五件事：
   - 無法驗證安裝與解除安裝、檔案關聯，以及 `%APPDATA%` 重新導向對 settings 與 recent 的影響。套件化的 full-trust app 寫入 `%APPDATA%\FastPDF\` 時，會被導到套件的私有位置。這會影響和 zip 版的設定共用，以及解除安裝後是否殘留；
   - 也無法做 B-8 的 zip 與 MSIX 啟動時間比較（spec §29），因為 package identity 與啟動路徑可能影響冷啟動。
 - **Publisher 是硬性綁定**：manifest 的 `Publisher` 必須和簽章憑證的 subject 逐字相同。樣板目前用明顯的佔位值，打包時以 `-Publisher` 覆蓋。
+- **發行主體是個人**（2026-10-06，ADR 0012）：簽章方案改以適合個人與開源專案的選項為主（`docs/RELEASE.md` §3），`Publisher` 等簽章方案確定後再填入。
 - **zip 版的檔案關聯寫入 exe 的絕對路徑**：使用者搬移資料夾後，必須重新註冊。這點要寫進 README 與 UI 說明。
 - **可重現性綁定工具鏈**：rustc（`rust-toolchain.toml`）、MSVC 的 link.exe、Windows SDK 的 `rc.exe`、PowerShell／.NET（zip 的 deflate）都會影響輸出的位元組。升級其中任何一項，同一個 commit 的 SHA-256 也會改變，這是預期的結果，所以 release notes 要記錄這些版本。
 - **高 DPI 的 tile 與工作列圖示**：MSIX 目前只有 scale-100 的 logo，沒有 `resources.pri`。若要更清晰，需要加上 `targetsize-*`、`scale-*` 版本，並用 `makepri` 產生 PRI（SDK 內建，不需要新工具）。

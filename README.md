@@ -90,4 +90,8 @@ tools/                   fixture 產生器、license report、engine isolation �
 
 ## 授權
 
-本專案尚未選定授權（保留所有權利），以保留商業化選項（spec §37）。第三方依賴的授權見 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md)。
+FastPDF 以 [MIT](LICENSE-MIT) **或** [Apache-2.0](LICENSE-APACHE) 授權，你可以任選其一（ADR 0012）。
+
+除非你另外聲明，你提交、希望納入本專案的貢獻，同樣以上述雙授權發佈，不附加其他條款或條件。
+
+第三方依賴的授權見 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md)。release zip 另外附上各依賴自己的授權全文（`licenses/third-party/`）。`vendor/gpui_windows` 是修改過的 Apache-2.0 程式碼（ADR 0011）。
