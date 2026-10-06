@@ -3,7 +3,7 @@
 對象：[LaurenzV/hayro](https://github.com/LaurenzV/hayro)，commit `ced00dd0`（`ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7`，2026-10-03，workspace 0.7.x，vello_cpu 0.3.0）。
 來源：M0 audit（`docs/audit/hayro.md`）、Hayro adapter 實作（`crates/fastpdf-engine-hayro/`）、M4 比對（`docs/engine-comparison.md`）、B-5 記憶體 benchmark（`docs/benchmarks/b5-memory.md`）。
 
-**#1 與 #7 已經有修正 patch**（`patches/hayro-0001-*.patch`、`patches/hayro-0002-*.patch`，本地分支 `fastpdf/transparency-fixes`，base `ced00dd0`），可以直接送 PR 而不只是開 issue。各 issue 的〈Proposed fix〉小節說明改了什麼，驗證與送 PR 前的步驟見〈修正 patch：驗證與送 PR 前的步驟〉。FastPDF 本身仍 pin 在 `ced00dd0`，沒有用這些 patch。
+**#1 與 #7 已經以 PR 送出（2026-10-06）**：[LaurenzV/hayro#1394](https://github.com/LaurenzV/hayro/pull/1394)（#1）與 [LaurenzV/hayro#1395](https://github.com/LaurenzV/hayro/pull/1395)（#7），從 fork `sensa-code/hayro` 的分支 `fastpdf/soft-mask-without-cs`、`fastpdf/knockout-groups` 送出，兩者都 rebase 到 `ea9c81dc`。`patches/` 中的 patch 檔是送出前的版本（base `ced00dd0`）。各 issue 的〈Proposed fix〉小節說明改了什麼，驗證過程見〈修正 patch：驗證與送 PR 前的步驟〉。FastPDF 本身仍 pin 在 `ced00dd0`，沒有用這些 patch。
 
 證據：
 
@@ -13,7 +13,7 @@
 - #2 的加密檔用 pypdf 6.19.0 產生（附錄 C）。
 - #9 的每執行緒記憶體來自 FastPDF adapter 的 process private bytes 量測（B-5），不是 hayro 單獨的量測。
 
-**本文件只是草稿：沒有在 GitHub 建立任何 issue 或 PR，沒有 fork、沒有 push，也沒有做任何寫入。要不要送出由使用者決定。** 送出 issue 前請注意（送 PR 另見〈送 PR 前的步驟〉）：
+**issue 仍是草稿：除了上面兩個 PR，沒有在 GitHub 建立任何 issue。要不要送出由使用者決定，建議等 PR 有回應之後再送。** 送出 issue 前請注意（送 PR 另見〈送 PR 前的步驟〉）：
 
 - 先在最新的 `main` 重跑重現步驟。hayro 更新很快（例如 #1386、#1387、#1389 都是 10/2–10/3 合併的），有些問題可能已經修掉。
 - 先搜尋既有 issue。下表的「相關 issue」是 2026-10-04 用 `gh issue list --search` 唯讀查到的結果。
@@ -24,13 +24,13 @@
 
 | # | 標題 | 類型 | 嚴重度 | 相關 issue | FastPDF 的處理 |
 |---|---|---|---|---|---|
-| 1 | Alpha soft masks whose group has no `/CS` are dropped: the masked content is painted fully opaque | Bug | 高 | — | **patch 0001**（未送出） |
+| 1 | Alpha soft masks whose group has no `/CS` are dropped: the masked content is painted fully opaque | Bug | 高 | — | **patch 0001**（PR #1394） |
 | 2 | The owner password is rejected for revision 2–4 security handlers (RC4, AES-128) | Bug | 中高 | — | 無 |
 | 3 | Stack overflow on long chains of indirect color spaces (follow-up to #1347) | Bug（robustness） | 高 | #1347 最後一則留言 | adapter 靜態掃描擋下 + 64 MiB thread stack |
 | 4 | No limit on decoded stream size or on up-front image allocations | Feature（security） | 高 | #1259、#273、#1382 | adapter 預先做 bounded inflate、宣告尺寸檢查 |
 | 5 | Data point for #1052: a 6 KB Form XObject DAG takes over 30 s to render — please consider a work budget too | 留言（#1052） | 中高 | #1052 | adapter preflight 有時間預算的 interpretation |
 | 6 | `render()` panics when the page is 65,533 px or more wide or tall | Bug | 中 | — | adapter 把 target 限制在 16,384 px |
-| 7 | Knockout transparency groups (`/K true`) are composited like normal groups | Feature | 中 | README 已列為未支援 | **patch 0002**（未送出；部分支援，見該節） |
+| 7 | Knockout transparency groups (`/K true`) are composited like normal groups | Feature | 中 | README 已列為未支援 | **patch 0002**（PR #1395；部分支援，見該節） |
 | 8 | Non-embedded CJK fonts silently fall back to Helvetica, so the text disappears | Docs／Feature | 中高（CJK 使用者） | README 已列為未支援 | adapter 的 font resolver 依 character collection 對應 Windows 字型 |
 | 9 | Tiled rendering: images are decoded again on every `render_into` call, and `RenderCache` has no size bound | Feature（效能／記憶體） | 中 | #1375 | adapter：block 合併、decode budget、閒置 5 s 釋放執行緒 |
 
@@ -630,6 +630,13 @@ hayro = { path = "D:/fastPDF/upstream/hayro/hayro" }
 - **patch 造成的效能差異（正確性的代價）**：只有 `transparency/softmask-groups.pdf`。整頁 render（96 dpi，`render --repeat 40` 三輪）3.8 → 5.4 ms（+1.6 ms），private 峰值 11.2 → 13.1 MB：原本被丟掉的 alpha soft mask 現在真的畫出來（一張全頁的 mask），knockout 物件改走 vello_cpu 的 blend 路徑。只裝 0001 的版本已經佔了大部分（同一輪負載下：未修補 7.1、只裝 0001 9.0、兩個都裝 9.6 ms，private 峰值 11.9／13.1／13.1 MB）。corpus 中位數：first page 5.89 → 6.43 ms，RSS 16.0 → 16.9 MB。
 
 ### 送 PR 前的步驟
+
+> **狀態（2026-10-06）**：已依下列步驟送出 [#1394](https://github.com/LaurenzV/hayro/pull/1394)（0001，head `144d62ae`）與 [#1395](https://github.com/LaurenzV/hayro/pull/1395)（0002，head `fd215829`）。
+>
+> - 兩者都 rebase 到 `ea9c81dc`，作者是 noreply 身分。
+> - 在 Rust 1.92.0 跑過步驟 4 的全部 CI 命令（含 cargo-hack 與 4 個 no_std 檢查），以及 custom 測試與新測試，全部通過。
+> - 步驟 5 的完整 `sync.py` corpus 沒有跑，PR 描述照實寫明，並附上 AI 協助的揭露。
+> - 第一次貢獻的 PR 要等 maintainer 核准後，GitHub 才會執行 CI。
 
 查核結果（2026-10-04，用 `gh api` 唯讀查 GitHub community profile 與 repo 內容）：hayro **沒有** CONTRIBUTING、PR template、issue template、code of conduct，也沒有 AI policy 檔案。以下依 CI 設定（`.github/workflows/ci.yml`）、`hayro-tests/README.md` 與既有 PR 整理：
 
