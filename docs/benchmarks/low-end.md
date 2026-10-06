@@ -5,12 +5,19 @@
 ## 結論
 
 - **小檔首頁 < 200 ms 只在 CPU 快的機器上成立。**
-  - 弱內顯配快 CPU（B）：3 頁 193 ms，300 頁約 202–206 ms，落在門檻附近。
-  - 主流舊筆電（C，4 核 8 緒、1/3 速）約 570 ms；入門筆電（D，2 核 2 緒、1/6 速）約 1.15 秒。
+  - 實測：
+    - 弱內顯配快 CPU（B）：3 頁 193 ms，300 頁約 202–206 ms，落在門檻附近；
+    - 主流舊筆電（C，4 核 8 緒、1/3 速）約 570 ms；
+    - 入門筆電（D，2 核 2 緒、1/6 速）約 1.15 秒。
+  - **2026-10-07 更正：B、C、D 的實測包含只有本機才有的成本。**
+    - 螢幕接在 RTX 5090 上。內顯第一次建立 swap chain 時，DXGI 會把 NVIDIA driver 載入 FastPDF 的 process，以便跨 adapter 複製；
+    - 這一步全速約 107 ms，1/3 速 330 ms，1/6 速 608 ms（逐步時間點見 `docs/benchmarks/warp-first.md`）；
+    - 螢幕由內顯驅動的筆電沒有這一段。扣除後估計（app 自報）：B 約 97 ms，C 約 0.27 秒，D 約 0.58 秒。C、D 仍未達成。
   - 啟動時間幾乎和單核速度成正比（C ≈ 3 × B、D ≈ 6 × B），和核心數無關，與 ADR 0009〈R12〉的結論一致。
-  - **時間主要花在 GPU driver 建立 D3D11 device**：
+  - **時間主要花在 GPU 初始化**：
     - 沒有硬體 driver 的 WARP（E），在 1/3 速度下仍然 155–161 ms 就畫出首頁，換算成全速約 52 ms，這是 FastPDF 與 GPUI 其餘的工作；
-    - 硬體 GPU 另外多出：NVIDIA 約 110 ms，AMD 內顯約 140 ms（全速換算）。這段是 CPU 工作，在慢 CPU 上等比例放大。
+    - NVIDIA 建立 D3D11 device 約 105–115 ms（全速）。AMD 內顯建立 device 只要約 35 ms，另外是上述跨 adapter 的 swap chain 約 107 ms；
+    - 這些都是 CPU 工作，在慢 CPU 上等比例放大。
   - 開 2000 頁和開 3 頁一樣快（D：1142 ms 對 1142 ms），「開檔不處理整份文件」在慢 CPU 上也成立。
 - **Idle RAM < 50 MB：在內顯上接近上限。**
   - AMD 內顯 44–47 MB；2000 頁 50.2 MB，略為超過。
@@ -123,8 +130,10 @@
 | E | 20.4 | 145.1 | 160.3 | 161.2 |
 
 - 每一種設定的 `document_opened` 都緊接在 `window_visible` 前面：讀檔、開檔與 GPUI 初始化平行進行，最後由 GPUI 初始化決定時間。GPUI 初始化中最大的一段是建立 D3D11 device（ADR 0009）。
-- 同樣是 1/3 速度，WARP（E）161 ms，AMD 內顯（C）570 ms。差距約 410 ms，換算成全速約 137 ms，就是 AMD driver 建立 device 與相關初始化的 CPU 成本；NVIDIA（A 166 ms 對 E 換算全速約 54 ms）約 112 ms。
-- 這段成本在 driver 裡，FastPDF 能做的是把它移出關鍵路徑（見〈後續〉）。
+- 同樣是 1/3 速度，WARP（E）161 ms，AMD 內顯（C）570 ms，差距約 410 ms（換算成全速約 137 ms）。
+  - 2026-10-07 以逐步時間點拆解：其中約 330 ms（全速約 107 ms）是跨 adapter 的 swap chain，只在本機出現；其餘主要是 AMD 建立 device；
+  - NVIDIA（A 166 ms 對 E 換算全速約 54 ms）多出約 112 ms，幾乎都是建立 device。
+- 這段成本在 driver 裡，FastPDF 能做的是把它移出關鍵路徑。研究與原型見 `docs/benchmarks/warp-first.md`。
 
 ### Idle
 
@@ -187,7 +196,7 @@ idle 窗口不降速（見〈方法〉），「換算」一列是實測的 CPU �
 
 | KPI（spec §29） | 目標 | B 內顯 | C 主流舊筆電 | D 入門筆電 | E 沒有 GPU 加速 |
 |---|---|---|---|---|---|
-| 小檔首頁 | < 200 ms | 193 ms ✅（300 頁約 202–206 ms，門檻附近） | 570 ms ❌ | 1142 ms ❌ | 161 ms ✅（畫面約 247 ms） |
+| 小檔首頁 | < 200 ms | 193 ms ✅（300 頁約 202–206 ms）；扣除跨 adapter 估計約 97 ms | 570 ms ❌；估計約 0.27 秒 ❌ | 1142 ms ❌；估計約 0.58 秒 ❌ | 161 ms ✅（畫面約 247 ms） |
 | Idle RAM（private WS） | < 50 MB | 44.6 MB ✅（上限） | 44.4 MB ✅ | 44.4 MB ✅；2000 頁 50.2 MB ❌（上限） | 20.5 MB ✅ |
 | Idle CPU | 接近 0 | ✅ | ✅ | ✅（換算最多約 1%） | ✅ |
 | 大型 PDF | 不需完整掃描 | — | — | ✅ 2000 頁與 3 頁同為 1142 ms | — |
@@ -195,9 +204,7 @@ idle 窗口不降速（見〈方法〉），「換算」一列是實測的 CPU �
 ## 後續
 
 1. **實機量測**：Intel 內顯、螢幕由內顯驅動的筆電（低階最常見）。本次的內顯數字含跨 adapter 複製的成本，是上限。
-2. **把 GPU driver 移出首頁的關鍵路徑**（候選，需要 ADR 與 GPUI patch）：
-   - 先用 WARP 畫第一個 frame，等硬體 device 建好再切換。GPUI 已經有 device lost 之後重建 device 的路徑（`try_to_recover_from_device_lost`），可以從那裡研究；
-   - 依本次數據，WARP 在 1/3 速度下 155–161 ms 就畫出首頁，但捲動只有約 9 fps，所以只適合用在啟動。
+2. **把 GPU driver 移出首頁的關鍵路徑**：2026-10-07 已做原型與量測（先用 WARP 畫第一個 frame，再切換到硬體 device），見 `docs/benchmarks/warp-first.md`。
 3. **Idle RAM 在內顯上接近 50 MB**：多出的是 driver 的配置，FastPDF 控制不了。在實機上重新判定；如果仍然超過，`benchmarks/README.md` 的 KPI 定義要註明 GPU driver 的影響。
 4. 高更新率與混合 DPI 仍未量測（R12 的另一部分）。
 
@@ -205,6 +212,7 @@ idle 窗口不降速（見〈方法〉），「換算」一列是實測的 CPU �
 
 - **內顯的跨 adapter 複製**：螢幕接在 RTX 5090 上，內顯畫好的每一個 frame，DXGI 都要複製到 NVIDIA。為此，FastPDF 的 process 裡也會載入 NVIDIA 的 driver（39 條 thread）。
   - 筆電的螢幕由內顯驅動，沒有這一步。所以 B、C、D 的記憶體、thread 數與 idle 喚醒是**上限**；
+  - **啟動也受影響**（2026-10-07 實測）：NVIDIA driver 是在內顯第一次建立 swap chain 時載入的，這一步全速約 107 ms，在慢 CPU 上等比例放大，所以 B、C、D 的首頁時間也是上限（〈結論〉有扣除後的估計）；
   - present 也多了一次複製，這部分是偏慢的估計。
   - WARP（E）沒有這個問題：它的 process 裡沒有 NVIDIA 的 thread。
 - **只有一種內顯**：Intel 內顯（低階筆電最常見）的 driver 行為與記憶體用量都不同。這裡量的是 AMD 的 driver。

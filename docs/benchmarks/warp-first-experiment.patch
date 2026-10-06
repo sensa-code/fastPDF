@@ -1,0 +1,474 @@
+diff --git a/vendor/gpui_windows/src/directx_devices.rs b/vendor/gpui_windows/src/directx_devices.rs
+index 8e65e6e..0bf840e 100644
+--- a/vendor/gpui_windows/src/directx_devices.rs
++++ b/vendor/gpui_windows/src/directx_devices.rs
+@@ -43,13 +43,60 @@ pub(crate) struct DirectXDevices {
+     pub(crate) device_context: ID3D11DeviceContext,
+ }
+ 
++/// FastPDF experiment only (docs/research/warp-first-startup.md), not shipped: prints a
++/// `{"event":..,"t_ms":..}` line like FastPDF's FASTPDF_BENCH milestones, timed from process
++/// creation, so bench-app records GPU milestones next to the app's own.
++pub(crate) fn test_event(name: &str) {
++    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    if !*ENABLED.get_or_init(|| std::env::var_os("FASTPDF_BENCH").is_some()) {
++        return;
++    }
++    use std::io::Write;
++    use windows::Win32::Foundation::FILETIME;
++    use windows::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
++    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
++    let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
++    let mut creation = FILETIME::default();
++    let mut exit = FILETIME::default();
++    let mut kernel = FILETIME::default();
++    let mut user = FILETIME::default();
++    let ok = unsafe {
++        GetProcessTimes(
++            GetCurrentProcess(),
++            &mut creation,
++            &mut exit,
++            &mut kernel,
++            &mut user,
++        )
++    };
++    if ok.is_err() {
++        return;
++    }
++    let now = unsafe { GetSystemTimePreciseAsFileTime() };
++    let ms = ticks(now).saturating_sub(ticks(creation)) as f64 / 10_000.0;
++    let _ = writeln!(
++        std::io::stdout().lock(),
++        "{{\"event\":\"{name}\",\"t_ms\":{ms:.3}}}"
++    );
++}
++
+ impl DirectXDevices {
+     pub(crate) fn new() -> Result<Self> {
++        Self::new_with(None)
++    }
++
++    /// FastPDF experiment: the software adapter (WARP), which needs no GPU driver start-up.
++    pub(crate) fn new_warp() -> Result<Self> {
++        Self::new_with(Some("warp".to_owned()))
++    }
++
++    fn new_with(forced_adapter: Option<String>) -> Result<Self> {
+         let debug_layer_available = check_debug_layer_available();
+         let dxgi_factory =
+             get_dxgi_factory(debug_layer_available).context("Creating DXGI factory")?;
+         let (adapter, device, device_context, feature_level) =
+-            get_adapter(&dxgi_factory, debug_layer_available).context("Getting DXGI adapter")?;
++            get_adapter(&dxgi_factory, debug_layer_available, forced_adapter)
++                .context("Getting DXGI adapter")?;
+         match feature_level {
+             D3D_FEATURE_LEVEL_11_1 => {
+                 log::info!("Created device with Direct3D 11.1 feature level.")
+@@ -106,19 +153,44 @@ fn get_dxgi_factory(debug_layer_available: bool) -> Result<IDXGIFactory6> {
+ fn get_adapter(
+     dxgi_factory: &IDXGIFactory6,
+     debug_layer_available: bool,
++    forced_adapter: Option<String>,
+ ) -> Result<(
+     IDXGIAdapter1,
+     ID3D11Device,
+     ID3D11DeviceContext,
+     D3D_FEATURE_LEVEL,
+ )> {
++    // FastPDF low-end test build only (docs/benchmarks/low-end.md), not shipped:
++    // FASTPDF_TEST_DXGI_ADAPTER picks the adapter whose description contains
++    // it (case-insensitive); "warp" picks the software adapter (Microsoft
++    // Basic Render Driver). No match ends enumeration with an error.
++    let wanted = forced_adapter
++        .or_else(|| std::env::var("FASTPDF_TEST_DXGI_ADAPTER").ok())
++        .map(|w| w.to_lowercase());
+     for adapter_index in 0.. {
+         let adapter: IDXGIAdapter1 = unsafe { dxgi_factory.EnumAdapters(adapter_index)?.cast()? };
++        let mut software = false;
+         if let Ok(desc) = unsafe { adapter.GetDesc1() } {
+             let gpu_name = String::from_utf16_lossy(&desc.Description)
+                 .trim_matches(char::from(0))
+                 .to_string();
++            software = (desc.Flags
++                & windows::Win32::Graphics::Dxgi::DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32)
++                != 0;
++            if let Some(wanted) = &wanted {
++                let hit = if wanted == "warp" {
++                    software
++                } else {
++                    gpu_name.to_lowercase().contains(wanted.as_str())
++                };
++                if !hit {
++                    continue;
++                }
++                eprintln!("fastpdf-test: DXGI adapter {adapter_index}: {gpu_name}");
++            }
+             log::info!("Using GPU: {}", gpu_name);
++        } else if wanted.is_some() {
++            continue;
+         }
+         // Check to see whether the adapter supports Direct3D 11 and create
+         // the device if it does.
+@@ -129,6 +201,7 @@ fn get_adapter(
+             Some(&mut context),
+             Some(&mut feature_level),
+             debug_layer_available,
++            software,
+         )
+         .log_err()
+         {
+@@ -145,13 +218,18 @@ fn get_device(
+     context: Option<*mut Option<ID3D11DeviceContext>>,
+     feature_level: Option<*mut D3D_FEATURE_LEVEL>,
+     debug_layer_available: bool,
++    software: bool,
+ ) -> Result<ID3D11Device> {
+     let mut device: Option<ID3D11Device> = None;
+-    let device_flags = if debug_layer_available {
++    let mut device_flags = if debug_layer_available {
+         D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_DEBUG
+     } else {
+         D3D11_CREATE_DEVICE_BGRA_SUPPORT
+     };
++    // FastPDF experiment: ask a hardware driver not to start its worker threads.
++    if !software && std::env::var_os("FASTPDF_TEST_D3D_NO_THREADING").is_some() {
++        device_flags |= windows::Win32::Graphics::Direct3D11::D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
++    }
+     unsafe {
+         D3D11CreateDevice(
+             adapter,
+diff --git a/vendor/gpui_windows/src/directx_renderer.rs b/vendor/gpui_windows/src/directx_renderer.rs
+index f8b86bc..25dcf6b 100644
+--- a/vendor/gpui_windows/src/directx_renderer.rs
++++ b/vendor/gpui_windows/src/directx_renderer.rs
+@@ -54,6 +54,8 @@ pub(crate) struct DirectXRenderer {
+     /// In that case we want to discard the first frame that we draw as we got reset in the middle of a frame
+     /// meaning we lost all the allocated gpu textures and scene resources.
+     skip_draws: bool,
++    /// FastPDF experiment: milestone printed after the next successful present.
++    test_present_event: Option<&'static str>,
+ }
+ 
+ /// Direct3D objects
+@@ -150,6 +152,34 @@ impl DirectXRendererDevices {
+     }
+ }
+ 
++/// FastPDF experiment: when the first window first presented. The switch to the hardware devices
++/// waits until that frame has been on screen for a while: presented is not yet composed, and a
++/// switch right after the present can drop the WARP frame before DWM shows it.
++pub(crate) static TEST_FIRST_PRESENT_AT: std::sync::OnceLock<std::time::Instant> =
++    std::sync::OnceLock::new();
++
++/// FastPDF experiment: how long the first frame stays on WARP at least (about three frames at
++/// 60 Hz).
++pub(crate) const TEST_SWITCH_AFTER_PRESENT: std::time::Duration = std::time::Duration::from_millis(50);
++
++/// FastPDF experiment: whether NVIDIA's user-mode D3D driver is loaded in this process.
++fn test_nvidia_umd_loaded() -> bool {
++    unsafe {
++        windows::Win32::System::LibraryLoader::GetModuleHandleW(windows::core::w!(
++            "nvwgf2umx.dll"
++        ))
++    }
++    .is_ok()
++}
++
++/// FastPDF experiment: creates the render pipelines and global buffers once and drops them,
++/// so that the driver has compiled the shaders before a window recreates them on the UI thread.
++pub(crate) fn warm_up_device(device: &ID3D11Device) -> Result<()> {
++    DirectXRenderPipelines::new(device).context("Warming up render pipelines")?;
++    DirectXGlobalElements::new(device).context("Warming up global elements")?;
++    Ok(())
++}
++
+ impl DirectXRenderer {
+     pub(crate) fn new(
+         hwnd: HWND,
+@@ -164,12 +194,15 @@ impl DirectXRenderer {
+             .context("Creating DirectX devices")?;
+         let atlas = Arc::new(DirectXAtlas::new(&devices.device, &devices.device_context));
+ 
++        test_event(if test_nvidia_umd_loaded() { "new_begin_nv1" } else { "new_begin_nv0" });
+         let resources = DirectXResources::new(&devices, 1, 1, hwnd, disable_direct_composition)
+             .context("Creating DirectX resources")?;
++        test_event(if test_nvidia_umd_loaded() { "new_swap_chain_nv1" } else { "new_swap_chain_nv0" });
+         let globals = DirectXGlobalElements::new(&devices.device)
+             .context("Creating DirectX global elements")?;
+         let pipelines = DirectXRenderPipelines::new(&devices.device)
+             .context("Creating DirectX render pipelines")?;
++        test_event("new_pipelines");
+ 
+         let direct_composition = if disable_direct_composition {
+             None
+@@ -181,6 +214,7 @@ impl DirectXRenderer {
+                 .context("Setting swap chain for DirectComposition")?;
+             Some(composition)
+         };
++        test_event("new_dcomp");
+ 
+         Ok(DirectXRenderer {
+             hwnd,
+@@ -194,7 +228,9 @@ impl DirectXRenderer {
+             width: 1,
+             height: 1,
+             skip_draws: false,
++            test_present_event: Some("renderer_first_present"),
+         })
++        .inspect(|_| test_event("renderer_created"))
+     }
+ 
+     pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+@@ -250,7 +286,14 @@ impl DirectXRenderer {
+                 .swap_chain
+                 .Present(0, DXGI_PRESENT(0))
+         };
+-        result.ok().context("Presenting swap chain failed")
++        let result = result.ok().context("Presenting swap chain failed");
++        if result.is_ok()
++            && let Some(name) = self.test_present_event.take()
++        {
++            test_event(name);
++            TEST_FIRST_PRESENT_AT.get_or_init(std::time::Instant::now);
++        }
++        result
+     }
+ 
+     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
+@@ -286,6 +329,7 @@ impl DirectXRenderer {
+             self.devices.take();
+         }
+ 
++        test_event(if test_nvidia_umd_loaded() { "switch_released_nv1" } else { "switch_released_nv0" });
+         let devices = DirectXRendererDevices::new(directx_devices, disable_direct_composition)
+             .context("Recreating DirectX devices")?;
+         let resources = DirectXResources::new(
+@@ -296,10 +340,12 @@ impl DirectXRenderer {
+             disable_direct_composition,
+         )
+         .context("Creating DirectX resources")?;
++        test_event(if test_nvidia_umd_loaded() { "switch_swap_chain_nv1" } else { "switch_swap_chain_nv0" });
+         let globals = DirectXGlobalElements::new(&devices.device)
+             .context("Creating DirectXGlobalElements")?;
+         let pipelines = DirectXRenderPipelines::new(&devices.device)
+             .context("Creating DirectXRenderPipelines")?;
++        test_event("switch_pipelines");
+ 
+         let direct_composition = if disable_direct_composition {
+             None
+@@ -309,6 +355,7 @@ impl DirectXRenderer {
+             composition.set_swap_chain(&resources.swap_chain)?;
+             Some(composition)
+         };
++        test_event("switch_dcomp");
+ 
+         self.atlas
+             .handle_device_lost(&devices.device, &devices.device_context);
+@@ -324,6 +371,8 @@ impl DirectXRenderer {
+         self.pipelines = pipelines;
+         self.direct_composition = direct_composition;
+         self.skip_draws = true;
++        self.test_present_event = Some("renderer_present_after_switch");
++        test_event("renderer_recreated");
+         Ok(())
+     }
+ 
+diff --git a/vendor/gpui_windows/src/platform.rs b/vendor/gpui_windows/src/platform.rs
+index d17924c..cd452e0 100644
+--- a/vendor/gpui_windows/src/platform.rs
++++ b/vendor/gpui_windows/src/platform.rs
+@@ -76,6 +76,9 @@ pub struct WindowsPlatform {
+     invalidate_devices: Arc<AtomicBool>,
+     /// Frame demand of all windows; the `VSyncProvider` thread parks without it.
+     frame_demand: Arc<FrameDemand>,
++    /// FastPDF experiment (FASTPDF_TEST_WARP_FIRST): hardware devices created in the
++    /// background while the app starts on WARP; the vsync thread switches to them.
++    pending_devices: Arc<std::sync::Mutex<Option<DirectXDevices>>>,
+     handle: HWND,
+     suspend_resume_notification: RefCell<Option<HPOWERNOTIFY>>,
+     disable_direct_composition: bool,
+@@ -191,12 +194,56 @@ impl WindowsPlatform {
+         // DirectWrite and the message window are set up.
+         // D3D11 devices and DXGI factories are free-threaded; the immediate
+         // context is not used before `attach_gpu` joins the thread.
++        // FastPDF experiment: start on WARP, which needs no GPU driver start-up, and create the
++        // hardware devices in the background; the vsync thread switches to them when ready.
++        let warp_first = !headless && std::env::var_os("FASTPDF_TEST_WARP_FIRST").is_some();
++        let frame_demand = Arc::new(FrameDemand::new());
++        let pending_devices: Arc<std::sync::Mutex<Option<DirectXDevices>>> = Default::default();
++        let pending = pending_devices.clone();
++        let demand = frame_demand.clone();
+         let early_devices = if headless {
+             None
+         } else {
+             std::thread::Builder::new()
+                 .name("DirectXDevices".to_owned())
+-                .spawn(DirectXDevices::new)
++                .spawn(move || {
++                    if !warp_first {
++                        let devices = DirectXDevices::new();
++                        test_event("gpu_device_ready");
++                        return devices;
++                    }
++                    let devices = DirectXDevices::new_warp();
++                    test_event("gpu_warp_ready");
++                    // Only now: the D3D11 runtime creates devices one at a time, so a hardware
++                    // device started alongside would hold WARP up behind the driver's start-up.
++                    std::thread::Builder::new()
++                        .name("DirectXDevicesHardware".to_owned())
++                        .spawn(move || {
++                            // Below the UI and the render host: the first frame comes first.
++                            unsafe {
++                                let _ = windows::Win32::System::Threading::SetThreadPriority(
++                                    windows::Win32::System::Threading::GetCurrentThread(),
++                                    windows::Win32::System::Threading::THREAD_PRIORITY_BELOW_NORMAL,
++                                );
++                            }
++                            match DirectXDevices::new() {
++                                Ok(hardware) => {
++                                    test_event("gpu_hardware_ready");
++                                    // Compile the shaders here rather than on the UI thread.
++                                    warm_up_device(&hardware.device).log_err();
++                                    test_event("gpu_hardware_warm");
++                                    *pending.lock().unwrap_or_else(|e| e.into_inner()) =
++                                        Some(hardware);
++                                    demand.wake();
++                                }
++                                Err(err) => {
++                                    log::error!("hardware DirectX devices: {err:#}; staying on WARP")
++                                }
++                            }
++                        })
++                        .log_err();
++                    devices
++                })
+                 .log_err()
+         };
+         unsafe {
+@@ -300,7 +347,8 @@ impl WindowsPlatform {
+             drop_target_helper,
+             early_devices: RefCell::new(early_devices),
+             invalidate_devices: Arc::new(AtomicBool::new(false)),
+-            frame_demand: Arc::new(FrameDemand::new()),
++            frame_demand,
++            pending_devices,
+             app_identity: RefCell::new(None),
+             system_notifications: RefCell::new(SystemNotificationState::new()),
+         })
+@@ -487,12 +535,39 @@ impl WindowsPlatform {
+         let text_system = Arc::downgrade(direct_write_text_system);
+         let invalidate_devices = self.invalidate_devices.clone();
+         let frame_demand = self.frame_demand.clone();
++        let pending_devices = self.pending_devices.clone();
+ 
+         let vsync_thread = std::thread::Builder::new()
+             .name("VSyncProvider".to_owned())
+             .spawn(move || {
+                 let vsync_provider = VSyncProvider::new();
+                 let recover_if_device_lost = |directx_device: &mut DirectXDevices| {
++                    // FastPDF experiment: hardware devices are ready, leave WARP, but only once
++                    // the first WARP frame is on screen.
++                    let ready = if TEST_FIRST_PRESENT_AT
++                        .get()
++                        .is_some_and(|at| at.elapsed() >= TEST_SWITCH_AFTER_PRESENT)
++                    {
++                        pending_devices
++                            .lock()
++                            .unwrap_or_else(|e| e.into_inner())
++                            .take()
++                    } else {
++                        None
++                    };
++                    if let Some(ready) = ready {
++                        if let Err(err) = switch_gpu_devices(
++                            directx_device,
++                            ready,
++                            platform_window.as_raw(),
++                            validation_number,
++                            &all_windows,
++                            &text_system,
++                        ) {
++                            log::error!("switching to the hardware GPU: {err:#}");
++                        }
++                        return;
++                    }
+                     if check_device_lost(&directx_device.device)
+                         || invalidate_devices.fetch_and(false, Ordering::Acquire)
+                     {
+@@ -520,7 +595,17 @@ impl WindowsPlatform {
+                             if frame_demand.take() {
+                                 break;
+                             }
+-                            std::thread::park_timeout(IDLE_DEVICE_CHECK_INTERVAL);
++                            // FastPDF experiment: poll quickly while a switch waits for the
++                            // first present.
++                            let switch_waiting = pending_devices
++                                .lock()
++                                .unwrap_or_else(|e| e.into_inner())
++                                .is_some();
++                            std::thread::park_timeout(if switch_waiting {
++                                std::time::Duration::from_millis(8)
++                            } else {
++                                IDLE_DEVICE_CHECK_INTERVAL
++                            });
+                             if !stop.load(Ordering::Acquire) {
+                                 recover_if_device_lost(&mut directx_device);
+                             }
+@@ -1799,6 +1884,57 @@ fn handle_gpu_device_lost(
+     Ok(())
+ }
+ 
++/// FastPDF experiment: replaces the start-up WARP devices with hardware devices created in
++/// the background. The device-lost path, minus its waits: those give a lost device time to
++/// recover, and nothing is lost here.
++fn switch_gpu_devices(
++    directx_devices: &mut DirectXDevices,
++    ready: DirectXDevices,
++    platform_window: HWND,
++    validation_number: usize,
++    all_windows: &std::sync::Weak<RwLock<SmallVec<[TrackedWindow; 4]>>>,
++    text_system: &std::sync::Weak<DirectWriteTextSystem>,
++) -> Result<()> {
++    test_event("gpu_switch_begin");
++    *directx_devices = ready;
++    let lparam = LPARAM(directx_devices as *const _ as _);
++    unsafe {
++        SendMessageW(
++            platform_window,
++            WM_GPUI_GPU_DEVICE_LOST,
++            Some(WPARAM(validation_number)),
++            Some(lparam),
++        );
++    }
++    if let Some(text_system) = text_system.upgrade() {
++        text_system.handle_gpu_lost(directx_devices)?;
++    }
++    if let Some(all_windows) = all_windows.upgrade() {
++        for window in all_windows.read().iter() {
++            unsafe {
++                SendMessageW(
++                    window.as_raw(),
++                    WM_GPUI_GPU_DEVICE_LOST,
++                    Some(WPARAM(validation_number)),
++                    Some(lparam),
++                );
++            }
++        }
++        for window in all_windows.read().iter() {
++            unsafe {
++                SendMessageW(
++                    window.as_raw(),
++                    WM_GPUI_FORCE_UPDATE_WINDOW,
++                    Some(WPARAM(validation_number)),
++                    None,
++                );
++            }
++        }
++    }
++    test_event("gpu_switch_end");
++    Ok(())
++}
++
+ const PLATFORM_WINDOW_CLASS_NAME: PCWSTR = w!("Zed::PlatformWindow");
+ 
+ fn register_platform_window_class() {
