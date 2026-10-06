@@ -359,6 +359,10 @@ B-8 最終版的 `first_page_exact` 中位數：3 頁 219 ms，300 頁 213 ms（
    - 需要 ETW 或 PIX 拆解後才知道能不能縮短。
 4. **F3：FastPDF 第一次 draw 的 7–9 ms**。量測第一頁 bitmap 上傳與 layout 各占多少；這屬於 UI／render 的範圍。
 5. **R12 實機**：在真正的低階筆電（內顯、低時脈）上量同一條時間線，特別是 `D3D11CreateDevice` 與字型集合。bench-app 加上 `-Affinity` 之後（另一個 agent 進行中），R12 的近似量測可以重複執行。
+   - 2026-10-06 已做模擬量測（`docs/benchmarks/low-end.md`，bench-app 1.3.0 的 `-Affinity`、`-Slowdown`，加上可選 GPU 的測試 build）：
+     - 首頁時間和單核速度成正比，和核心數無關；
+     - 關鍵路徑是 GPU driver 建立 device：WARP 在 1/3 速度下 161 ms 就畫出首頁，同樣速度的 AMD 內顯要 570 ms。換算成全速，NVIDIA 的 device 約多 110 ms，AMD 約多 140 ms；
+     - 實機量測仍待做。
 6. **Upstream 追蹤**：如果 G1／G2 被接受，更新 GPUI pin，依〈Validation〉重新量測，並更新 B-8 與本 ADR 的狀態。
 
 ## Validation

@@ -583,6 +583,7 @@ bench-app 每次啟動只做一輪滾輪與縮放，CPU time 又以 15.6 ms 為�
 2. **CI**：加上 `python tools/vendor_gpui_windows.py --check`，確認 vendored crate 與 patch 一致，而且 build 確實用到它。
 3. **首頁的下一個瓶頸**：render host 的開檔與第 1 頁 render 開始落在關鍵路徑上（B 的第一頁比視窗晚 4–10 ms）。
 4. **低階機器**（R12）：在 iGPU 筆電、高更新率螢幕上重量。NVIDIA driver 那條每秒 60 次的 thread，在其他 GPU 上不一定存在。
+   - 2026-10-06 的模擬量測見 `docs/benchmarks/low-end.md`。AMD 內顯 driver 自己的 thread 在 idle 時每秒不到 0.5 次；WARP 整個 tree 每秒約 4 次。
 5. **device lost**：沒有實測。需要能觸發 TDR 的測試環境。
 
 ## 最終版（第十輪，`658b47a`）：in-process 與 render host 的配對比較

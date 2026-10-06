@@ -1,0 +1,41 @@
+diff --git a/vendor/gpui_windows/src/directx_devices.rs b/vendor/gpui_windows/src/directx_devices.rs
+index 8e65e6e..73dd23b 100644
+--- a/vendor/gpui_windows/src/directx_devices.rs
++++ b/vendor/gpui_windows/src/directx_devices.rs
+@@ -112,13 +112,36 @@ fn get_adapter(
+     ID3D11DeviceContext,
+     D3D_FEATURE_LEVEL,
+ )> {
++    // FastPDF low-end test build only (docs/benchmarks/low-end.md), not shipped:
++    // FASTPDF_TEST_DXGI_ADAPTER picks the adapter whose description contains
++    // it (case-insensitive); "warp" picks the software adapter (Microsoft
++    // Basic Render Driver). No match ends enumeration with an error.
++    let wanted = std::env::var("FASTPDF_TEST_DXGI_ADAPTER")
++        .ok()
++        .map(|w| w.to_lowercase());
+     for adapter_index in 0.. {
+         let adapter: IDXGIAdapter1 = unsafe { dxgi_factory.EnumAdapters(adapter_index)?.cast()? };
+         if let Ok(desc) = unsafe { adapter.GetDesc1() } {
+             let gpu_name = String::from_utf16_lossy(&desc.Description)
+                 .trim_matches(char::from(0))
+                 .to_string();
++            if let Some(wanted) = &wanted {
++                let software = (desc.Flags
++                    & windows::Win32::Graphics::Dxgi::DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32)
++                    != 0;
++                let hit = if wanted == "warp" {
++                    software
++                } else {
++                    gpu_name.to_lowercase().contains(wanted.as_str())
++                };
++                if !hit {
++                    continue;
++                }
++                eprintln!("fastpdf-test: DXGI adapter {adapter_index}: {gpu_name}");
++            }
+             log::info!("Using GPU: {}", gpu_name);
++        } else if wanted.is_some() {
++            continue;
+         }
+         // Check to see whether the adapter supports Direct3D 11 and create
+         // the device if it does.

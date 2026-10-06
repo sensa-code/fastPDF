@@ -118,3 +118,4 @@ python tools/bench_paired.py --a OLD/fastpdf-bench.exe --b NEW/fastpdf-bench.exe
   - 螢幕解析度、更新率、DPI；
   - build profile（dist）與 git revision；
   - 背景負載。
+- 低階機器的近似量測（內顯、WARP、較少與較慢的核心）見 `docs/benchmarks/low-end.md`：用 bench-app 1.3.0 的 `-Affinity`、`-Slowdown`，加上可選 GPU 的測試 build。

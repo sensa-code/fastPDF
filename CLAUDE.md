@@ -35,6 +35,7 @@ cargo run --release -p fastpdf-bench -- scroll <file.pdf>          # B-5 memory 
 cargo run --release -p fastpdf-bench --features engine-zpdf -- diff-corpus fixtures/generated/manifest.json --engine hayro,zpdf
 python tools/bench_tile_matrix.py --bench target/release/fastpdf-bench.exe   # B-3/B-4
 pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf <file> -Runs 3   # B-8 app KPIs
+pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf <file> -Affinity 0x5 -Slowdown 6   # low-end CPU emulation (docs/benchmarks/low-end.md)
 python tools/license_report.py --all-features --check   # rewrites THIRD_PARTY_LICENSES.md
 python tools/vendor_gpui_windows.py --check               # vendor/gpui_windows == pinned zed rev + patches
 ```

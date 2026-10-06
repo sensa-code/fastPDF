@@ -40,7 +40,11 @@
 | 網路／telemetry | 0 | 0 | ✅ |
 
 - 量測機是高階桌機（Ryzen 9 9950X、RTX 5090），每次啟動前都等系統負載降到 30% 以下。
-- 內顯與低階機器尚未量測（R12）。
+- 低階機器以模擬方式量測（R12，`docs/benchmarks/low-end.md`，本機內顯、WARP，以及較少、較慢的 CPU 核心）：
+  - 首頁時間和單核速度成正比，主要花在 GPU driver 建立 D3D11 device：弱內顯配快 CPU 約 193 ms，主流舊筆電等級約 0.57 秒，入門筆電等級約 1.15 秒；
+  - idle RAM 在內顯上 44–50 MB（多出的是 driver 的配置）；
+  - idle CPU 接近 0、捲動反應（約 22 ms）在低階設定上仍成立；
+  - 尚未在真正的低階筆電上量測。
 - 定義與細節見 `benchmarks/README.md`、`docs/benchmarks/b8-app.md`。
 
 ## 需求
