@@ -22,7 +22,7 @@
 | M5 Tile renderer | tile／scheduler／cache + GPUI viewport；B-3／B-4（2 workers；tile 508，對齊 GPU atlas） | ✅ |
 | M6 Memory budget | `MemoryBudgetManager`、overlay 分項、B-5 驗證（大型 PDF 不爆 RAM） | ✅ |
 | M7 UX | sidebar（outline、縮圖）、搜尋、選取／複製、列印、recent files、深色外觀、夜間模式、設定、繁體中文介面、平滑捲動 | V0.1 功能清單完成；檔案關聯目前只有命令列（`--register-file-types`）；安裝程式待做 |
-| 發佈 | 可攜版 zip：icon／版本資訊、第三方授權全文、SHA-256、smoke test | ✅ `tools/package.ps1`、`docs/RELEASE.md`（公開發佈前仍有 4 個 crate 缺授權全文） |
+| 發佈 | 可攜版 zip：icon／版本資訊、第三方授權全文、SHA-256、smoke test | ✅ 0.0.1 預覽版（GitHub Releases，未簽章）；`tools/package.ps1`、`docs/RELEASE.md`；第三方授權全文 0 缺漏，exe 與 zip 可重現 |
 | Render host | engine 移到獨立 process（ADR 0008）：crash、配置失敗、卡住只會結束 host | ✅ Windows 的預設（`hayro-isolated`）；`--engine hayro` 在 process 內 render。吞吐量與啟動時間和 in-process 相同（`docs/benchmarks/render-host.md`） |
 
 ## KPI（spec §29，最終版 `658b47a` 實測）

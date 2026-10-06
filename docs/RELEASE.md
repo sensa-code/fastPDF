@@ -342,6 +342,8 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 
 ## 5. 本次（0.0.1）實測紀錄（2026-10-04，不是正式發佈）
 
+> **正式發佈（2026-10-06）**：0.0.1 以 pre-release 發佈在 GitHub Releases（tag `v0.0.1`）。SHA-256、`BUILDINFO.txt` 與工具鏈版本記在 release notes。
+>
 > **最新一次打包（2026-10-05，HEAD `658b47a`，可重現）**：exe 16,879,616 bytes（SHA-256 `72c5186f…`），zip 628 個 entry（其中 623 個在 `licenses/third-party/`，缺漏 0），含 GPUI 本地 patch（ADR 0011）。
 >
 > **再前一次（HEAD `8135107`）**：exe 16,875,008 bytes（SHA-256 `78bb4ba8…`），zip 625 個 entry。
