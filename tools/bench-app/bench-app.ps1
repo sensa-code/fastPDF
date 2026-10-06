@@ -52,15 +52,18 @@ param(
     [switch]$NoScreenshots,
     [switch]$Detect,
     [switch]$Resummarize,                     # recompute the summaries of an existing -OutFile (no launches)
-    [string]$Affinity,                        # CPU mask (e.g. 0xF = 4 logical CPUs) set on the process right after launch
+    [string]$Affinity,                        # CPU mask (e.g. 0xF = 4 logical CPUs); 1.3.0: a job limit set before the app's first instruction
     [switch]$ThreadDetail,                    # per-thread cycles / context switches over the idle window
     [switch]$MemoryDetail,                    # VirtualQueryEx map of committed memory + working set at the end of idle
     [switch]$AppProbe,                        # read the app's frame counters around idle windows (on by default for -Preset fastpdf)
-    [int]$TopThreads = 20
+    [int]$TopThreads = 20,
+    [string[]]$AppEnv,                        # 1.3.0: extra environment for the app, NAME=value (NAME= sets an empty value)
+    [double]$Slowdown = 1,                    # 1.3.0: run the app's tree 1/Slowdown of the time (duty cycle; 1 = off)
+    [double]$SlowdownPeriodMs = 6             # 1.3.0: duty-cycle period
 )
 
 $ErrorActionPreference = 'Stop'
-$ToolVersion = '1.2.0'
+$ToolVersion = '1.3.0'
 $Schema = 'fastpdf-bench-app/1'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
@@ -207,6 +210,18 @@ if (-not $Resummarize) {
         $AffinityMask = $parsed
         $AffinityCpus = 0; for ($bit = 0; $bit -lt 64; $bit++) { if ($parsed -band ([int64]1 -shl $bit)) { $AffinityCpus++ } }
     }
+    $AppEnvMap = [ordered]@{}
+    foreach ($kv in @($AppEnv)) {
+        if (-not $kv) { continue }
+        $eq = $kv.IndexOf('=')
+        if ($eq -lt 1) { throw "-AppEnv '$kv' is not NAME=value" }
+        $AppEnvMap[$kv.Substring(0, $eq)] = $kv.Substring($eq + 1)
+    }
+    if ($Slowdown -lt 1) { throw "-Slowdown must be >= 1 (1 = off)" }
+    if ($SlowdownPeriodMs -lt 1) { throw "-SlowdownPeriodMs must be >= 1" }
+    # 1.3.0: CPU limits start the app suspended inside a job (JobLaunch in BenchApp.cs). 1.2.0 set the affinity
+    # right after launch, so a child process started before that (FastPDF's first render host) escaped it.
+    $UseJob = ($null -ne $AffinityMask) -or ($Slowdown -gt 1)
     if (($ThreadDetail -or $MemoryDetail) -and [IntPtr]::Size -ne 8) { Write-Warning '-ThreadDetail / -MemoryDetail need 64-bit PowerShell; skipped.'; $ThreadDetail = $false; $MemoryDetail = $false }
 
     if (-not $OutFile) { $OutFile = Join-Path $Repo "benchmarks\runs\app-$Label.json" }
@@ -551,41 +566,51 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
     $run = [ordered]@{ index = $index; warmup = $warmup; started = (Get-Date).ToString('o'); cache_state = $CacheState }
     try { $run.cpu_load_pct_before = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average } catch { }
     $argv = @(Expand-Args $cfg.template $profileDir)
-    $psi = New-Object System.Diagnostics.ProcessStartInfo $ExePath
-    $psi.Arguments = ($argv | ForEach-Object { Quote-Arg $_ }) -join ' '
-    $psi.UseShellExecute = $false
-    $psi.WorkingDirectory = Split-Path -Parent $ExePath
-    # Always redirect + drain stdout/stderr (a GUI app must never block on a full pipe, and browser logs stay out of the console).
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $argString = ($argv | ForEach-Object { Quote-Arg $_ }) -join ' '
+    $envPairs = [ordered]@{}
     if ($cfg.capture) {
-        $psi.EnvironmentVariables['FASTPDF_BENCH'] = '1'
+        $envPairs['FASTPDF_BENCH'] = '1'
         # Ignore the user's saved settings (night mode, default zoom, window
         # bounds) and recent files so every run starts from the same state.
-        $psi.EnvironmentVariables['FASTPDF_SETTINGS_FILE'] = ''
-        $psi.EnvironmentVariables['FASTPDF_RECENT_FILE'] = ''
+        $envPairs['FASTPDF_SETTINGS_FILE'] = ''
+        $envPairs['FASTPDF_RECENT_FILE'] = ''
     }
+    foreach ($k in $AppEnvMap.Keys) { $envPairs[$k] = $AppEnvMap[$k] }
+    $collector = New-Object FastPdfBench.StdoutCollector
+    $jl = $null
     $clock = New-Object System.Diagnostics.Stopwatch
     $launchFt = [DateTime]::UtcNow.ToFileTimeUtc()
-    $clock.Start()
-    $p = [System.Diagnostics.Process]::Start($psi)
-    $run.t_process_start_returned_ms = [math]::Round($clock.Elapsed.TotalMilliseconds, 1)
-    if ($null -ne $AffinityMask) {
-        # Restrict the app right after launch to approximate a machine with fewer cores (threads created
-        # later inherit the mask; so do child processes). Recorded per run; a failure fails the run.
-        try {
-            $p.ProcessorAffinity = [IntPtr]$AffinityMask
-            $run.affinity = [ordered]@{ mask = ('0x{0:X}' -f $AffinityMask); logical_cpus = $AffinityCpus; applied_at_ms = [math]::Round($clock.Elapsed.TotalMilliseconds, 1) }
-        } catch {
-            try { $p.Kill() } catch { }
-            throw "cannot set the processor affinity: $_"
+    if ($UseJob) {
+        # 1.3.0: created suspended, joined to a job carrying the affinity limit, throttled (-Slowdown) and
+        # only then resumed: the limits hold from the first instruction for every process of the tree.
+        $mask = if ($null -ne $AffinityMask) { [int64]$AffinityMask } else { [int64]0 }
+        $clock.Start()
+        $jl = [FastPdfBench.JobLaunch]::Start($ExePath, $argString, (Split-Path -Parent $ExePath), [string[]]@($envPairs.Keys), [string[]]@($envPairs.Values),
+            $mask, [double]$Slowdown, [double]$SlowdownPeriodMs, $collector, [bool]$cfg.capture, $clock)
+        $run.t_process_start_returned_ms = [math]::Round($clock.Elapsed.TotalMilliseconds, 1)
+        try { $p = [System.Diagnostics.Process]::GetProcessById($jl.Pid) } catch { $jl.Dispose(); throw "the app exited right after launch: $_" }
+        $run.launch_mode = 'suspended-in-job'
+        if ($null -ne $AffinityMask) {
+            $run.affinity = [ordered]@{ mask = ('0x{0:X}' -f $AffinityMask); logical_cpus = $AffinityCpus; applied_at_ms = 0
+                root_mask_in_job = ('0x{0:X}' -f $jl.AppliedAffinity); note = 'job affinity limit, in place before the first instruction; inherited by child processes' }
         }
+    } else {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo $ExePath
+        $psi.Arguments = $argString
+        $psi.UseShellExecute = $false
+        $psi.WorkingDirectory = Split-Path -Parent $ExePath
+        # Always redirect + drain stdout/stderr (a GUI app must never block on a full pipe, and browser logs stay out of the console).
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+        foreach ($k in $envPairs.Keys) { $psi.EnvironmentVariables[$k] = $envPairs[$k] }
+        $clock.Start()
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $run.t_process_start_returned_ms = [math]::Round($clock.Elapsed.TotalMilliseconds, 1)
+        if ($cfg.capture) { $collector.Attach($p, $clock) } else { $collector.AttachDiscard($p) }
+        $collector.AttachStderr($p)
     }
     [FastPdfBench.ThreadProbe]::Reset()
-    $collector = New-Object FastPdfBench.StdoutCollector
-    if ($cfg.capture) { $collector.Attach($p, $clock) } else { $collector.AttachDiscard($p) }
-    $collector.AttachStderr($p)
     $s = New-Object FastPdfBench.Session -ArgumentList $p.Id, $clock, $launchFt
     # FASTPDF_BENCH t_ms is measured from process creation; host_ms ~= process_created_offset_ms + t_ms
     if ($s.Tracked[$p.Id] -gt 0) { $run.process_created_offset_ms = [math]::Round(($s.Tracked[$p.Id] - $launchFt) / 1e4, 2) }
@@ -622,6 +647,9 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
             $run.open.screenshot_final = Save-Shot $orec.Final $orec.FinW $orec.FinH "r$index-open-final"
         }
 
+        # 1.3.0: idle is measured unthrottled; suspend APCs would wake the app's waiting threads (see README).
+        $throttled = $jl -and $Slowdown -gt 1
+        if ($throttled) { $jl.SetThrottlePaused($true) }
         Start-Sleep -Milliseconds 1000
         # -AppProbe: frame counters read right around the window (reading runs nothing in the app).
         $counters = $null
@@ -644,6 +672,7 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
         if ($ThreadDetail -and $thrA) { try { $thrB = [FastPdfBench.ThreadProbe]::Snapshot([Collections.Generic.HashSet[int]]@($s.RefreshTree())) } catch { $thrError = "$_" } }
         $run.idle = Convert-Sample $b
         $run.idle.seconds = $IdleSeconds
+        if ($throttled) { $run.idle.slowdown_paused = $true }
         $run.idle.cpu_ms = [math]::Round(($b.Cpu100ns - $a.Cpu100ns) / 1e4, 1)
         $run.idle.cpu_pct_of_one_core = [math]::Round((($b.Cpu100ns - $a.Cpu100ns) / 1e4) / ($IdleSeconds * 10), 2)
         $gm = Get-GpuMemory @($s.RefreshTree()); foreach ($k in $gm.Keys) { $run.idle[$k] = $gm[$k] }
@@ -674,6 +703,7 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
             } catch { $run.idle.memory_detail = [ordered]@{ error = "$_" } }
         }
 
+        if ($throttled) { $jl.SetThrottlePaused($false) }
         # Observer-effect calibration: capture only (same cadence as the interaction recordings), no input.
         $cw = 0; $ch = 0
         $calPx = $s.GrabFrame([ref]$cw, [ref]$ch)
@@ -694,11 +724,13 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
         if ($doInput -and $PageDowns -gt 0) { $run.pagedown = Invoke-Interaction $s 'pagedown' $clock }
         if ($doInput -and $ZoomSteps -gt 0) { $run.zoom = Invoke-Interaction $s 'zoom' $clock }
         if ($doInput -and ($ScrollNotches + $PageDowns + $ZoomSteps) -gt 0 -and $PostIdleSeconds -gt 0) {
+            if ($throttled) { $jl.SetThrottlePaused($true) }
             Start-Sleep -Milliseconds 500
             $framesC0 = if ($counters) { $s.ReadFrameCounters($counters) } else { $null }
             $c0 = $s.Sample(); Start-Sleep -Seconds $PostIdleSeconds; $c1 = $s.Sample()
             $framesC1 = if ($counters) { $s.ReadFrameCounters($counters) } else { $null }
             $run.post_interaction_idle = [ordered]@{ seconds = $PostIdleSeconds; cpu_ms = [math]::Round(($c1.Cpu100ns - $c0.Cpu100ns) / 1e4, 1); private_mb = [math]::Round($c1.Private / 1MB, 1); ws_mb = [math]::Round($c1.WorkingSet / 1MB, 1) }
+            if ($throttled) { $run.post_interaction_idle.slowdown_paused = $true }
             Add-MemoryFields $run.post_interaction_idle $c1
             if ($counters) {
                 $run.post_interaction_idle.app_frames = Get-FrameDelta $framesC0 $framesC1
@@ -719,6 +751,17 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
     } catch {
         $run.error = "$_"
     } finally {
+        if ($jl -and $Slowdown -gt 1) {
+            # Stop throttling first: the app shuts down at full speed, and the statistics are final.
+            $jl.StopThrottle()
+            $tot = $jl.RunMs + $jl.SuspendedMs
+            $run.slowdown = [ordered]@{ factor = $Slowdown; period_ms = $SlowdownPeriodMs; cycles = $jl.Cycles
+                run_share = if ($tot -gt 0) { [math]::Round($jl.RunMs / $tot, 4) } else { $null }
+                effective_factor = if ($jl.RunMs -gt 0) { [math]::Round($tot / $jl.RunMs, 2) } else { $null }
+                max_cycle_overrun_ms = [math]::Round($jl.MaxCycleOverrunMs, 2); suspend_failures = $jl.SuspendFailures; max_processes = $jl.MaxProcesses
+                paused_ms = [math]::Round($jl.PausedMs, 0)
+                note = 'run_share counts the suspend calls as running time, so effective_factor is a lower bound; idle windows run unthrottled (paused_ms)' }
+        }
         $run.stdio = [ordered]@{ stdout_discarded_lines = $collector.DiscardedLines; stderr_lines = $collector.ErrLines; stderr_tail = @($collector.SnapshotErrTail()) }
         if ($cfg.capture) {
             $lines = $collector.SnapshotLines(); $times = $collector.SnapshotTimes()
@@ -739,6 +782,7 @@ function Invoke-BenchRun([int]$index, [bool]$warmup, [string]$profileDir) {
         Start-Sleep -Milliseconds 300
         $run.shutdown = [ordered]@{ graceful = $graceful; killed_tracked = $killed; killed_by_profile_marker = $byCmd; alive_after = $s.AliveCount(); tracked = $s.TrackedNames() }
         $s.Dispose()
+        if ($jl) { $jl.Dispose() }   # closing the job kills anything the tree walk missed
     }
     return $run
 }
@@ -838,6 +882,7 @@ try {
         $msg = if ($r.error) { "  error: $($r.error)" } else {
             $line = "  window {0} ms, first non-blank {1} ms, visually complete {2} ms, idle private {3} MB (private WS {5} MB), idle CPU {4} ms" -f $r.t_window_ms, $r.launch.t_first_nonblank_ms, $r.launch.t_visual_complete_ms, $r.idle.private_mb, $r.idle.cpu_ms, $r.idle.private_ws_mb
             if ($r.idle.app_frames) { $line += ", idle frames render {0} paint {1}" -f $r.idle.app_frames.render, $r.idle.app_frames.paint }
+            if ($r.slowdown) { $line += ", slowdown x{0} (max overrun {1} ms)" -f $r.slowdown.effective_factor, $r.slowdown.max_cycle_overrun_ms }
             $line
         }
         Write-Host $msg
@@ -862,7 +907,9 @@ $scenarioObj = [ordered]@{
     pdf = if ($PdfPath) { [ordered]@{ path = (Get-RelPath $PdfPath); bytes = (Get-Item $PdfPath).Length } } else { $null }
     config = [ordered]@{ runs = $Runs; warmup_runs = $WarmupRuns; idle_seconds = $IdleSeconds; stable_frames = $StableFrames; quiet_ms = $QuietMs
         scroll_notches = $ScrollNotches; pagedowns = $PageDowns; zoom_steps = $ZoomSteps; cache_state = $CacheState; capture = 'PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT), 4px grid'
-        affinity_mask = if ($null -ne $AffinityMask) { '0x{0:X}' -f $AffinityMask } else { $null }; thread_detail = [bool]$ThreadDetail; memory_detail = [bool]$MemoryDetail; app_probe = [bool]$cfg.probe }
+        affinity_mask = if ($null -ne $AffinityMask) { '0x{0:X}' -f $AffinityMask } else { $null }; thread_detail = [bool]$ThreadDetail; memory_detail = [bool]$MemoryDetail; app_probe = [bool]$cfg.probe
+        launch_mode = if ($UseJob) { 'suspended-in-job' } else { 'process-start' }; slowdown = $Slowdown; slowdown_period_ms = if ($Slowdown -gt 1) { $SlowdownPeriodMs } else { $null }
+        app_env = if ($AppEnvMap.Count) { $AppEnvMap } else { $null } }
     summary = Get-Summary $results.ToArray()
     runs = $results.ToArray()
 }

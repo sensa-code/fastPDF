@@ -403,34 +403,301 @@ namespace FastPdfBench
         public readonly List<double> Times = new List<double>();
         public void Attach(Process p, Stopwatch clock)
         {
-            p.OutputDataReceived += delegate (object s, DataReceivedEventArgs e)
-            {
-                if (e.Data == null) return;
-                lock (gate) { Times.Add(clock.Elapsed.TotalMilliseconds); Lines.Add(e.Data.Length > 4000 ? e.Data.Substring(0, 4000) : e.Data); }
-            };
+            p.OutputDataReceived += delegate (object s, DataReceivedEventArgs e) { if (e.Data != null) OnOut(e.Data, clock.Elapsed.TotalMilliseconds); };
             p.BeginOutputReadLine();
         }
         public int ErrLines; public readonly Queue<string> ErrTail = new Queue<string>();
         /// Drains stderr so the child can never block on a full pipe; keeps the line count and the last 20 lines.
         public void AttachStderr(Process p)
         {
-            p.ErrorDataReceived += delegate (object s, DataReceivedEventArgs e)
-            {
-                if (e.Data == null) return;
-                lock (gate) { ErrLines++; ErrTail.Enqueue(e.Data.Length > 300 ? e.Data.Substring(0, 300) : e.Data); while (ErrTail.Count > 20) ErrTail.Dequeue(); }
-            };
+            p.ErrorDataReceived += delegate (object s, DataReceivedEventArgs e) { if (e.Data != null) OnErr(e.Data); };
             p.BeginErrorReadLine();
         }
         /// Drains stdout without keeping it (apps that are not using the FASTPDF_BENCH protocol).
         public void AttachDiscard(Process p)
         {
-            p.OutputDataReceived += delegate (object s, DataReceivedEventArgs e) { if (e.Data != null) lock (gate) { DiscardedLines++; } };
+            p.OutputDataReceived += delegate (object s, DataReceivedEventArgs e) { if (e.Data != null) OnDiscard(); };
             p.BeginOutputReadLine();
         }
+        // Line sinks shared by the Process-based readers above and JobLaunch's pipe readers.
+        public void OnOut(string line, double ms) { lock (gate) { Times.Add(ms); Lines.Add(line.Length > 4000 ? line.Substring(0, 4000) : line); } }
+        public void OnErr(string line) { lock (gate) { ErrLines++; ErrTail.Enqueue(line.Length > 300 ? line.Substring(0, 300) : line); while (ErrTail.Count > 20) ErrTail.Dequeue(); } }
+        public void OnDiscard() { lock (gate) { DiscardedLines++; } }
         public int DiscardedLines;
         public string[] SnapshotErrTail() { lock (gate) { return ErrTail.ToArray(); } }
         public string[] SnapshotLines() { lock (gate) { return Lines.ToArray(); } }
         public double[] SnapshotTimes() { lock (gate) { return Times.ToArray(); } }
+    }
+
+    /// 1.3.0: launches the app suspended inside a job object, so CPU limits hold from its first instruction
+    /// for the whole tree: children created later (FastPDF's render hosts) start inside the job, also when
+    /// they get a job of their own (nested jobs), and inherit its affinity limit. -Slowdown adds a duty
+    /// cycle: in every period the job's processes run for 1/factor of the time and are suspended for the
+    /// rest (NtSuspendProcess / NtResumeProcess, the technique of CPU throttlers such as Chrome DevTools'
+    /// CPU throttling). Closing the job kills whatever is left of the tree.
+    public sealed class JobLaunch : IDisposable
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        struct BasicLimits
+        {
+            public long PerProcessUserTimeLimit, PerJobUserTimeLimit; public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize; public uint ActiveProcessLimit;
+            public UIntPtr Affinity; public uint PriorityClass, SchedulingClass;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        struct ExtendedLimits
+        {
+            public BasicLimits Basic; public ulong Io0, Io1, Io2, Io3, Io4, Io5;
+            public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        struct SecurityAttributes { public int nLength; public IntPtr lpSecurityDescriptor; public int bInheritHandle; }
+        [StructLayout(LayoutKind.Sequential)]
+        struct StartupInfo
+        {
+            public int cb; public IntPtr lpReserved, lpDesktop, lpTitle;
+            public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+            public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        struct ProcessInformation { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObjectW(IntPtr sa, string name);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr job, int cls, ref ExtendedLimits info, int len);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern bool QueryInformationJobObject(IntPtr job, int cls, IntPtr info, int len, out int ret);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern bool CreatePipe(out IntPtr read, out IntPtr write, ref SecurityAttributes sa, int size);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr h, int mask, int flags);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern IntPtr CreateFileW(string name, uint access, uint share, ref SecurityAttributes sa, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool CreateProcessW(string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref StartupInfo si, out ProcessInformation pi);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr h, uint code);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetProcessAffinityMask(IntPtr h, out UIntPtr process, out UIntPtr system);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+        [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+        [DllImport("kernel32.dll")] static extern IntPtr GetCurrentThread();
+        [DllImport("kernel32.dll")] static extern UIntPtr SetThreadAffinityMask(IntPtr thread, UIntPtr mask);
+        [DllImport("kernel32.dll")] static extern bool SetThreadPriority(IntPtr thread, int priority);
+        [DllImport("ntdll.dll")] static extern int NtSuspendProcess(IntPtr process);
+        [DllImport("ntdll.dll")] static extern int NtResumeProcess(IntPtr process);
+
+        const int PidListCapacity = 256;
+
+        public int Pid;
+        public long AppliedAffinity;          // the root's affinity mask right after it joined the job
+        public double Slowdown = 1, PeriodMs;
+        // Throttle statistics, final after StopThrottle(). Paused time counts in neither RunMs nor SuspendedMs.
+        public long Cycles; public double RunMs, SuspendedMs, PausedMs, MaxCycleOverrunMs; public int SuspendFailures, MaxProcesses;
+        IntPtr job, process;
+        readonly List<Thread> pumps = new List<Thread>();
+        Thread throttle; volatile bool stopThrottle, pauseThrottle, throttlePaused;
+
+        static Exception Fail(string what, int err) { return new InvalidOperationException(what + " failed, Win32 error " + err); }
+
+        /// envNames/envValues override the inherited environment ("" sets an empty value).
+        public static JobLaunch Start(string exe, string args, string dir, string[] envNames, string[] envValues,
+            long affinity, double slowdown, double periodMs, StdoutCollector collector, bool keepStdout, Stopwatch clock)
+        {
+            var jl = new JobLaunch();
+            jl.Slowdown = slowdown; jl.PeriodMs = periodMs;
+            jl.job = CreateJobObjectW(IntPtr.Zero, null);
+            if (jl.job == IntPtr.Zero) throw Fail("CreateJobObject", Marshal.GetLastWin32Error());
+            var lim = new ExtendedLimits();
+            lim.Basic.LimitFlags = 0x2000;                                                  // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if (affinity != 0) { lim.Basic.LimitFlags |= 0x10; lim.Basic.Affinity = new UIntPtr((ulong)affinity); } // JOB_OBJECT_LIMIT_AFFINITY
+            if (!SetInformationJobObject(jl.job, 9, ref lim, Marshal.SizeOf(typeof(ExtendedLimits))))
+            {
+                int e = Marshal.GetLastWin32Error(); jl.Dispose(); throw Fail("SetInformationJobObject", e);
+            }
+
+            // stdout / stderr pipes (our ends not inheritable) and NUL as stdin.
+            var sa = new SecurityAttributes(); sa.nLength = Marshal.SizeOf(typeof(SecurityAttributes)); sa.bInheritHandle = 1;
+            IntPtr outR, outW, errR, errW;
+            if (!CreatePipe(out outR, out outW, ref sa, 0)) { int e = Marshal.GetLastWin32Error(); jl.Dispose(); throw Fail("CreatePipe", e); }
+            if (!CreatePipe(out errR, out errW, ref sa, 0)) { int e = Marshal.GetLastWin32Error(); CloseHandle(outR); CloseHandle(outW); jl.Dispose(); throw Fail("CreatePipe", e); }
+            SetHandleInformation(outR, 1, 0); SetHandleInformation(errR, 1, 0);         // HANDLE_FLAG_INHERIT off
+            IntPtr nul = CreateFileW("NUL", 0x80000000, 3, ref sa, 3, 0, IntPtr.Zero);   // GENERIC_READ, share read|write, OPEN_EXISTING
+            if (nul == new IntPtr(-1)) nul = IntPtr.Zero;
+
+            var env = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
+            {
+                string k = (string)e.Key;
+                if (k.Length > 0 && k[0] != '=') env[k] = (string)e.Value;
+            }
+            if (envNames != null)
+                for (int i = 0; i < envNames.Length; i++)
+                    env[envNames[i]] = (envValues != null && i < envValues.Length && envValues[i] != null) ? envValues[i] : "";
+            var block = new StringBuilder();
+            foreach (var kv in env) block.Append(kv.Key).Append('=').Append(kv.Value).Append('\0');
+            block.Append('\0');
+            char[] envChars = block.ToString().ToCharArray();
+
+            var si = new StartupInfo(); si.cb = Marshal.SizeOf(typeof(StartupInfo));
+            si.dwFlags = 0x100;                                                             // STARTF_USESTDHANDLES
+            si.hStdInput = nul; si.hStdOutput = outW; si.hStdError = errW;
+            var cmd = new StringBuilder("\"" + exe + "\"" + (string.IsNullOrEmpty(args) ? "" : " " + args));
+            ProcessInformation pi;
+            bool ok; int err;
+            GCHandle pin = GCHandle.Alloc(envChars, GCHandleType.Pinned);
+            try
+            {
+                // CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
+                ok = CreateProcessW(exe, cmd, IntPtr.Zero, IntPtr.Zero, true, 0x4 | 0x400, pin.AddrOfPinnedObject(), dir, ref si, out pi);
+                err = Marshal.GetLastWin32Error();
+            }
+            finally { pin.Free(); }
+            CloseHandle(outW); CloseHandle(errW); if (nul != IntPtr.Zero) CloseHandle(nul);
+            if (!ok) { CloseHandle(outR); CloseHandle(errR); jl.Dispose(); throw Fail("CreateProcess " + exe, err); }
+
+            jl.process = pi.hProcess; jl.Pid = pi.dwProcessId;
+            if (!AssignProcessToJobObject(jl.job, pi.hProcess))
+            {
+                int e = Marshal.GetLastWin32Error();
+                TerminateProcess(pi.hProcess, 1); CloseHandle(pi.hThread); CloseHandle(outR); CloseHandle(errR); jl.Dispose();
+                throw Fail("AssignProcessToJobObject", e);
+            }
+            UIntPtr pm, sm;
+            if (GetProcessAffinityMask(pi.hProcess, out pm, out sm)) jl.AppliedAffinity = (long)pm.ToUInt64();
+
+            if (keepStdout) jl.Pump(outR, delegate (string l) { collector.OnOut(l, clock.Elapsed.TotalMilliseconds); });
+            else jl.Pump(outR, delegate (string l) { collector.OnDiscard(); });
+            jl.Pump(errR, delegate (string l) { collector.OnErr(l); });
+            if (slowdown > 1) jl.StartThrottle(affinity);                                  // throttled from the first instruction
+            ResumeThread(pi.hThread);
+            CloseHandle(pi.hThread);
+            return jl;
+        }
+
+        void Pump(IntPtr readEnd, Action<string> onLine)
+        {
+            var fs = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(readEnd, true), FileAccess.Read, 4096, false);
+            var t = new Thread(delegate ()
+            {
+                try { using (var r = new StreamReader(fs, new UTF8Encoding(false))) { string line; while ((line = r.ReadLine()) != null) onLine(line); } }
+                catch { }
+            });
+            t.IsBackground = true; t.Name = "bench-app pipe"; t.Start();
+            pumps.Add(t);
+        }
+
+        void StartThrottle(long appMask)
+        {
+            // With an affinity mask, pin the throttle to a logical CPU the app may not use, so its spinning
+            // never takes the app's CPU time. Without one it stays unpinned (1 of all CPUs).
+            long pinMask = 0;
+            if (appMask != 0)
+            {
+                long all = (long)Process.GetCurrentProcess().ProcessorAffinity;
+                for (int b = 63; b >= 0; b--) { long bit = 1L << b; if ((all & bit) != 0 && (appMask & bit) == 0) { pinMask = bit; break; } }
+            }
+            throttle = new Thread(delegate () { ThrottleLoop(pinMask); });
+            throttle.IsBackground = true; throttle.Name = "bench-app throttle";
+            throttle.Start();
+        }
+
+        void ThrottleLoop(long pinMask)
+        {
+            IntPtr me = GetCurrentThread();
+            if (pinMask != 0) SetThreadAffinityMask(me, new UIntPtr((ulong)pinMask));
+            SetThreadPriority(me, 15);                                                      // THREAD_PRIORITY_TIME_CRITICAL
+            double ticksPerMs = Stopwatch.Frequency / 1000.0;
+            long period = (long)(PeriodMs * ticksPerMs), run = (long)(PeriodMs / Slowdown * ticksPerMs);
+            var procs = new Dictionary<int, IntPtr>();
+            var held = new List<IntPtr>();
+            IntPtr buf = Marshal.AllocHGlobal(8 + PidListCapacity * 8);
+            try
+            {
+                long cycleStart = Stopwatch.GetTimestamp();
+                while (!stopThrottle)
+                {
+                    if (pauseThrottle)
+                    {
+                        // Between cycles nothing is suspended: the app runs freely until resumed.
+                        throttlePaused = true;
+                        Thread.Sleep(1);
+                        long now0 = Stopwatch.GetTimestamp();
+                        PausedMs += (now0 - cycleStart) / ticksPerMs;
+                        cycleStart = now0;
+                        continue;
+                    }
+                    long runEnd = cycleStart + run;
+                    while (Stopwatch.GetTimestamp() < runEnd) { }                            // spin: ms sleeps are too coarse
+                    RefreshJobProcesses(buf, procs);
+                    long suspendAt = Stopwatch.GetTimestamp();
+                    foreach (var h in procs.Values) { if (NtSuspendProcess(h) >= 0) held.Add(h); else SuspendFailures++; }
+                    long resumeAt = cycleStart + period;
+                    while (Stopwatch.GetTimestamp() < resumeAt) { }
+                    foreach (var h in held) NtResumeProcess(h);
+                    held.Clear();
+                    long now = Stopwatch.GetTimestamp();
+                    RunMs += (suspendAt - cycleStart) / ticksPerMs;
+                    SuspendedMs += (now - suspendAt) / ticksPerMs;
+                    double overrun = (now - resumeAt) / ticksPerMs;
+                    if (overrun > MaxCycleOverrunMs) MaxCycleOverrunMs = overrun;
+                    if (procs.Count > MaxProcesses) MaxProcesses = procs.Count;
+                    Cycles++;
+                    cycleStart = now;
+                }
+            }
+            finally
+            {
+                foreach (var h in held) NtResumeProcess(h);
+                foreach (var h in procs.Values) CloseHandle(h);
+                Marshal.FreeHGlobal(buf);
+            }
+        }
+
+        /// Adds the job's new processes (JobObjectBasicProcessIdList also lists nested jobs' processes)
+        /// and drops exited ones.
+        void RefreshJobProcesses(IntPtr buf, Dictionary<int, IntPtr> procs)
+        {
+            int ret;
+            if (!QueryInformationJobObject(job, 3, buf, 8 + PidListCapacity * 8, out ret)) return;
+            int n = Math.Min(Marshal.ReadInt32(buf, 4), PidListCapacity);
+            for (int i = 0; i < n; i++)
+            {
+                int pid = (int)Marshal.ReadInt64(buf, 8 + i * 8);
+                if (procs.ContainsKey(pid)) continue;
+                IntPtr h = OpenProcess(0x0800 | 0x1000 | 0x00100000, false, pid);             // SUSPEND_RESUME | QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+                if (h != IntPtr.Zero) procs[pid] = h;
+            }
+            List<int> gone = null;
+            foreach (var kv in procs) if (WaitForSingleObject(kv.Value, 0) == 0) { if (gone == null) gone = new List<int>(); gone.Add(kv.Key); }
+            if (gone != null) foreach (int pid in gone) { CloseHandle(procs[pid]); procs.Remove(pid); }
+        }
+
+        /// Idle windows are measured unthrottled: suspending a process wakes its waiting threads (the suspend
+        /// APC), which would show up as CPU time and context switches. Returns once nothing is suspended.
+        public void SetThrottlePaused(bool paused)
+        {
+            if (throttle == null) return;
+            if (!paused) { pauseThrottle = false; return; }
+            throttlePaused = false;                                                         // the loop sets it at the next cycle boundary
+            pauseThrottle = true;
+            var sw = Stopwatch.StartNew();
+            while (!throttlePaused && throttle != null && throttle.IsAlive && sw.ElapsedMilliseconds < 1000) Thread.Sleep(1);
+        }
+
+        public void StopThrottle()
+        {
+            if (throttle == null) return;
+            stopThrottle = true;
+            throttle.Join(5000);
+            throttle = null;
+        }
+
+        public void Dispose()
+        {
+            StopThrottle();
+            if (job != IntPtr.Zero) { CloseHandle(job); job = IntPtr.Zero; }                // KILL_ON_JOB_CLOSE
+            if (process != IntPtr.Zero) { CloseHandle(process); process = IntPtr.Zero; }
+            foreach (var t in pumps) t.Join(2000);
+            pumps.Clear();
+        }
     }
 
     /// One launched application instance (the root process plus every descendant created after launch).

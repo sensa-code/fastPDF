@@ -50,11 +50,15 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
 # 1.1.0：近似低核心機器（4 個實體核心，各取一個邏輯 CPU；本機 SMT 兄弟是相鄰編號）
 pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated/small-text/three-pages-platypus-times.pdf `
     -Runs 3 -Affinity 0x55 -Label fastpdf-4core
+
+# 1.3.0：近似入門筆電（2 核 2 緒，每個核心約 1/6 速度），並傳環境變數給 app
+pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated/three-pages-platypus-times.pdf `
+    -Runs 3 -Affinity 0x5 -Slowdown 6 -AppEnv FASTPDF_LOG=info -Label fastpdf-entry
 ```
 
 同一個 `-OutFile` 可以放多個 scenario。scenario 名稱相同的資料會被取代，名稱不同就附加。
 
-`-Affinity` 只限制 CPU 數，不會讓每個核心變慢；高階 CPU 的單核效能、快取與 GPU 都還在，所以只能近似低核心機器的平行度，不能代表低階筆電的絕對時間。選 mask 前先確認哪些邏輯 CPU 是同一個實體核心（SMT 兄弟）。
+`-Affinity` 只限制 CPU 數；1.3.0 的 `-Slowdown` 另外讓每個核心變慢（duty cycle）。快取、記憶體頻寬、儲存裝置與 GPU 仍是本機的，所以兩者合起來也只能近似低階機器，不能代表它的絕對時間（見〈方法限制〉第 10 點）。選 mask 前先確認哪些邏輯 CPU 是同一個實體核心（SMT 兄弟）。低階機器的完整量測見 `docs/benchmarks/low-end.md`。
 
 ### Presets
 
@@ -84,7 +88,9 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
 | `-CacheState` | warm | 只用來標記（見〈Cold 與 warm〉） |
 | `-LaunchBudgetFile` / `-MaxLaunches` | 無 / 25 | 跨多次呼叫累計 GUI 啟動次數，超過上限就拒絕執行 |
 | `-NoScreenshots` | 關 | 預設會存第一個非空白畫面、穩定後畫面、每次互動後的截圖 |
-| `-Affinity <mask>` | 無 | 1.1.0。process 啟動後立刻設定 `ProcessorAffinity`（`0x55` 這類十六進位或十進位），用來近似核心數較少的機器。之後建立的 thread 與子 process 會繼承。只能指定第一個 processor group（前 64 個邏輯 CPU） |
+| `-Affinity <mask>` | 無 | 1.1.0。限制 app 可用的邏輯 CPU（`0x55` 這類十六進位或十進位），用來近似核心數較少的機器。只能指定第一個 processor group（前 64 個邏輯 CPU）。**1.3.0 起**改用 job object：app 以暫停狀態建立、加入帶 affinity 限制的 job 之後才開始執行，所以限制從第一個指令就生效，之後建立的子 process 也在 job 裡。1.2.0 是在啟動後才設定，FastPDF 啟動時建立的第一個 render host 可能不受限制 |
+| `-Slowdown <倍數>` / `-SlowdownPeriodMs` | 1（關）/ 6 | 1.3.0。duty cycle：每個週期內，job 裡的所有 process 只執行 1/倍數 的時間，其餘時間以 `NtSuspendProcess` 暫停（Chrome DevTools 的 CPU throttling 也是這種做法），用來近似每個核心較慢的 CPU。控制 thread 用 spin 計時，有 `-Affinity` 時固定在 app 用不到的邏輯 CPU 上。統計記錄在 `slowdown` |
+| `-AppEnv NAME=value` | 無 | 1.3.0。額外傳給 app 的環境變數（`NAME=` 表示空值），記錄在 `config.app_env` |
 | `-ThreadDetail` | 關 | 1.1.0。idle 期間逐條 thread 的 CPU cycles 與 context switch（見〈Idle 診斷〉） |
 | `-MemoryDetail` | 關 | 1.1.0。idle 結束時以 `VirtualQueryEx` 分類 committed memory，並把 working set 依同樣的類別拆開（見〈Idle 診斷〉） |
 | `-AppProbe` | preset `fastpdf` 開啟，其他關閉 | 1.2.0 起改為讀 FastPDF 的 frame 計數，在 idle 窗口、互動後 idle 窗口與每項互動的前後讀取（見〈-AppProbe：FastPDF 的 frame 計數〉）。會一併開啟 `-CaptureStdout` |
@@ -114,7 +120,9 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
 | `idle.system_cpu_busy_pct` | 1.1.0。idle 期間整台機器所有邏輯 CPU 的忙碌比例（`GetSystemTimes`，含 app 自己），用來記錄背景負載 |
 | `peak.private_ws_mb_sum` / `peak.commit_charge_mb_sum` | 1.1.0。與 `peak.*` 同樣取樣方式下，上面兩個值的 tree 總和最大值 |
 | `post_interaction_idle.private_ws_mb` 等 | 1.1.0。互動後 idle 的同一組三個欄位 |
-| `affinity`、`config.affinity_mask` | 1.1.0。`-Affinity` 的 mask、邏輯 CPU 數、設定完成的時間點（ms） |
+| `affinity`、`config.affinity_mask` | 1.1.0。`-Affinity` 的 mask、邏輯 CPU 數、設定完成的時間點（ms）。1.3.0 起時間點是 0，另記 root 加入 job 後的 mask（`root_mask_in_job`） |
+| `launch_mode`、`config.launch_mode` | 1.3.0。`suspended-in-job`（有 `-Affinity` 或 `-Slowdown`）或 `process-start` |
+| `slowdown` | 1.3.0。`-Slowdown` 的統計：週期數、實際執行比例 `run_share`、`effective_factor`（= 1 / run_share）、最大週期超時 `max_cycle_overrun_ms`、暫停失敗次數、同時存在的最大 process 數、idle 窗口不降速的時間 `paused_ms`。暫停呼叫本身的時間算在執行時間內，所以 `effective_factor` 是下限 |
 | `idle.app_frames`、`post_interaction_idle.app_frames`、`app_probe` | 1.2.0。窗口內 FastPDF 的 render、prepaint、paint、wake 次數（見〈-AppProbe：FastPDF 的 frame 計數〉）。summary 中同名的 `idle.app_frames` 是判定標記 |
 | `peak.*` | 錄影期間約每 250 ms 取樣一次，加上各階段邊界的取樣，取 tree 總和的最大值 |
 | `capture_overhead` | 校正用：只截圖、不送輸入約 2.5 秒，期間目標 app 消耗的 CPU（ms/s）。互動的 `cpu_ms_net_of_capture` 已扣除這個量 |
@@ -286,6 +294,13 @@ idle 結束時以 `VirtualQueryEx` 走過整個位址空間，把 committed 的 
    - `threads_detail` 只看 idle 結束時還活著的 thread；中途結束的 thread 只計入 `exited`；
    - GPU driver 的 thread 數與記憶體依廠牌、版本而定（本機 NVIDIA D3D11 driver 自己就有 103 條 thread），不同機器的數字不能直接比較；
    - `-MemoryDetail` 在 segment heap 下拆不出 heap（見〈Idle 診斷〉）。
+10. **`-Slowdown` 的限制**（1.3.0）：
+    - 它讓 app 的 process 輪流執行與暫停，不是真的降低時脈：快取、記憶體頻寬、I/O 與 GPU 都維持本機的速度，GPU driver 與 DWM 在 app 之外的工作也不受影響；
+    - 週期是毫秒級（預設 6 ms），所以小於週期的延遲會被放大或縮小，只有統計上接近「慢 N 倍」；
+    - 控制 thread 屬於 bench-app 的 .NET process，GC 暫停會延長某次暫停（記錄在 `max_cycle_overrun_ms`）；
+    - 暫停 process 時，kernel 會送 suspend APC 給每條 thread，正在等待的 thread（例如 thread pool worker）會因此醒來：實測每條約 330 次／秒，10 秒 idle 多出約 100 ms CPU。所以 **idle 窗口與互動後的 idle 窗口不降速**（`idle.slowdown_paused`、`slowdown.paused_ms`），idle 的 CPU 時間在慢 N 倍的 CPU 上約為 N 倍，要自行換算；
+    - 互動期間仍然降速，上述 APC 會讓互動的 CPU 與 context switch 偏高一些；
+    - 控制 thread 會讓一個邏輯 CPU 持續忙碌，所以降速期間的系統忙碌度會多出約 1/邏輯 CPU 數。
 
 ---
 
