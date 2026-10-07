@@ -8,7 +8,8 @@
   - ADR 0009（啟動時間線，G1、G2 的來源）；
   - `docs/upstream-issues/gpui-startup.md`、`docs/upstream-issues/gpui-idle.md`（upstream 草稿）；
   - `vendor/gpui_windows/FASTPDF-PATCHES.md`（patch 清單、衝突處理、移除條件）；
-  - `docs/benchmarks/b8-app.md`〈第九輪〉（本 ADR 的量測）；
+  - `docs/benchmarks/b8-app.md`〈第九輪〉（本 ADR 的量測）、〈第十一輪〉（patch 0004）；
+  - `docs/benchmarks/warp-first.md`（patch 0004 的研究）；
   - `docs/PROJECT_AUDIT.md` R3、R8、R9。
 
 ## Context
@@ -36,7 +37,7 @@ B-8 第八輪（`8135107`）時，spec §29 只剩兩項沒有達成，兩項都
    - 把 pin rev（`a84689073d296dfd39987bc7dd478e43ef76d83a`）的 `crates/gpui_windows` 複製到 `vendor/gpui_windows/`。
    - 用 root `Cargo.toml` 的 `[patch."https://github.com/zed-industries/zed"] gpui_windows = { path = "vendor/gpui_windows" }` 取代 upstream 的 crate。
    - GPUI 的其他部分（`gpui`、`gpui_platform` 等）仍是 ADR 0001 的 git pin。
-2. **三個 patch**放在 `vendor/gpui_windows-patches/`，依檔名順序套用：0001 G1、0002 G2、0003 vsync park。
+2. **patch** 放在 `vendor/gpui_windows-patches/`，依檔名順序套用：0001 G1、0002 G2、0003 vsync park，以及 2026-10-07 增補的 0004 driver 執行緒（見〈增補：patch 0004〉）。
    - 這是本機套用的唯一來源。`docs/upstream-issues/patches/` 的草稿保留作為送 upstream 的版本。
    - 0001、0002 與草稿相同。0003 是 rebase 到 0001 之後的版本：一個 hunk 的 context 衝突，以手動解決，見 `FASTPDF-PATCHES.md`。
 3. **可重現。**
@@ -65,6 +66,7 @@ B-8 第八輪（`8135107`）時，spec §29 只剩兩項沒有達成，兩項都
   - `vsync.rs`、`window.rs`、`events.rs`、`direct_manipulation.rs`：vsync park。
 - patch 合計 +270／−15 行（0001：+38／−4，0002：+5／−1，0003：+227／−10），另加 `Cargo.toml` 改寫與修改聲明。
 - exe 多 10,752 B（16,881,664 → 16,892,416 B）。
+- 2026-10-07 增補的 0004 另外改到 `directx_devices.rs`（+17／−3），exe 再多 512 B。
 - FastPDF 自己的程式碼沒有改。`gpui` crate 本身也沒有改：vsync park 用的是 GPUI 既有的 `frame_waker` hook。
 
 ## 量測
@@ -87,6 +89,24 @@ B-8 配對量測：A 是 HEAD（`dc9cd32`），B 是 A 加上本 ADR 的 vendore
 - **畫面**：bench-app 的截圖在多數 run 逐位元組相同；不同的時候最多差 94 個像素、每個通道差 1，A 與 B 都會發生。
 - **重畫**：vsync thread park 之後，最小化／還原、最大化／還原、滾輪、深淺色切換都立刻正確重畫，時間在 A 兩次量測的範圍內。
 - **KPI**：spec §29 的小檔首頁 < 200 ms 與 Idle CPU 接近 0 都達成；Idle RAM 與 exe 大小維持達成。
+
+## 增補：patch 0004（2026-10-07）
+
+- **改動**：建立硬體 D3D11 device 時加上 `D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS`，driver 不再為自己的多執行緒最佳化啟動 worker thread。
+  - WARP（軟體 adapter）不加：加了它就只能在呼叫端的 thread 上 rasterize；
+  - 只改 `directx_devices.rs`（+17／−3），和 0001–0003 互相獨立。
+- **理由**：
+  - GPUI 從 UI thread 送出繪圖，每個 frame 只有幾個 batch，driver 的 worker thread 主要只增加啟動時間與記憶體；
+  - 研究（`docs/benchmarks/warp-first.md`）在 RTX 5090 與 Radeon 內顯上都看到 idle private working set 少 3–4 MB。
+- **量測**（B-8 第十一輪，RTX 5090，dist build，3 頁 6 對、300 頁 10 對，配對差的中位數）：
+  - idle private working set −3.7 MB（3 頁，27.9 → 24.2 MB）、−3.8 MB（300 頁）；
+  - idle 時 thread 少 67 條（156 → 89）；peak private bytes 少 5 MB（3 頁）與 13 MB（300 頁）；
+  - 啟動、捲動、PageDown、縮放的第一個畫面變化：沒有可判定的差異；
+  - **代價**：縮放的最後一個畫面晚約 4 ms（各對 0～+15 ms，8 對有效數據中 7 對較晚）。推測是縮放後新 tile 的 texture 上傳，原本有一部分由 driver 的 worker thread 處理，現在都在 UI thread 上。
+- **決定**：採用。owner 在研究後決定採用（2026-10-07）。量測確認縮放有約 4 ms 的代價（平均不到半個 frame）；換來的是 idle RAM 少約 13%，內顯上離 50 MB 的 KPI 上限也更遠（`docs/benchmarks/low-end.md`）。
+- **注意**：Microsoft 的文件把這個旗標標為「not recommended for general use」，舉的使用情境是除錯、profiling 與開發工具這類需要避免額外 thread 的情況（`D3D11_CREATE_DEVICE_FLAG`）。FastPDF 採用的依據是上面的量測：它的繪圖量小，driver 的 thread 主要只帶來記憶體與 thread 數。換 GPU 或 driver 時，結果可能不同；升級 driver 或換機器量測時要一併確認。
+- **upstream**：目前沒有草稿。zed 的貢獻規定不接受 AI agent 代為送出；要不要提出由 owner 決定。
+- **退出**：刪掉 `vendor/gpui_windows-patches/0004-…` 並重新產生 vendored crate 即可，不影響其他 patch。
 
 ## Device lost
 
@@ -151,12 +171,12 @@ B-8 配對量測：A 是 HEAD（`dc9cd32`），B 是 A 加上本 ADR 的 vendore
 
 1. **正常退出**：upstream 合併了 patch（或等效的改動），FastPDF 也升級 pin 到包含它的 rev。
    - 逐一刪除已合併的 patch，重新產生 vendored crate。
-   - 三個都合併後，照 `FASTPDF-PATCHES.md`〈何時移除〉刪掉 vendor、工具、`[patch]`、`exclude` 與 `ported-sources.json` 的條目，並重新產生 `THIRD_PARTY_LICENSES.md`。
+   - 全部合併或移除後，照 `FASTPDF-PATCHES.md`〈何時移除〉刪掉 vendor、工具、`[patch]`、`exclude` 與 `ported-sources.json` 的條目，並重新產生 `THIRD_PARTY_LICENSES.md`。
    - 重跑 B-8 配對量測，確認 KPI 仍然達成，再把本 ADR 標為 Superseded。
 2. **緊急回復**（patch 造成問題時）：
    - 刪掉 root `Cargo.toml` 的 `[patch]` 那兩行，`cargo build --offline` 就會回到 pin rev 的原版 `gpui_windows`。它的 checkout 已經在 cargo cache 裡，`Cargo.lock` 會自動補回 `source`。
    - FastPDF 本身的程式碼不依賴這些 patch，不必修改。KPI 會回到第八輪：首頁約 204 ms，idle 時主執行緒每秒約 95 次喚醒。
-   - 也可以只刪掉出問題的那個 patch 檔並重新產生，保留另外兩個。
+   - 也可以只刪掉出問題的那個 patch 檔並重新產生，保留其他 patch。
 3. **定期檢查**：照 ADR 0001 每 4–8 週評估 GPUI 升級時，一併確認 upstream 的狀態。如果 rebase 的工作量明顯超過 patch 本身（例如 upstream 重寫了 vsync 或 device 的處理），就照第 2 點回到 upstream 的行為，再重新評估。
 
 ## Alternatives considered
@@ -171,7 +191,8 @@ B-8 配對量測：A 是 HEAD（`dc9cd32`），B 是 A 加上本 ADR 的 vendore
 
 ## Validation
 
-- `python tools/vendor_gpui_windows.py --check`：vendored crate 與「pin rev 加上 3 個 patch」重新產生的結果逐位元組相同，而且 build 確實使用它。建議放進 CI。
+- `python tools/vendor_gpui_windows.py --check`：vendored crate 與「pin rev 加上本地 patch」重新產生的結果逐位元組相同，而且 build 確實使用它。已放進 CI。
+- patch 0004：B-8 第十一輪的配對量測（〈增補：patch 0004〉）。
 - `python tools/vendor_gpui_windows.py --unit-tests`：`vsync.rs` 的 5 個單元測試，涵蓋 frame 需求與 park 策略。
 - `cargo build`、`cargo test --workspace`、兩種 clippy（`-D warnings`）、`cargo fmt --all -- --check`、`tools/check_engine_isolation.py`、`tools/license_report.py --all-features --check`。
 - B-8 配對量測（〈量測〉、`docs/benchmarks/b8-app.md`〈第九輪〉）：KPI 達成、互動沒有退步、截圖相同。

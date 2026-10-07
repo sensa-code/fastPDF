@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: FastPDF contributor <replace-me@example.invalid>
+Date: Wed, 7 Oct 2026 12:00:00 +0800
+Subject: [PATCH] gpui_windows: Keep hardware drivers from starting their own
+ threads
+
+Create hardware D3D11 devices with
+D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS. The
+renderer submits a few batches per frame from the UI thread, so the
+worker threads a driver starts for its threading optimizations mostly
+add start-up time and memory. WARP keeps its threads: with the flag it
+would rasterize on the calling thread.
+
+Measured in FastPDF on Windows 11 with an RTX 5090 (driver
+32.0.16.1088), dist builds, 6 and 10 alternating pairs: 67 fewer
+threads, 3.7-3.8 MB less private working set at idle, 5 MB less private
+bytes and 13 MB less at the peak while scrolling and zooming. Start-up,
+scrolling and page-down did not change. The work the driver threads
+took over, uploading the tiles drawn after a zoom, now runs on the UI
+thread: the last frame of a zoom came about 4 ms later (median of the
+paired differences, later in 7 of 10 pairs). A Radeon iGPU (driver
+32.0.21043.5001) also used 3 MB less at idle.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/gpui_windows/src/directx_devices.rs | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/crates/gpui_windows/src/directx_devices.rs b/crates/gpui_windows/src/directx_devices.rs
+index 8e65e6e..5975f5f 100644
+--- a/crates/gpui_windows/src/directx_devices.rs
++++ b/crates/gpui_windows/src/directx_devices.rs
+@@ -10,12 +10,13 @@ use windows::Win32::{
+         },
+         Direct3D11::{
+             D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_DEBUG,
++            D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS,
+             D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS, D3D11_FEATURE_DATA_D3D10_X_HARDWARE_OPTIONS,
+             D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+         },
+         Dxgi::{
+-            CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
+-            IDXGIAdapter1, IDXGIFactory6,
++            CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_DEBUG,
++            DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory6,
+         },
+     },
+ };
+@@ -114,10 +115,12 @@ fn get_adapter(
+ )> {
+     for adapter_index in 0.. {
+         let adapter: IDXGIAdapter1 = unsafe { dxgi_factory.EnumAdapters(adapter_index)?.cast()? };
++        let mut software = false;
+         if let Ok(desc) = unsafe { adapter.GetDesc1() } {
+             let gpu_name = String::from_utf16_lossy(&desc.Description)
+                 .trim_matches(char::from(0))
+                 .to_string();
++            software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0;
+             log::info!("Using GPU: {}", gpu_name);
+         }
+         // Check to see whether the adapter supports Direct3D 11 and create
+@@ -129,6 +132,7 @@ fn get_adapter(
+             Some(&mut context),
+             Some(&mut feature_level),
+             debug_layer_available,
++            software,
+         )
+         .log_err()
+         {
+@@ -145,13 +149,23 @@ fn get_device(
+     context: Option<*mut Option<ID3D11DeviceContext>>,
+     feature_level: Option<*mut D3D_FEATURE_LEVEL>,
+     debug_layer_available: bool,
++    software: bool,
+ ) -> Result<ID3D11Device> {
+     let mut device: Option<ID3D11Device> = None;
+-    let device_flags = if debug_layer_available {
++    let mut device_flags = if debug_layer_available {
+         D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_DEBUG
+     } else {
+         D3D11_CREATE_DEVICE_BGRA_SUPPORT
+     };
++    // The renderer submits a few batches per frame from the UI thread, so the
++    // worker threads a hardware driver starts for its threading optimizations
++    // (over 60 with NVIDIA's) mostly add start-up time and memory; the work
++    // they would take over, such as uploading new textures, stays on the UI
++    // thread. WARP does need its threads: with this flag it would rasterize on
++    // the calling thread.
++    if !software {
++        device_flags |= D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
++    }
+     unsafe {
+         D3D11CreateDevice(
+             adapter,
+-- 
+2.55.0.windows.3
+

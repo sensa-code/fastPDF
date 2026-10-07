@@ -69,8 +69,9 @@ embed-resource = "3.0.11"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", default-features = false, features = ["windows-manifest"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "a84689073d296dfd39987bc7dd478e43ef76d83a", default-features = false }
 
-# GPUI's Windows platform crate with three local patches (faster start-up,
-# no vsync wake-ups while idle): ADR 0011, vendor/gpui_windows/FASTPDF-PATCHES.md.
+# GPUI's Windows platform crate with four local patches (faster start-up,
+# no vsync wake-ups while idle, no driver worker threads): ADR 0011,
+# vendor/gpui_windows/FASTPDF-PATCHES.md.
 # Regenerate or verify with `python tools/vendor_gpui_windows.py [--check]`;
 # drop this entry once the patches are upstream at the pinned rev.
 [patch."https://github.com/zed-industries/zed"]

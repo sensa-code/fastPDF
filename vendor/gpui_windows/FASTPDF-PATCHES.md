@@ -41,6 +41,7 @@
 | 0001 | **G1**：在 `WindowsPlatform::new` 一開始，就在另一條執行緒建立 DirectX devices，第一次 attach 時 join。`D3D11CreateDevice`（約 100–120 ms）和 OLE、DirectWrite、message window 的初始化同時進行。 | `platform.rs` | `docs/upstream-issues/gpui-startup.md` §2；`patches/gpui-startup-0001-create-directx-devices-while-the-platform-starts.patch`（內容相同） |
 | 0002 | **G2**：建立系統字型集合時不做 update check（`GetSystemFontCollection(…, false)`），主執行緒少約 27 ms。 | `direct_write.rs` | `docs/upstream-issues/gpui-startup.md` §3；`patches/gpui-startup-0002-skip-the-font-update-check-when-creating-the-text-system.patch`（內容相同） |
 | 0003 | **vsync park**：實作 `PlatformWindow::frame_waker`；沒有視窗要求 frame 超過 1 秒，vsync thread 就 park，有要求時立刻喚醒並 invalidate。park 期間每秒醒來一次檢查 device lost。 | `direct_manipulation.rs`、`events.rs`、`platform.rs`、`vsync.rs`、`window.rs` | `docs/upstream-issues/gpui-idle.md`；`patches/gpui-idle-0001-park-vsync-thread-when-idle.patch`（rebase 過，見下） |
+| 0004 | **driver 執行緒**：建立硬體 D3D11 device 時加上 `D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS`，driver 不再為自己的多執行緒最佳化啟動 worker thread。WARP（軟體 adapter）不加，否則它只能在呼叫端的 thread 上 rasterize。idle private working set 少約 3.7 MB、thread 少 67 條；縮放的最後一個畫面晚約 4 ms。 | `directx_devices.rs` | 無；研究與量測見 `docs/benchmarks/warp-first.md`、`docs/benchmarks/b8-app.md`〈第十一輪〉、ADR 0011〈增補：patch 0004〉 |
 
 ### 0003 的衝突處理
 
@@ -53,7 +54,7 @@
 ## 何時移除
 
 - **單一 patch**：upstream 合併了它（或等效的改動），而且 FastPDF 的 GPUI pin 已升級到包含它的 rev 時，刪掉對應的 patch 檔，重新產生。
-- **全部移除**：三個 patch 都不需要時，刪掉 `vendor/gpui_windows/`、`vendor/gpui_windows-patches/`、`tools/vendor_gpui_windows.py`，root `Cargo.toml` 的 `[patch]` 與 `exclude` 中的這一項，以及 `tools/ported-sources.json` 的條目；下一次 `cargo build --offline` 會在 `Cargo.lock` 補回 `gpui_windows` 的 git `source`。重新產生 `THIRD_PARTY_LICENSES.md`，並把 ADR 0011 標為 Superseded。
+- **全部移除**：所有 patch 都不需要時，刪掉 `vendor/gpui_windows/`、`vendor/gpui_windows-patches/`、`tools/vendor_gpui_windows.py`，root `Cargo.toml` 的 `[patch]` 與 `exclude` 中的這一項，以及 `tools/ported-sources.json` 的條目；下一次 `cargo build --offline` 會在 `Cargo.lock` 補回 `gpui_windows` 的 git `source`。重新產生 `THIRD_PARTY_LICENSES.md`，並把 ADR 0011 標為 Superseded。
 - **升級 GPUI pin 時**：先在 root `Cargo.toml` 改 rev，讓 cargo 取得新的 checkout，再執行 `python tools/vendor_gpui_windows.py`。
   - patch 套不上：照上面的方式 rebase，在本檔記錄；
   - 若改動太大，放棄這個 patch，依 ADR 0011 的退出計畫回到 upstream 的行為。

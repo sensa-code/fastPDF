@@ -206,6 +206,7 @@ idle 窗口不降速（見〈方法〉），「換算」一列是實測的 CPU �
 1. **實機量測**：Intel 內顯、螢幕由內顯驅動的筆電（低階最常見）。本次的內顯數字含跨 adapter 複製的成本，是上限。
 2. **把 GPU driver 移出首頁的關鍵路徑**：2026-10-07 已做原型與量測（先用 WARP 畫第一個 frame，再切換到硬體 device），見 `docs/benchmarks/warp-first.md`。
 3. **Idle RAM 在內顯上接近 50 MB**：多出的是 driver 的配置，FastPDF 控制不了。在實機上重新判定；如果仍然超過，`benchmarks/README.md` 的 KPI 定義要註明 GPU driver 的影響。
+   - 2026-10-07：GPUI patch 0004（driver 不啟動 worker thread）在測試 build 上讓內顯的 idle private working set 少約 3 MB（44.6 → 41.5 MB，`docs/benchmarks/warp-first.md`），2000 頁的 50.2 MB 估計也會降到約 47 MB。
 4. 高更新率與混合 DPI 仍未量測（R12 的另一部分）。
 
 ## 限制

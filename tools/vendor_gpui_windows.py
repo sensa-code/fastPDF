@@ -2,7 +2,7 @@
 """Regenerate vendor/gpui_windows from the pinned zed checkout (ADR 0011).
 
 FastPDF builds GPUI's Windows platform crate from a vendored copy so that
-three local patches (vendor/gpui_windows-patches/) apply. This script makes
+its local patches (vendor/gpui_windows-patches/) apply. This script makes
 that copy reproducible:
 
 1. Finds the git checkout cargo made of the zed rev pinned in the root

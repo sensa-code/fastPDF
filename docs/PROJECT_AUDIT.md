@@ -216,7 +216,7 @@ Dependency policy（spec §36）的落實方式：
 |---|---|---|---|---|
 | R1 | **Hostile PDF 造成無法攔截的失敗**：Hayro 的 10,000 層 `/Indexed` 鏈會 stack overflow，`catch_unwind` 無效；1 KB 檔可配置 1–2 GB；form XObject DAG 可讓 interpret 執行 30 秒以上 | 高（crash 或卡死） | 中 | 已做：Hayro adapter 的靜態掃描、有預算的預先解譯與 bomb 預解壓（`LimitExceeded` 取代 crash）。render host process + Job Object 記憶體上限（[ADR 0008](adr/0008-out-of-process-rendering.md) PR 1–4）已實作，**Windows 的預設**（`hayro-isolated`；`--engine hayro` 為 in-process）：crash、記憶體上限、hang 只會結束 host，頁面先重試、2 次 strike 後才永久失敗，crash storm 時停止重啟並顯示文件層級提示；hostile 語料經由 UI 跑完，UI 0 次結束。PR 4 的驗收（B-8 時間、吞吐量、idle CPU、記憶體）全部通過，見 ADR 0008 與 `docs/benchmarks/render-host.md`。upstream issue 草稿在 `docs/upstream-issues/` |
 | R2 | GPU texture 洩漏或碎片化 | 高（VRAM、commit 持續成長） | 中 | 用 main 版 GPUI；tile cache eviction hook 一律 `drop_image`；CI churn 測試 |
-| R3 | GPUI API 變動與 git pin 的維護成本 | 中 | 高 | GPUI 只出現在 `fastpdf-ui`；每 4–8 週評估升級一次；用 probe 與 bench 當升級門檻。`gpui_windows` 另有 3 個本地 patch（ADR 0011，`vendor/gpui_windows`）：升級時執行 `python tools/vendor_gpui_windows.py` 重新產生並確認 patch 還能套用，`--check` 確認 vendored crate 與 patch 一致、build 確實用到它；upstream 合併後移除 |
+| R3 | GPUI API 變動與 git pin 的維護成本 | 中 | 高 | GPUI 只出現在 `fastpdf-ui`；每 4–8 週評估升級一次；用 probe 與 bench 當升級門檻。`gpui_windows` 另有 4 個本地 patch（ADR 0011，`vendor/gpui_windows`）：升級時執行 `python tools/vendor_gpui_windows.py` 重新產生並確認 patch 還能套用，`--check` 確認 vendored crate 與 patch 一致、build 確實用到它；upstream 合併後移除 |
 | R4 | 依賴授權回歸（例如再度引入 GPL crate） | 高（商業化受阻） | 低 | `license_report.py --check` 放進 CI；升級 GPUI 或 engine 時必跑 |
 | R5 | zpdf 成熟度：bus factor 約 1、大量 AI 生成程式碼、API 每週變動、README 與實作不符 | 中 | 高 | pin 已 audit 的 rev；Hayro fallback；M4 用數據決定 |
 | R6 | Hayro 1.0 前的 breaking change（0.8） | 中 | 高 | pin git rev；adapter 隔離；升級時跑 corpus |

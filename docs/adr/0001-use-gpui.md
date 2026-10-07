@@ -33,10 +33,11 @@
 
 ### 例外：本地套用 gpui_windows 的 patch（2026-10-05，ADR 0011）
 
-- `gpui_windows`（GPUI 的 Windows platform crate）改用 `vendor/gpui_windows`：pin rev 的原始碼，加上三個本地 patch：
+- `gpui_windows`（GPUI 的 Windows platform crate）改用 `vendor/gpui_windows`：pin rev 的原始碼，加上本地 patch：
   - 啟動時平行建立 DirectX device；
   - 啟動時不做字型 update check；
-  - idle 時 park vsync thread。
+  - idle 時 park vsync thread；
+  - 硬體 driver 不啟動自己的 worker thread（2026-10-07 加入）。
 - 經由 root `Cargo.toml` 的 `[patch]` 取代 upstream 的 crate；其餘 GPUI crate 仍是第 2 點的 git pin。第 7 點「量測證明需要時，再以 `[patch]` 套用小 patch」的條件，已由 B-8 配對量測滿足。
 - 範圍只限這一個 crate。patch 另有 upstream 草稿；upstream 合併、FastPDF 升級 pin 之後就移除，見 ADR 0011 的退出計畫。
 - 升級 GPUI 時，多一個步驟：`python tools/vendor_gpui_windows.py`。這一步會重新產生 vendored crate，並確認 patch 還能套用。

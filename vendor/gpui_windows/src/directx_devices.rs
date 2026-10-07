@@ -1,3 +1,4 @@
+// Modified by FastPDF: Keep hardware drivers from starting their own threads (0004). See FASTPDF-PATCHES.md.
 use anyhow::{Context, Result};
 use gpui_util::ResultExt;
 use itertools::Itertools;
@@ -10,12 +11,13 @@ use windows::Win32::{
         },
         Direct3D11::{
             D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_DEBUG,
+            D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS,
             D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS, D3D11_FEATURE_DATA_D3D10_X_HARDWARE_OPTIONS,
             D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
         },
         Dxgi::{
-            CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
-            IDXGIAdapter1, IDXGIFactory6,
+            CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_DEBUG,
+            DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory6,
         },
     },
 };
@@ -114,10 +116,12 @@ fn get_adapter(
 )> {
     for adapter_index in 0.. {
         let adapter: IDXGIAdapter1 = unsafe { dxgi_factory.EnumAdapters(adapter_index)?.cast()? };
+        let mut software = false;
         if let Ok(desc) = unsafe { adapter.GetDesc1() } {
             let gpu_name = String::from_utf16_lossy(&desc.Description)
                 .trim_matches(char::from(0))
                 .to_string();
+            software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0;
             log::info!("Using GPU: {}", gpu_name);
         }
         // Check to see whether the adapter supports Direct3D 11 and create
@@ -129,6 +133,7 @@ fn get_adapter(
             Some(&mut context),
             Some(&mut feature_level),
             debug_layer_available,
+            software,
         )
         .log_err()
         {
@@ -145,13 +150,23 @@ fn get_device(
     context: Option<*mut Option<ID3D11DeviceContext>>,
     feature_level: Option<*mut D3D_FEATURE_LEVEL>,
     debug_layer_available: bool,
+    software: bool,
 ) -> Result<ID3D11Device> {
     let mut device: Option<ID3D11Device> = None;
-    let device_flags = if debug_layer_available {
+    let mut device_flags = if debug_layer_available {
         D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_DEBUG
     } else {
         D3D11_CREATE_DEVICE_BGRA_SUPPORT
     };
+    // The renderer submits a few batches per frame from the UI thread, so the
+    // worker threads a hardware driver starts for its threading optimizations
+    // (over 60 with NVIDIA's) mostly add start-up time and memory; the work
+    // they would take over, such as uploading new textures, stays on the UI
+    // thread. WARP does need its threads: with this flag it would rasterize on
+    // the calling thread.
+    if !software {
+        device_flags |= D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
+    }
     unsafe {
         D3D11CreateDevice(
             adapter,

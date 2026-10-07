@@ -25,16 +25,16 @@
 | 發佈 | 可攜版 zip：icon／版本資訊、第三方授權全文、SHA-256、smoke test | ✅ 0.0.1 預覽版（GitHub Releases，未簽章）；`tools/package.ps1`、`docs/RELEASE.md`；第三方授權全文 0 缺漏，exe 與 zip 可重現 |
 | Render host | engine 移到獨立 process（ADR 0008）：crash、配置失敗、卡住只會結束 host | ✅ Windows 的預設（`hayro-isolated`）；`--engine hayro` 在 process 內 render。吞吐量與啟動時間和 in-process 相同（`docs/benchmarks/render-host.md`） |
 
-## KPI（spec §29，最終版 `658b47a` 實測）
+## KPI（spec §29；第十輪 `658b47a` 實測，idle RAM 為第十一輪）
 
 - 預設 engine 是 render host（`hayro-isolated`），idle 時有 3 個 process：app、文件 host、待命 host。
-- GPUI 的 Windows 平台套用了 3 個本地 patch（ADR 0011）。
+- GPUI 的 Windows 平台套用了 4 個本地 patch（ADR 0011）。
 
 | 指標 | 目標 | 實測 | |
 |---|---|---|---|
 | 執行檔 | < 30 MB | 16.1 MiB | ✅ |
 | 小檔首頁 | < 200 ms | 中位數 166 ms（3 頁）、167 ms（300 頁），從 process 啟動起算到第一頁完全清晰 | ✅ |
-| Idle RAM（private working set） | < 50 MB | 27.9 MB（3 頁文件，3 個 process 合計）；private bytes 113 MB，大部分是 GPU driver | ✅ |
+| Idle RAM（private working set） | < 50 MB | 24.2 MB（3 頁文件，3 個 process 合計；第十一輪，patch 0004 之後，原本 27.9 MB）；private bytes 108 MB，大部分是 GPU driver | ✅ |
 | 大型 PDF | 不需完整掃描 | 2000 頁捲到底，private 穩定在 190–220 MiB（B-5）；engine 層與 M1 baseline 相同（B-1 配對比較） | ✅ |
 | Idle CPU | 接近 0 | 0–0.1% 單核；主執行緒每秒 0 次喚醒，FastPDF 0 frame。GPU driver 自己的 thread 不列入判定 | ✅ |
 | 網路／telemetry | 0 | 0 | ✅ |
