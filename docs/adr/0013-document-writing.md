@@ -95,3 +95,13 @@
 - 每項功能都要有測試：輸出檔用 hayro 重新開啟、render，並與預期比對。
 - 重寫器的往返測試涵蓋 corpus 中所有未加密、可正常開啟的檔案。
 - 寫入功能完成後重跑 B-1 與 B-8，確認閱讀的 KPI 沒有退步。
+
+結果（2026-10-11，重寫器、另存副本、頁面工具）：
+
+- 重寫器的 corpus 往返測試（`cargo test --release -p fastpdf-engine-hayro --test write -- --ignored`）：每個未加密的檔案逐頁重寫後重新 render，6,864 頁全部逐像素相同。涵蓋 object stream、xref stream、損壞的 xref、2000 頁的檔案、CJK 與透明度。
+- 整合測試（`crates/fastpdf-engine-hayro/tests/write.rs`）：
+  - 擷取後，刪掉的頁面內容不在輸出檔裡；指向刪除頁的書籤目的地變成 `null`；
+  - 重排、旋轉、重複頁、巢狀頁面樹的繼承屬性、合併；
+  - 印章的位置、方向與透明度（render 後檢查像素）；
+  - 副本逐位元組相同；加密檔被拒絕；任何一個輸出失敗時不留下檔案；不覆寫來源。
+- GUI 實測（dev script）：另存副本、擷取、刪除、旋轉、倒序重排、分割、合併。輸出另以 pypdf 讀取，確認頁數、`/Rotate`、頁序與可擷取的文字。

@@ -53,6 +53,7 @@ mod logger;
 mod render_host;
 #[cfg(feature = "engine-synthetic")]
 mod synthetic;
+mod write_job;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -191,6 +192,10 @@ fn main() -> std::process::ExitCode {
     if let Some(code) = render_host::dispatch() {
         return code;
     }
+    // So does the writer's child process (ADR 0013).
+    if let Some(code) = write_job::dispatch() {
+        return code;
+    }
     reader_main();
     std::process::ExitCode::SUCCESS
 }
@@ -255,6 +260,7 @@ fn reader_main() {
 
     let mut options = ReaderOptions::new(engine);
     options.system_ui_language = platform::ui_language();
+    options.writer = Some(Arc::new(write_job::run));
     options.dev_overlay = env.dev_overlay;
     options.bench = env.bench.then(|| clock.hook());
     if let Some(recent) = env.recent_file {

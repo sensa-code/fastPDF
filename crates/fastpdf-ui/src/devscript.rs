@@ -33,6 +33,14 @@
 //! | `default-zoom=fit-width`, `=fit-page`, `=actual-size` | sets the default zoom |
 //! | `settings` | shows (or hides) the settings panel |
 //! | `layout-menu` | opens (or closes) the toolbar's page layout menu |
+//! | `edit-menu` | opens (or closes) the toolbar's edit menu |
+//! | `tool=extract`, `=delete`, `=rotate`, `=reorder`, `=split`, `=merge` | opens the page tools on that tool |
+//! | `tool-pages=SPEC` | the page tools' page field |
+//! | `tool-angle=90`, `=180`, `=270` | the rotation of the rotate tool |
+//! | `merge-add=PATH` | appends a file to merge |
+//! | `tool-save=PATH` | saves the page tools' result there (a folder for a split), without the dialog |
+//! | `save-copy=PATH` | saves a copy there, without the dialog |
+//! | `wait-write` | waits until the write finished |
 //! | `language=system`, `=en`, `=zh-TW` | sets the UI language setting |
 //! | `smooth=on`, `=off` | turns smooth wheel scrolling on or off |
 //! | `wheel=NOTCHES` | a mouse-wheel turn (negative: up), as the wheel sends it |
@@ -86,6 +94,14 @@ pub(crate) enum Step {
     DefaultZoom(DefaultZoom),
     SettingsPanel,
     LayoutMenu,
+    EditMenu,
+    Tool(crate::tools::PageTool),
+    ToolPages(String),
+    ToolAngle(fastpdf_engine_api::Rotation),
+    MergeAdd(PathBuf),
+    ToolSave(PathBuf),
+    SaveCopy(PathBuf),
+    WaitWrite,
     Language(LanguageChoice),
     Smooth(bool),
     /// Wheel notches over the document (positive: down).
@@ -144,6 +160,20 @@ fn parse_step(step: &str) -> Option<Step> {
         ("default-zoom", Some(name)) => Step::DefaultZoom(DefaultZoom::from_name(name)?),
         ("settings", None) => Step::SettingsPanel,
         ("layout-menu", None) => Step::LayoutMenu,
+        ("edit-menu", None) => Step::EditMenu,
+        ("tool", Some(name)) => Step::Tool(crate::tools::PageTool::from_name(name)?),
+        ("tool-pages", Some(spec)) => Step::ToolPages(spec.to_owned()),
+        ("tool-angle", Some(degrees)) => Step::ToolAngle(
+            degrees
+                .trim()
+                .parse()
+                .ok()
+                .and_then(fastpdf_engine_api::Rotation::from_degrees)?,
+        ),
+        ("merge-add", Some(path)) => Step::MergeAdd(PathBuf::from(path.trim())),
+        ("tool-save", Some(path)) => Step::ToolSave(PathBuf::from(path.trim())),
+        ("save-copy", Some(path)) => Step::SaveCopy(PathBuf::from(path.trim())),
+        ("wait-write", None) => Step::WaitWrite,
         ("language", Some(name)) => Step::Language(LanguageChoice::from_name(name)?),
         ("smooth", Some("on")) => Step::Smooth(true),
         ("smooth", Some("off")) => Step::Smooth(false),
@@ -155,7 +185,7 @@ fn parse_step(step: &str) -> Option<Step> {
 /// The command called `name` (the `ReaderCommand` variant name).
 fn command_named(name: &str) -> Option<ReaderCommand> {
     use ReaderCommand as C;
-    const ALL: [ReaderCommand; 34] = [
+    const ALL: [ReaderCommand; 36] = [
         C::OpenFile,
         C::CloseDocument,
         C::Quit,
@@ -187,6 +217,8 @@ fn command_named(name: &str) -> Option<ReaderCommand> {
         C::LayoutTwoPage,
         C::LayoutTwoPageContinuous,
         C::ToggleCoverPage,
+        C::SaveCopy,
+        C::PageTools,
         C::Copy,
         C::SelectAll,
         C::Cancel,
@@ -433,8 +465,53 @@ impl ReaderView {
                 self.toggle_settings_panel(cx);
                 Done
             }
+            Step::Tool(tool) => {
+                if !self.tools.open {
+                    self.toggle_tools_panel(window, cx);
+                }
+                self.tools.tool = *tool;
+                cx.notify();
+                Done
+            }
+            Step::ToolPages(spec) => {
+                let field = self.tools.field.clone();
+                field.update(cx, |input, cx| input.set_text(spec, cx));
+                Done
+            }
+            Step::ToolAngle(angle) => {
+                self.tools.angle = *angle;
+                cx.notify();
+                Done
+            }
+            Step::MergeAdd(path) => {
+                self.tools.merge.push(path.clone());
+                cx.notify();
+                Done
+            }
+            Step::ToolSave(path) => {
+                self.save_tool_result(Some(path.clone()), window, cx);
+                Done
+            }
+            Step::SaveCopy(path) => {
+                self.save_copy(Some(path.clone()), window, cx);
+                Done
+            }
+            Step::WaitWrite => {
+                if self.tools.writing() {
+                    Pending
+                } else {
+                    Done
+                }
+            }
+            Step::EditMenu => {
+                use crate::reader::Menu;
+                self.menus.open = (!self.menus.is_open(Menu::Edit)).then_some(Menu::Edit);
+                cx.notify();
+                Done
+            }
             Step::LayoutMenu => {
-                self.layout_menu.open = !self.layout_menu.open;
+                use crate::reader::Menu;
+                self.menus.open = (!self.menus.is_open(Menu::Layout)).then_some(Menu::Layout);
                 cx.notify();
                 Done
             }

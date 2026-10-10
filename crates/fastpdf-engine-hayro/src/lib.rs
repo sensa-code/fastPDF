@@ -35,6 +35,7 @@ mod render;
 mod scan;
 mod stats;
 mod text;
+pub mod write;
 
 use fastpdf_engine_api::{
     DocumentSource, EngineCapabilities, EngineDocument, EngineError, EngineInfo, OpenOptions,

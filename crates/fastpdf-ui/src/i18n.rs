@@ -125,6 +125,48 @@ pub(crate) struct Strings {
     pub cover_page: &'static str,
     /// Short layout names for the toolbar button.
     pub layout_button: [&'static str; 4],
+    // Writing (ADR 0013): the edit menu, page tools, notices.
+    pub edit: &'static str,
+    pub tip_edit: &'static str,
+    pub save_copy: &'static str,
+    pub page_tools: &'static str,
+    pub page_tools_title: &'static str,
+    pub tool_extract: &'static str,
+    pub tool_delete: &'static str,
+    pub tool_rotate: &'static str,
+    pub tool_reorder: &'static str,
+    pub tool_split: &'static str,
+    pub tool_merge: &'static str,
+    pub hint_extract: &'static str,
+    pub hint_delete: &'static str,
+    pub hint_rotate: &'static str,
+    pub hint_reorder: &'static str,
+    pub hint_split: &'static str,
+    pub hint_merge: &'static str,
+    pub angle: &'static str,
+    pub rotate_right_90: &'static str,
+    pub rotate_180: &'static str,
+    pub rotate_left_90: &'static str,
+    pub original_untouched: &'static str,
+    pub save_as: &'static str,
+    pub choose_folder: &'static str,
+    pub add_files: &'static str,
+    pub saving: &'static str,
+    pub write_cancelled: &'static str,
+    pub open_result: &'static str,
+    pub cancel: &'static str,
+    pub replace: &'static str,
+    pub no_pages_given: &'static str,
+    pub cannot_delete_all: &'static str,
+    pub nothing_to_merge: &'static str,
+    pub write_encrypted: &'static str,
+    pub writing_unavailable: &'static str,
+    pub copy_suffix: &'static str,
+    pub extract_suffix: &'static str,
+    pub delete_suffix: &'static str,
+    pub rotate_suffix: &'static str,
+    pub reorder_suffix: &'static str,
+    pub merge_suffix: &'static str,
     // Find bar.
     pub find_placeholder: &'static str,
     pub no_results: &'static str,
@@ -211,6 +253,47 @@ const EN: Strings = Strings {
     layout_two_page_continuous: "Two pages, continuous",
     cover_page: "Cover page on its own",
     layout_button: ["1 page", "Scroll", "2 pages", "2 pages scroll"],
+    edit: "Edit",
+    tip_edit: "Save a copy, page tools",
+    save_copy: "Save a copy…",
+    page_tools: "Page tools…",
+    page_tools_title: "Page tools",
+    tool_extract: "Extract",
+    tool_delete: "Delete",
+    tool_rotate: "Rotate",
+    tool_reorder: "Reorder",
+    tool_split: "Split",
+    tool_merge: "Merge",
+    hint_extract: "Pages to save as a new file, e.g. 1-3, 5",
+    hint_delete: "Pages to leave out, e.g. 2, 4-6",
+    hint_rotate: "Pages to rotate, e.g. 1-3; empty: every page",
+    hint_reorder: "The new page order, e.g. 3, 1, 2, 4-; pages may repeat, 5-1 runs backwards",
+    hint_split: "Pages per file (1: every page on its own), or ranges separated by semicolons: 1-3; 4-",
+    hint_merge: "These files are appended after this document, in this order. The merged file has no bookmarks or form fields.",
+    angle: "Angle",
+    rotate_right_90: "Right 90°",
+    rotate_180: "180°",
+    rotate_left_90: "Left 90°",
+    original_untouched: "The open file is not changed; the result is saved as a new file.",
+    save_as: "Save as…",
+    choose_folder: "Choose a folder…",
+    add_files: "Add files…",
+    saving: "Saving…",
+    write_cancelled: "Saving was cancelled.",
+    open_result: "Open",
+    cancel: "Cancel",
+    replace: "Replace",
+    no_pages_given: "Enter the pages first.",
+    cannot_delete_all: "Every page would be deleted.",
+    nothing_to_merge: "Add the files to merge first.",
+    write_encrypted: "This document is encrypted; saving a changed version of it is not supported yet.",
+    writing_unavailable: "this build cannot write PDF files",
+    copy_suffix: " - copy",
+    extract_suffix: " - pages",
+    delete_suffix: " - edited",
+    rotate_suffix: " - rotated",
+    reorder_suffix: " - reordered",
+    merge_suffix: " - merged",
     find_placeholder: "Find in document",
     no_results: "No results",
     search_unavailable: "Search is not available",
@@ -292,6 +375,47 @@ const ZH_TW: Strings = Strings {
     layout_two_page_continuous: "雙頁連續捲動",
     cover_page: "封面單獨顯示",
     layout_button: ["單頁", "連續", "雙頁", "雙頁連續"],
+    edit: "編輯",
+    tip_edit: "另存副本、頁面工具",
+    save_copy: "另存副本…",
+    page_tools: "頁面工具…",
+    page_tools_title: "頁面工具",
+    tool_extract: "擷取頁面",
+    tool_delete: "刪除頁面",
+    tool_rotate: "旋轉頁面",
+    tool_reorder: "重排頁面",
+    tool_split: "分割",
+    tool_merge: "合併",
+    hint_extract: "要另存成新檔的頁面，例如 1-3, 5",
+    hint_delete: "要刪除的頁面，例如 2, 4-6",
+    hint_rotate: "要旋轉的頁面，例如 1-3；留空代表全部",
+    hint_reorder: "新的頁序，例如 3, 1, 2, 4-；頁面可重複，5-1 代表倒序",
+    hint_split: "每份的頁數（1 代表每頁一個檔案），或用分號分開範圍：1-3; 4-",
+    hint_merge: "以下檔案依序接在目前文件之後。合併後的檔案不含書籤與表單欄位。",
+    angle: "角度",
+    rotate_right_90: "向右 90°",
+    rotate_180: "180°",
+    rotate_left_90: "向左 90°",
+    original_untouched: "目前開啟的檔案不會被修改，結果會另存成新檔。",
+    save_as: "另存新檔…",
+    choose_folder: "選擇資料夾…",
+    add_files: "加入檔案…",
+    saving: "正在儲存…",
+    write_cancelled: "已取消儲存。",
+    open_result: "開啟",
+    cancel: "取消",
+    replace: "取代",
+    no_pages_given: "請先輸入頁面。",
+    cannot_delete_all: "不能刪除所有頁面。",
+    nothing_to_merge: "請先加入要合併的檔案。",
+    write_encrypted: "這份文件有加密，目前還無法另存修改後的版本。",
+    writing_unavailable: "這個版本無法寫入 PDF 檔案",
+    copy_suffix: "-副本",
+    extract_suffix: "-擷取",
+    delete_suffix: "-刪除頁面",
+    rotate_suffix: "-旋轉",
+    reorder_suffix: "-重排",
+    merge_suffix: "-合併",
     find_placeholder: "在文件中尋找",
     no_results: "找不到符合的結果",
     search_unavailable: "這份文件無法搜尋",
@@ -499,6 +623,78 @@ impl Strings {
             format!("{page}（錯誤）")
         } else {
             format!("{page} (error)")
+        }
+    }
+
+    pub(crate) fn invalid_pages(&self, part: &str) -> String {
+        if self.zh() {
+            format!("看不懂「{part}」：請輸入頁碼或範圍，例如 1-3, 5")
+        } else {
+            format!("\"{part}\" is not a page or a range such as 1-3, 5")
+        }
+    }
+
+    pub(crate) fn no_such_page(&self, page: u32) -> String {
+        if self.zh() {
+            format!("沒有第 {page} 頁")
+        } else {
+            format!("There is no page {page}")
+        }
+    }
+
+    pub(crate) fn replace_file(&self, name: &str) -> String {
+        if self.zh() {
+            format!("「{name}」已經存在，要取代它嗎？")
+        } else {
+            format!("{name} already exists. Do you want to replace it?")
+        }
+    }
+
+    pub(crate) fn saved_file(&self, name: &str, pages: u32) -> String {
+        if self.zh() {
+            format!("已儲存 {name}（{pages} 頁）")
+        } else {
+            format!("Saved {name} ({pages} pages)")
+        }
+    }
+
+    pub(crate) fn saved_files(&self, count: usize, dir: &str) -> String {
+        if self.zh() {
+            format!("已將 {count} 個檔案儲存到「{dir}」資料夾")
+        } else {
+            format!("Saved {count} files in the folder \"{dir}\"")
+        }
+    }
+
+    pub(crate) fn write_source_failed(&self, reason: &str) -> String {
+        if self.zh() {
+            format!("無法讀取來源檔案：{reason}")
+        } else {
+            format!("Cannot read the source file: {reason}")
+        }
+    }
+
+    pub(crate) fn write_image_failed(&self, name: &str, reason: &str) -> String {
+        if self.zh() {
+            format!("無法使用圖片 {name}：{reason}")
+        } else {
+            format!("Cannot use the image {name}: {reason}")
+        }
+    }
+
+    pub(crate) fn write_output_failed(&self, name: &str, reason: &str) -> String {
+        if self.zh() {
+            format!("無法寫入 {name}：{reason}")
+        } else {
+            format!("Cannot write {name}: {reason}")
+        }
+    }
+
+    pub(crate) fn write_failed(&self, reason: &str) -> String {
+        if self.zh() {
+            format!("儲存失敗：{reason}")
+        } else {
+            format!("Saving failed: {reason}")
         }
     }
 

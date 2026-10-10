@@ -45,6 +45,11 @@ pub enum ReaderCommand {
     LayoutTwoPageContinuous,
     /// Two-page layouts: show page 1 on its own (a book's cover) or not.
     ToggleCoverPage,
+    /// Save the open file under a new name, unchanged (ADR 0013).
+    SaveCopy,
+    /// Extract, delete, rotate, reorder, split or merge pages into a new
+    /// file (ADR 0013).
+    PageTools,
     /// Copy the selected text.
     Copy,
     SelectAll,
@@ -96,6 +101,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind("f3", FindNext),
         bind("shift-f3", FindPrevious),
         bind("ctrl-p", Print),
+        bind("ctrl-shift-s", SaveCopy),
         bind("ctrl-=", ZoomIn),
         bind("ctrl-+", ZoomIn),
         bind("ctrl--", ZoomOut),

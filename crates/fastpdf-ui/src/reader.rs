@@ -11,6 +11,7 @@ use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_core::memory::MemoryMonitor;
 use fastpdf_core::recent::RecentFiles;
 use fastpdf_core::{DocumentSession, ScrollAxis, SessionConfig};
+use fastpdf_engine_api::write::{WriteError, WriteJob, WriteReport};
 use fastpdf_engine_api::{CancelToken, ColorMode, EngineDocument, PageIndex, PageRect, PdfEngine};
 use fastpdf_search::TextCache;
 use futures::StreamExt;
@@ -42,6 +43,7 @@ use crate::startup::{SessionParts, Startup, default_window_size};
 use crate::textures::{DEFAULT_UPLOAD_BUDGET, TileImage, TileTextures};
 use crate::theme::{ActiveTheme, Theme};
 use crate::toolbar;
+use crate::tools::ToolsPanel;
 
 /// Scroll distance of one wheel "line" and of the arrow keys, in logical
 /// pixels (three lines per wheel notch at the Windows default).
@@ -51,6 +53,12 @@ const WHEEL_PX_PER_ZOOM_DOUBLING: f32 = 400.0;
 /// Recent files listed in the empty window.
 const RECENT_SHOWN: usize = 10;
 const APP_TITLE: &str = "FastPDF";
+
+/// Runs a write job (ADR 0013) to its end on the calling thread; the app
+/// runs it in an isolated child process. The reader calls it from a
+/// background thread; cancelling the token ends the job.
+pub type WriteRunner =
+    Arc<dyn Fn(&WriteJob, &CancelToken) -> Result<WriteReport, WriteError> + Send + Sync>;
 
 /// Everything the reader needs from the application.
 #[derive(Clone)]
@@ -76,6 +84,9 @@ pub struct ReaderOptions {
     /// The Windows UI language (`GetUserDefaultUILanguage`, a LANGID), which
     /// picks the UI text unless the settings name a language.
     pub system_ui_language: Option<u16>,
+    /// Writes new PDFs (save a copy, page tools, stamps); `None`: the
+    /// writing commands report that writing is not available.
+    pub writer: Option<WriteRunner>,
 }
 
 impl std::fmt::Debug for ReaderOptions {
@@ -89,6 +100,7 @@ impl std::fmt::Debug for ReaderOptions {
             .field("dev_script", &self.dev_script.is_some())
             .field("settings_file", &self.settings_file)
             .field("system_ui_language", &self.system_ui_language)
+            .field("writer", &self.writer.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -107,6 +119,7 @@ impl ReaderOptions {
             dev_script: None,
             settings_file: crate::settings::default_location(),
             system_ui_language: None,
+            writer: None,
         }
     }
 }
@@ -232,14 +245,29 @@ pub(crate) struct OpenDoc {
     pub exact_reported: bool,
 }
 
-/// The toolbar's page layout menu.
+/// A toolbar drop-down menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Menu {
+    /// Page layout.
+    Layout,
+    /// Save a copy, page tools.
+    Edit,
+}
+
+/// The toolbar's drop-down menus; at most one is open.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub(crate) struct LayoutMenu {
-    pub open: bool,
-    /// Where the press that closed the menu (outside it) happened: a press
-    /// on the menu's own button closes the menu, and the click it ends must
+pub(crate) struct MenuState {
+    pub open: Option<Menu>,
+    /// The menu that a press outside it closed, and where: a press on the
+    /// menu's own button closes the menu, and the click that press ends must
     /// not open it again.
-    pub dismissed_at: Option<gpui::Point<Pixels>>,
+    pub dismissed_at: Option<(Menu, gpui::Point<Pixels>)>,
+}
+
+impl MenuState {
+    pub(crate) fn is_open(&self, menu: Menu) -> bool {
+        self.open == Some(menu)
+    }
 }
 
 pub(crate) enum DocState {
@@ -294,12 +322,15 @@ pub struct ReaderView {
     page_turn: PageTurn,
     /// The document area's scroll bars (`crate::scrollbar`).
     pub(crate) scrollbars: ScrollBarState,
-    pub(crate) layout_menu: LayoutMenu,
+    pub(crate) menus: MenuState,
+    /// Save a copy, the page tools panel and the write in progress.
+    pub(crate) tools: ToolsPanel,
     open_task: Option<Task<()>>,
     pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
     _appearance: Subscription,
     _bounds: Subscription,
+    _quit: Subscription,
 }
 
 impl std::fmt::Debug for ReaderView {
@@ -351,6 +382,11 @@ impl ReaderView {
             }
         });
         let appearance = cx.observe_window_appearance(window, |_, _, cx| cx.notify());
+        // A write in progress is undone, not cut off, when FastPDF quits.
+        let quit = cx.on_app_quit(|this, _| {
+            this.tools.finish_before_exit();
+            async {}
+        });
 
         let memory = MemoryMonitor::new(Arc::new(MemoryBudgetManager::new(options.memory)));
         let texts = Arc::new(TextCache::new(TextCache::DEFAULT_BUDGET));
@@ -392,12 +428,14 @@ impl ReaderView {
             smooth_scroll: SmoothScroll::default(),
             page_turn: PageTurn::default(),
             scrollbars: ScrollBarState::default(),
-            layout_menu: LayoutMenu::default(),
+            menus: MenuState::default(),
+            tools: ToolsPanel::new(cx),
             open_task: None,
             dev_script: None,
             _wake_task: wake_task,
             _appearance: appearance,
             _bounds: bounds,
+            _quit: quit,
         };
         cx.set_global(ActiveTheme(view.theme));
         view.apply_language(cx);
@@ -476,6 +514,7 @@ impl ReaderView {
             self.on_new_hits();
         }
         self.print.drain();
+        self.tools.drain();
         cx.notify();
     }
 
@@ -737,6 +776,14 @@ impl ReaderView {
             C::SelectAll => self.select_current_page(cx),
             C::Cancel => self.cancel(window, cx),
             C::Print => self.toggle_print_panel(window, cx),
+            C::SaveCopy => {
+                self.menus.open = None;
+                self.save_copy(None, window, cx);
+            }
+            C::PageTools => {
+                self.menus.open = None;
+                self.toggle_tools_panel(window, cx);
+            }
             C::LayoutSinglePage => self.set_page_layout(PageLayout::SinglePage, cx),
             C::LayoutContinuous => self.set_page_layout(PageLayout::Continuous, cx),
             C::LayoutTwoPage => self.set_page_layout(PageLayout::TwoPage, cx),
@@ -770,16 +817,18 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// Esc: closes the layout menu, stops printing or closes the print
-    /// panel, then the settings panel, then the find bar, then clears the
+    /// Esc: closes a menu, stops printing or closes the print panel, then
+    /// the page tools, the settings panel, the find bar, then clears the
     /// selection.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if self.layout_menu.open {
-            self.layout_menu.open = false;
+        if self.menus.open.is_some() {
+            self.menus.open = None;
         } else if self.print.printing() {
             self.print.cancel_job();
         } else if self.print.open {
             self.close_print_panel(window, cx);
+        } else if self.tools.open {
+            self.close_tools_panel(window, cx);
         } else if self.settings_open {
             self.settings_open = false;
         } else if self.find.open {
@@ -798,7 +847,7 @@ impl ReaderView {
 
     /// Saves the layout settings and shows the document in them.
     fn apply_page_layout(&mut self, cx: &mut Context<'_, Self>) {
-        self.layout_menu.open = false;
+        self.menus.open = None;
         self.save_settings(cx);
         let mode = self.settings.layout_mode();
         self.smooth_scroll.stop();
@@ -809,27 +858,33 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// The layout menu's button was clicked.
-    pub(crate) fn toggle_layout_menu(&mut self, event: &ClickEvent, cx: &mut Context<'_, Self>) {
-        let dismissed = self.layout_menu.dismissed_at.take();
+    /// A menu's button was clicked.
+    pub(crate) fn toggle_menu(
+        &mut self,
+        menu: Menu,
+        event: &ClickEvent,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let dismissed = self.menus.dismissed_at.take();
         let closed_by_this_click =
-            matches!(event, ClickEvent::Mouse(m) if Some(m.down.position) == dismissed);
+            matches!(event, ClickEvent::Mouse(m) if dismissed == Some((menu, m.down.position)));
         if !closed_by_this_click {
-            self.layout_menu.open = !self.layout_menu.open;
+            self.menus.open = (!self.menus.is_open(menu)).then_some(menu);
         }
         cx.notify();
     }
 
-    /// A press outside the open layout menu closes it.
-    pub(crate) fn dismiss_layout_menu(
+    /// A press outside the open menu closes it.
+    pub(crate) fn dismiss_menu(
         &mut self,
+        menu: Menu,
         event: &MouseDownEvent,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.layout_menu.open {
-            self.layout_menu = LayoutMenu {
-                open: false,
-                dismissed_at: Some(event.position),
+        if self.menus.is_open(menu) {
+            self.menus = MenuState {
+                open: None,
+                dismissed_at: Some((menu, event.position)),
             };
             cx.notify();
         }
@@ -1454,6 +1509,12 @@ impl ReaderView {
             .when(self.find.open, |area| area.child(self.render_find_bar(cx)))
             .when(self.print.open, |area| {
                 area.child(self.render_print_panel(cx))
+            })
+            .when(self.tools.open, |area| {
+                area.child(self.render_tools_panel(cx))
+            })
+            .when_some(self.render_write_notice(cx), |area, notice| {
+                area.child(notice)
             })
             .when(self.settings_open, |area| {
                 area.child(self.render_settings_panel(cx))

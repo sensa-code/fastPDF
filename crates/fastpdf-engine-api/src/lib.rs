@@ -28,6 +28,7 @@ mod pixmap;
 mod render;
 mod source;
 mod text;
+pub mod write;
 
 pub use cancel::CancelToken;
 pub use engine::{
@@ -45,3 +46,6 @@ pub use pixmap::{PixelFormat, Pixmap, PixmapMut, Rgba8};
 pub use render::{ColorMode, RenderOutcome, RenderRequest};
 pub use source::{DocumentSource, FileOrigin, SharedBytes};
 pub use text::{CharPos, LaidText, LineBreak, TextLayer, TextSpan, is_cjk};
+pub use write::{
+    OutputContent, OutputSpec, PagePick, Stamp, WriteError, WriteJob, WriteReport, WrittenOutput,
+};

@@ -44,6 +44,11 @@ memmap2.workspace = true
 # hayro-syntax (same version and zlib-rs backend), so it adds no crate.
 flate2 = { workspace = true }
 
+# Decoding stamp images (PNG, non-baseline JPEG) for the writer (ADR 0013).
+# Already in the dependency graph through GPUI with these formats enabled,
+# so it adds no crate.
+image = { workspace = true, features = ["png", "jpeg"] }
+
 [dev-dependencies]
 # Tests check that text layers still select and copy correctly.
 fastpdf-core.workspace = true

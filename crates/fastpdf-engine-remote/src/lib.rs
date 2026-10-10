@@ -47,6 +47,7 @@ mod gate;
 mod geometry;
 #[cfg(windows)]
 mod host;
+mod isolated;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod policy;
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -64,6 +65,7 @@ use fastpdf_engine_api::{PageIndex, PdfEngine};
 pub use config::{
     CrashPolicy, DEFAULT_MEMORY_LIMIT, DEFAULT_RENDER_THREADS, DEFAULT_SLOT_BYTES, RemoteConfig,
 };
+pub use isolated::{IsolatedExit, IsolatedProcess};
 #[cfg(windows)]
 pub use remote::RemoteEngine;
 #[cfg(not(windows))]

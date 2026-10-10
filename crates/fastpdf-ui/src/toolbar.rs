@@ -4,13 +4,13 @@
 
 use fastpdf_core::keymap::{ReaderCommand, keystrokes_for};
 use gpui::{
-    AnyView, App, AppContext, ClickEvent, Context, Div, ElementId, InteractiveElement, IntoElement,
-    MouseDownEvent, ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement,
-    Styled, Window, anchored, deferred, div, prelude::FluentBuilder, px,
+    AnyElement, AnyView, App, AppContext, ClickEvent, Context, Div, ElementId, InteractiveElement,
+    IntoElement, MouseDownEvent, ParentElement, Render, SharedString, Stateful,
+    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, px,
 };
 
 use crate::i18n::Strings;
-use crate::reader::ReaderView;
+use crate::reader::{Menu, ReaderView};
 use crate::settings::PageLayout;
 use crate::theme::Theme;
 
@@ -79,7 +79,7 @@ pub(crate) fn render(
             has_doc,
             cx,
         ))
-        .child(label(page_text, 64.0))
+        .child(label(page_text, 56.0))
         .child(tools.button(
             "next",
             "\u{203a}",
@@ -97,7 +97,7 @@ pub(crate) fn render(
             has_doc,
             cx,
         ))
-        .child(label(zoom_text, 46.0))
+        .child(label(zoom_text, 40.0))
         .child(tools.button("zoom-in", "+", strings.tip_zoom_in, C::ZoomIn, has_doc, cx))
         .child(tools.button(
             "fit-width",
@@ -170,12 +170,13 @@ pub(crate) fn render(
         .items_center()
         .gap_1()
         .h(px(HEIGHT))
-        .px_2()
+        .px_1()
         .bg(theme.toolbar_bg)
         .border_b_1()
         .border_color(theme.toolbar_border)
         .text_size(px(14.0))
         .child(row)
+        .child(edit_control(view, tools, cx))
         .child(
             styled_button("settings", "\u{2699}", true, view.settings_open, &theme)
                 .text_size(px(16.0))
@@ -189,7 +190,6 @@ pub(crate) fn render(
 /// The page layout button and, while it is open, its menu. The layout is a
 /// setting, so it can be chosen without a document too.
 fn layout_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView>) -> Div {
-    let theme = tools.theme;
     let strings = tools.strings;
     let current = view.settings.page_layout;
     let short = PageLayout::ALL
@@ -199,18 +199,95 @@ fn layout_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderVi
         .copied()
         .unwrap_or_default();
     let label = format!("{short} \u{25be}");
-    let button = styled_button("layout", label, true, view.layout_menu.open, &theme)
-        .tooltip(tooltip(strings.tip_layout.into(), theme, tools.font))
-        .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-            this.toggle_layout_menu(event, cx);
+    menu_control(
+        Menu::Layout,
+        label,
+        strings.tip_layout,
+        view,
+        tools,
+        cx,
+        |cx| layout_items(view, tools, cx),
+    )
+}
+
+/// The edit menu: writing new files from the open one (ADR 0013).
+fn edit_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView>) -> Div {
+    let strings = tools.strings;
+    let label = format!("{} \u{25be}", strings.edit);
+    menu_control(Menu::Edit, label, strings.tip_edit, view, tools, cx, |cx| {
+        let has_doc = view.session().is_some();
+        vec![
+            menu_item(
+                "edit-copy",
+                strings.save_copy,
+                false,
+                has_doc,
+                ReaderCommand::SaveCopy,
+                tools,
+                cx,
+            )
+            .into_any_element(),
+            menu_item(
+                "edit-pages",
+                strings.page_tools,
+                view.tools.open,
+                has_doc,
+                ReaderCommand::PageTools,
+                tools,
+                cx,
+            )
+            .into_any_element(),
+        ]
+    })
+}
+
+/// A drop-down menu's button and, while it is open, the menu below it.
+fn menu_control(
+    menu: Menu,
+    label: String,
+    tip: &'static str,
+    view: &ReaderView,
+    tools: Tools,
+    cx: &mut Context<'_, ReaderView>,
+    items: impl FnOnce(&mut Context<'_, ReaderView>) -> Vec<AnyElement>,
+) -> Div {
+    let theme = tools.theme;
+    let open = view.menus.is_open(menu);
+    let id = match menu {
+        Menu::Layout => "layout",
+        Menu::Edit => "edit",
+    };
+    let button = styled_button(id, label, true, open, &theme)
+        .tooltip(tooltip(tip.into(), theme, tools.font))
+        .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+            this.toggle_menu(menu, event, cx);
         }));
-    div()
-        .relative()
-        .flex_none()
-        .child(button)
-        .when(view.layout_menu.open, |d| {
-            d.child(layout_menu(view, tools, cx))
-        })
+    let control = div().relative().flex_none().child(button);
+    if !open {
+        return control;
+    }
+    let panel = div()
+        .id((id, 1usize))
+        .occlude()
+        .flex()
+        .flex_col()
+        .py_1()
+        .min_w(px(180.0))
+        .rounded(px(6.0))
+        .bg(theme.toolbar_bg)
+        .border_1()
+        .border_color(theme.toolbar_border)
+        .shadow_md()
+        .font_family(tools.font)
+        .text_color(theme.text)
+        .text_size(px(14.0))
+        .on_mouse_down_out(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+            this.dismiss_menu(menu, event, cx);
+        }))
+        .children(items(cx));
+    control.child(div().absolute().top(px(32.0)).left(px(0.0)).child(
+        deferred(anchored().snap_to_window_with_margin(px(8.0)).child(panel)).with_priority(1),
+    ))
 }
 
 fn layout_name(strings: &Strings, layout: PageLayout) -> &'static str {
@@ -231,16 +308,16 @@ fn layout_command(layout: PageLayout) -> ReaderCommand {
     }
 }
 
-/// The open layout menu, below its button, over everything else.
-fn layout_menu(
+/// The layout menu's rows: the four layouts, then the cover page option.
+fn layout_items(
     view: &ReaderView,
     tools: Tools,
     cx: &mut Context<'_, ReaderView>,
-) -> impl IntoElement + use<> {
+) -> Vec<AnyElement> {
     let theme = tools.theme;
     let strings = tools.strings;
     let current = view.settings.page_layout;
-    let items: Vec<Stateful<Div>> = PageLayout::ALL
+    let mut items: Vec<AnyElement> = PageLayout::ALL
         .into_iter()
         .enumerate()
         .map(|(i, layout)| {
@@ -253,41 +330,30 @@ fn layout_menu(
                 tools,
                 cx,
             )
+            .into_any_element()
         })
         .collect();
-    let cover = menu_item(
-        "layout-cover",
-        strings.cover_page,
-        view.settings.cover_page,
-        current.is_two_page(),
-        ReaderCommand::ToggleCoverPage,
-        tools,
-        cx,
+    items.push(
+        div()
+            .h(px(1.0))
+            .mx_2()
+            .my_1()
+            .bg(theme.toolbar_border)
+            .into_any_element(),
     );
-    let menu = div()
-        .id("layout-menu")
-        .occlude()
-        .flex()
-        .flex_col()
-        .py_1()
-        .min_w(px(180.0))
-        .rounded(px(6.0))
-        .bg(theme.toolbar_bg)
-        .border_1()
-        .border_color(theme.toolbar_border)
-        .shadow_md()
-        .font_family(tools.font)
-        .text_color(theme.text)
-        .text_size(px(14.0))
-        .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-            this.dismiss_layout_menu(event, cx);
-        }))
-        .children(items)
-        .child(div().h(px(1.0)).mx_2().my_1().bg(theme.toolbar_border))
-        .child(cover);
-    div().absolute().top(px(32.0)).left(px(0.0)).child(
-        deferred(anchored().snap_to_window_with_margin(px(8.0)).child(menu)).with_priority(1),
-    )
+    items.push(
+        menu_item(
+            "layout-cover",
+            strings.cover_page,
+            view.settings.cover_page,
+            current.is_two_page(),
+            ReaderCommand::ToggleCoverPage,
+            tools,
+            cx,
+        )
+        .into_any_element(),
+    );
+    items
 }
 
 /// A menu row with a check mark column; a disabled row is shown muted.
@@ -333,7 +399,6 @@ fn separator(theme: &Theme) -> Div {
         .flex_none()
         .w(px(1.0))
         .h(px(20.0))
-        .mx_1()
         .bg(theme.toolbar_border)
 }
 
