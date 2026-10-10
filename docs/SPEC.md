@@ -364,6 +364,8 @@ Open Recent
 
 ## 9. V0.1 禁止功能
 
+> 2026-10-11 補記：PDF editing、Signature、PDF merge、PDF split 改由 ADR 0013（`docs/adr/0013-document-writing.md`）規範，以隔離、另存新檔的方式加入。其餘項目維持禁止。
+
 不要做：
 
 ```text

@@ -76,7 +76,9 @@ python tools/license_report.py --all-features --check
 
 ## V0.1 禁止事項（spec §9、§48）
 
-PDF editing、OCR、AI chat、cloud storage、account、login、sync、annotations 編輯、signature、merge／split／convert、compression、online service、telemetry、analytics、auto-update framework、plugin marketplace。也不要：全面 rewrite、換 UI framework、引入 Electron／Chromium + PDF.js（spec §34）、改用 Tauri（spec §35，除非有 benchmark 證據並先寫 ADR）、大量增加依賴、為了美觀重寫 UI、一開始就建 plugin system、一開始就完整實作兩套 renderer。
+OCR、AI chat、cloud storage、account、login、sync、annotations 編輯、convert、compression、online service、telemetry、analytics、auto-update framework、plugin marketplace。也不要：全面 rewrite、換 UI framework、引入 Electron／Chromium + PDF.js（spec §34）、改用 Tauri（spec §35，除非有 benchmark 證據並先寫 ADR）、大量增加依賴、為了美觀重寫 UI、一開始就建 plugin system、一開始就完整實作兩套 renderer。
+
+PDF 寫入（另存副本、頁面操作、印章、文字修改、數位簽章）依 ADR 0013 進行：一律另存新檔、在 `--write-job` 子行程執行、閱讀路徑零成本。不在原處修改 PDF。
 
 ## Logging（spec §31）
 

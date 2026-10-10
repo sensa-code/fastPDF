@@ -16,7 +16,10 @@ memory and responsiveness — not feature count. Read these before changing code
   (`python tools/check_engine_isolation.py`). Everything else uses `fastpdf-engine-api` types.
 - All engine calls go through `GuardedDocument`; keep `panic = "unwind"` in release.
 - No unwrap/expect on document-data paths. PDFs are hostile input.
-- No network, telemetry, login, cloud, Electron, or PDF editing features.
+- No network, telemetry, login, cloud, or Electron.
+- Never modify a PDF in place. Writing (save a copy, page operations, stamps, text edits,
+  digital signatures) only through ADR 0013: save-as-new-file, run in the `--write-job`
+  child process, zero cost on the reading paths.
 - Work in small steps: baseline → test → change → benchmark → commit. Performance
   claims need `fastpdf-bench` numbers with Before/After/Why/Tradeoff.
 
