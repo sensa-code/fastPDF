@@ -1602,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "fastpdf-app"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "embed-resource",
  "fastpdf-core",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "fastpdf-bench"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fastpdf-cache",
  "fastpdf-core",
@@ -1635,14 +1635,14 @@ dependencies = [
 
 [[package]]
 name = "fastpdf-cache"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fastpdf-engine-api",
 ]
 
 [[package]]
 name = "fastpdf-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fastpdf-cache",
  "fastpdf-engine-api",
@@ -1653,11 +1653,11 @@ dependencies = [
 
 [[package]]
 name = "fastpdf-engine-api"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "fastpdf-engine-hayro"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fastpdf-core",
  "fastpdf-engine-api",
@@ -1668,7 +1668,7 @@ dependencies = [
 
 [[package]]
 name = "fastpdf-engine-remote"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fastpdf-engine-api",
  "log",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "fastpdf-engine-zpdf"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fastpdf-engine-api",
  "tracing",
@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "fastpdf-print"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fastpdf-engine-api",
  "fastpdf-engine-zpdf",
@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "fastpdf-render"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fastpdf-cache",
  "fastpdf-engine-api",
@@ -1713,7 +1713,7 @@ dependencies = [
 
 [[package]]
 name = "fastpdf-search"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fastpdf-cache",
  "fastpdf-engine-api",
@@ -1721,14 +1721,14 @@ dependencies = [
 
 [[package]]
 name = "fastpdf-shell"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "fastpdf-ui"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "fastpdf-cache",
  "fastpdf-core",
