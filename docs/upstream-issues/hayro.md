@@ -3,11 +3,11 @@
 對象：[LaurenzV/hayro](https://github.com/LaurenzV/hayro)，commit `ced00dd0`（`ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7`，2026-10-03，workspace 0.7.x，vello_cpu 0.3.0）。
 來源：M0 audit（`docs/audit/hayro.md`）、Hayro adapter 實作（`crates/fastpdf-engine-hayro/`）、M4 比對（`docs/engine-comparison.md`）、B-5 記憶體 benchmark（`docs/benchmarks/b5-memory.md`）。
 
-**#1 與 #7 已經以 PR 送出（2026-10-06）**：[LaurenzV/hayro#1394](https://github.com/LaurenzV/hayro/pull/1394)（#1）與 [LaurenzV/hayro#1395](https://github.com/LaurenzV/hayro/pull/1395)（#7），從 fork `sensa-code/hayro` 的分支 `fastpdf/soft-mask-without-cs`、`fastpdf/knockout-groups` 送出，兩者都 rebase 到 `ea9c81dc`。`patches/` 中的 patch 檔是送出前的版本（base `ced00dd0`）。各 issue 的〈Proposed fix〉小節說明改了什麼，驗證過程見〈修正 patch：驗證與送 PR 前的步驟〉。FastPDF 本身仍 pin 在 `ced00dd0`，沒有用這些 patch。
+**#1 與 #7 已經以 PR 送出（2026-10-06）**：[LaurenzV/hayro#1394](https://github.com/LaurenzV/hayro/pull/1394)（#1）與 [LaurenzV/hayro#1395](https://github.com/LaurenzV/hayro/pull/1395)（#7），從 fork `sensa-code/hayro` 的分支 `fastpdf/soft-mask-without-cs`、`fastpdf/knockout-groups` 送出，兩者都 rebase 到 `ea9c81dc`。`patches/` 中的 patch 檔是送出前的版本（base `ced00dd0`）。各 issue 的〈Proposed fix〉小節說明改了什麼，驗證過程見〈修正 patch：驗證與送 PR 前的步驟〉。FastPDF 沒有直接套用這些 patch，只透過升級 pin 取得已合併的部分。
 
 - **#1394 已於 2026-10-07 合併。** maintainer 拿掉了 luminosity mask 的那一半：沒有 `/CS` 時以 device 色彩空間解讀 `/BC`。理由是 Acrobat 也不這麼做，而且那是無效的 PDF。alpha mask 的修正照原樣合併。
 - **#1395 仍在等待審查**（2026-10-11）。
-- FastPDF 要升級 hayro 的 pin 才會用到合併的修正。升級時照 `PROJECT_AUDIT.md` R6 跑 corpus，並以 `fastpdf-bench diff-corpus` 和 zpdf 對照（ADR 0007）。
+- **FastPDF 已在 2026-10-11 把 pin 升到 `14410d75`，包含 #1394**：`transparency/softmask-groups.pdf` 的 alpha soft mask 變正確，與 zpdf 的差異 10.884% → 2.868%，剩下的是 knockout group（#1395）。corpus 比對見 [`docs/benchmarks/hayro-0.8.md`](../benchmarks/hayro-0.8.md)。#1395 合併後同樣以 `fastpdf-bench diff-corpus` 和 zpdf 對照再升級（ADR 0007）。
 
 證據：
 

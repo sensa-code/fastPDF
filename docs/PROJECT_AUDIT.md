@@ -278,7 +278,7 @@ upstream clone（`upstream/pdf-reader-gpui`）保留為 spec §28 的 benchmark 
 | Crate | 責任 | 內部依賴 | 第三方依賴 | 狀態 |
 |---|---|---|---|---|
 | `fastpdf-engine-api` | Domain model（`DocumentId`、`PageIndex`、`PageSize`、`Rotation`、`RenderScale`、`PixelRect`、`PageRect`、`RenderRequest`、`Pixmap`、`TextLayer`、`OutlineItem`、`Link`、`DocumentMetadata`、`EngineError`、`ResourceLimits`、`CancelToken`）；`PdfEngine`／`EngineDocument` trait；`GuardedDocument`（驗證、guardrail、panic isolation） | — | **無**（只用 std） | 完成，23 tests |
-| `fastpdf-engine-hayro` | Hayro adapter：座標轉換、block 合併的 tile render、guardrail（靜態掃描、預先解譯預算、bomb 預解壓）、Windows CJK 字型 resolver、glyph 層級 text layer、outline／links | engine-api | hayro（git `ced00dd0`，Apache-2.0 OR MIT）、memmap2、flate2 | 完成，46 tests；**V0.1 預設 engine**（ADR 0007） |
+| `fastpdf-engine-hayro` | Hayro adapter：座標轉換、block 合併的 tile render、guardrail（靜態掃描、預先解譯預算、bomb 預解壓）、Windows CJK 字型 resolver、glyph 層級 text layer、outline／links | engine-api | hayro（git `14410d75`，Apache-2.0 OR MIT）、memmap2、flate2 | 完成，46 tests；**V0.1 預設 engine**（ADR 0007） |
 | `fastpdf-engine-zpdf` | zpdf adapter（M3 PoC，feature-gated），pin 在已 audit 的 commit | engine-api | zpdf 子 crate（MIT，git `fe0ed23`，不含 writer） | 完成，39 tests |
 | `fastpdf-cache` | `ByteLru`（以 byte 計重的 O(1) LRU）、`SharedCache`（thread-safe、eviction hook、protected floor）、`MemoryBudgetManager`（Normal／Soft／Hard） | engine-api（只用 `MemoryPressure`） | 無 | 完成，11 tests |
 | `fastpdf-render` | `ScaleBucket`／`ZoomLevel`、`TileGrid`／`TileKey`（含 gutter）、`DocumentLayout`（lazy 頁面尺寸）、`Viewport`、`plan_tiles`（P0–P3）、`RenderScheduler`（固定 worker、lane、cancel／discard）、`TileCache`（progressive fallback） | engine-api、cache | 無 | 完成，34 tests |

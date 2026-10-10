@@ -2585,8 +2585,8 @@ dependencies = [
 
 [[package]]
 name = "hayro"
-version = "0.7.0"
-source = "git+https://github.com/LaurenzV/hayro?rev=ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7#ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7"
+version = "0.8.0"
+source = "git+https://github.com/LaurenzV/hayro?rev=14410d75ec7e38bba85a210a68c4fdd6bbefaeaa#14410d75ec7e38bba85a210a68c4fdd6bbefaeaa"
 dependencies = [
  "bytemuck",
  "fearless_simd 1.0.0",
@@ -2600,13 +2600,13 @@ dependencies = [
 
 [[package]]
 name = "hayro-ccitt"
-version = "0.3.0"
-source = "git+https://github.com/LaurenzV/hayro?rev=ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7#ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7"
+version = "0.4.0"
+source = "git+https://github.com/LaurenzV/hayro?rev=14410d75ec7e38bba85a210a68c4fdd6bbefaeaa#14410d75ec7e38bba85a210a68c4fdd6bbefaeaa"
 
 [[package]]
 name = "hayro-cmap"
 version = "0.1.0"
-source = "git+https://github.com/LaurenzV/hayro?rev=ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7#ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7"
+source = "git+https://github.com/LaurenzV/hayro?rev=14410d75ec7e38bba85a210a68c4fdd6bbefaeaa#14410d75ec7e38bba85a210a68c4fdd6bbefaeaa"
 dependencies = [
  "brotli",
  "hayro-postscript",
@@ -2614,8 +2614,8 @@ dependencies = [
 
 [[package]]
 name = "hayro-interpret"
-version = "0.7.0"
-source = "git+https://github.com/LaurenzV/hayro?rev=ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7#ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7"
+version = "0.8.0"
+source = "git+https://github.com/LaurenzV/hayro?rev=14410d75ec7e38bba85a210a68c4fdd6bbefaeaa#14410d75ec7e38bba85a210a68c4fdd6bbefaeaa"
 dependencies = [
  "bitflags 2.13.2",
  "hayro-cmap",
@@ -2632,8 +2632,8 @@ dependencies = [
 
 [[package]]
 name = "hayro-jbig2"
-version = "0.3.0"
-source = "git+https://github.com/LaurenzV/hayro?rev=ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7#ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7"
+version = "0.3.1"
+source = "git+https://github.com/LaurenzV/hayro?rev=14410d75ec7e38bba85a210a68c4fdd6bbefaeaa#14410d75ec7e38bba85a210a68c4fdd6bbefaeaa"
 dependencies = [
  "fearless_simd 1.0.0",
  "hayro-ccitt",
@@ -2650,8 +2650,8 @@ dependencies = [
 
 [[package]]
 name = "hayro-jpeg2000"
-version = "0.4.0"
-source = "git+https://github.com/LaurenzV/hayro?rev=ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7#ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7"
+version = "0.4.1"
+source = "git+https://github.com/LaurenzV/hayro?rev=14410d75ec7e38bba85a210a68c4fdd6bbefaeaa#14410d75ec7e38bba85a210a68c4fdd6bbefaeaa"
 dependencies = [
  "fearless_simd 1.0.0",
 ]
@@ -2659,17 +2659,17 @@ dependencies = [
 [[package]]
 name = "hayro-postscript"
 version = "0.1.0"
-source = "git+https://github.com/LaurenzV/hayro?rev=ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7#ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7"
+source = "git+https://github.com/LaurenzV/hayro?rev=14410d75ec7e38bba85a210a68c4fdd6bbefaeaa#14410d75ec7e38bba85a210a68c4fdd6bbefaeaa"
 
 [[package]]
 name = "hayro-syntax"
-version = "0.7.2"
-source = "git+https://github.com/LaurenzV/hayro?rev=ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7#ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7"
+version = "0.8.0"
+source = "git+https://github.com/LaurenzV/hayro?rev=14410d75ec7e38bba85a210a68c4fdd6bbefaeaa#14410d75ec7e38bba85a210a68c4fdd6bbefaeaa"
 dependencies = [
  "flate2",
  "hayro-ccitt",
  "hayro-jbig2",
- "hayro-jpeg2000 0.4.0 (git+https://github.com/LaurenzV/hayro?rev=ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7)",
+ "hayro-jpeg2000 0.4.1",
  "memchr",
  "rustc-hash 2.1.3",
  "smallvec",
@@ -5614,7 +5614,7 @@ version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c2499c2d826531388872b2268718aed907a39bd785ab0dcfe57fab26283f92e"
 dependencies = [
- "skrifa 0.44.0",
+ "skrifa 0.40.0",
  "yazi",
  "zeno",
 ]
@@ -7225,7 +7225,7 @@ name = "zpdf-image"
 version = "0.14.0"
 source = "git+https://github.com/Xero-Team/zpdf?rev=fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f#fe0ed23f25fa0b8b75a7edcc14d5f881a9a7b16f"
 dependencies = [
- "hayro-jpeg2000 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hayro-jpeg2000 0.4.0",
  "tracing",
  "zpdf-color",
  "zpdf-core",

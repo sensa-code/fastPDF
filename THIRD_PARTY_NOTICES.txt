@@ -136,20 +136,20 @@ LICENSE-ZLIB
 - hash32 0.3.1, MIT OR Apache-2.0: T1 LICENSE-APACHE; T15 LICENSE-MIT
 - hashbrown 0.16.1, MIT OR Apache-2.0: T1 LICENSE-APACHE; T81 LICENSE-MIT
 - hashbrown 0.17.1, MIT OR Apache-2.0: T1 LICENSE-APACHE; T81 LICENSE-MIT
-- hayro 0.7.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83 repository-root/NOTICE.md
-- hayro-ccitt 0.3.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
+- hayro 0.8.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83 repository-root/NOTICE.md
+- hayro-ccitt 0.4.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
 repository-root/NOTICE.md
 - hayro-cmap 0.1.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
 repository-root/NOTICE.md
-- hayro-interpret 0.7.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
+- hayro-interpret 0.8.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
 repository-root/NOTICE.md
-- hayro-jbig2 0.3.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
+- hayro-jbig2 0.3.1, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
 repository-root/NOTICE.md
-- hayro-jpeg2000 0.4.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
+- hayro-jpeg2000 0.4.1, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
 repository-root/NOTICE.md
 - hayro-postscript 0.1.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
 repository-root/NOTICE.md
-- hayro-syntax 0.7.2, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
+- hayro-syntax 0.8.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T82 LICENSE-MIT; T83
 repository-root/NOTICE.md
 - heapless 0.9.3, MIT OR Apache-2.0: T1 LICENSE-APACHE; T8 LICENSE-MIT
 - heck 0.5.0, MIT OR Apache-2.0: T1 LICENSE-APACHE; T84 LICENSE-MIT

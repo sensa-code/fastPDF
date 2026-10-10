@@ -12,14 +12,20 @@ repository.workspace = true
 fastpdf-engine-api.workspace = true
 
 # hayro (Apache-2.0 OR MIT) from git, pinned to a full commit hash on purpose
-# (docs/audit/hayro.md). crates.io 0.7.1 (2026-06) is not enough:
+# (docs/audit/hayro.md). FastPDF needs:
 # - `hayro::render_into` (any affine transform into a caller-owned vello_cpu
-#   RenderContext) is what makes tile/region rendering possible; it only exists
-#   on main (LaurenzV/hayro#1375, 2026-09-25).
-# - main fixes the races/panics when several threads resolve objects of one
-#   shared `Pdf` (object-stream publication, concurrent xref repair; #1343,
-#   2026-10-03). The parallel render workers depend on that.
-# - ced00dd0 adds reference-cycle detection for object streams (#1389).
+#   RenderContext), which makes tile/region rendering possible (#1375);
+# - the fixes for races/panics when several threads resolve objects of one
+#   shared `Pdf` (object-stream publication, concurrent xref repair; #1343).
+#   The parallel render workers depend on that;
+# - reference-cycle detection for object streams (#1389).
+# crates.io 0.8.0 (2026-10-04, = ea9c81dc) has all three, but not what the
+# pinned 14410d75 (2026-10-10) adds on top:
+# - soft masks whose group has no /CS are kept instead of painting the
+#   content opaque (#1394, sent by FastPDF);
+# - JPEG 2000 fixes: POC, RGN, precincts of subsampled components (#1397-#1400).
+# docs/benchmarks/hayro-0.8.md has the corpus comparison. Switch to crates.io
+# once a release contains #1394.
 # hayro-syntax / hayro-interpret / vello_cpu / kurbo are used through hayro's
 # re-exports so the three crates can never drift apart.
 # Bumping: re-run `cargo test -p fastpdf-engine-hayro` and the fastpdf-bench
@@ -27,7 +33,7 @@ fastpdf-engine-api.workspace = true
 # Features: embed-fonts (~240 KB Foxit Symbol/ZapfDingbats + last-resort
 # standard 14), embed-cmaps (~250 KB, required for non-embedded CJK fonts such
 # as MSung-Light + UniCNS-UCS2-H), simd (pic-scale image resampling).
-hayro = { git = "https://github.com/LaurenzV/hayro", rev = "ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7", default-features = false, features = ["embed-fonts", "embed-cmaps", "simd"] }
+hayro = { git = "https://github.com/LaurenzV/hayro", rev = "14410d75ec7e38bba85a210a68c4fdd6bbefaeaa", default-features = false, features = ["embed-fonts", "embed-cmaps", "simd"] }
 
 # Map system CJK fonts (msjh.ttc 21 MB, mingliu.ttc 28 MB) instead of reading
 # them: only touched pages become resident and they are file-backed.

@@ -2,6 +2,7 @@
 
 - 日期：2026-10-04
 - 版本：Hayro git `ced00dd0`（`fastpdf-engine-hayro`），zpdf git `fe0ed23`（`fastpdf-engine-zpdf`）
+- 2026-10-11 補記：Hayro 升到 `14410d75` 後，只有 `transparency/softmask-groups.pdf` 第 1 頁改變：alpha soft mask 變正確，與 zpdf 的差異 10.9% → 2.9%，剩下 knockout group（[`docs/benchmarks/hayro-0.8.md`](benchmarks/hayro-0.8.md)）。下文其餘數字仍是 `ced00dd0` 的結果。
 - 語料：`fixtures/generated/manifest.json`（quick profile，84 個檔案）
 - 工具：`fastpdf-bench diff-corpus`（正確性）、`fastpdf-bench corpus`（效能）
 - 原則（spec §44）：不預設誰贏，讓數據決定。以下每個結論都附上數據或圖片來源。
@@ -102,6 +103,6 @@
    - 維護者活躍、成熟度高。
 2. **zpdf 保留為 feature-gated 的第二 engine**（`engine-zpdf`），用於正確性比對與未來的 fallback 研究。它在透明度（knockout、alpha soft mask）與部分壞檔修復上較好，這些是 Hayro 待補的缺口。
 3. **待辦**：
-   - 向 Hayro upstream 回報或貢獻 knockout group 與 alpha soft mask 的修正，並附上 `transparency/softmask-groups.pdf` 的重現方式。
+   - 向 Hayro upstream 回報或貢獻 knockout group 與 alpha soft mask 的修正，並附上 `transparency/softmask-groups.pdf` 的重現方式。已送出：alpha soft mask（LaurenzV/hayro#1394）已合併並隨 `14410d75` 採用；knockout group（#1395）等待審查。
    - 用真實世界語料（`fixtures/local/`：政府文件、醫療報告、掃描檔）重跑本比較。
    - 逐頁 fallback（Hayro 失敗時改用 zpdf）目前不做：記憶體要兩份，複雜度高，現階段收益不明。

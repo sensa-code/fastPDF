@@ -44,10 +44,10 @@ use fastpdf_engine_api::{
 use crate::document::{DocInner, HayroDocument, open_pdf};
 
 /// The pinned hayro commit (see this crate's `Cargo.toml`).
-pub const HAYRO_REVISION: &str = "ced00dd082e6a7eda8561d4ac0f7fc3828af2ac7";
+pub const HAYRO_REVISION: &str = "14410d75ec7e38bba85a210a68c4fdd6bbefaeaa";
 
 /// Engine version reported to FastPDF: hayro's version line plus the commit.
-const VERSION: &str = "0.7.x+ced00dd0";
+const VERSION: &str = "0.8.0+14410d75";
 
 /// The hayro engine.
 #[derive(Debug, Default, Clone, Copy)]

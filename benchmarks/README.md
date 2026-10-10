@@ -23,6 +23,7 @@ cargo run --release -p fastpdf-bench -- corpus fixtures/generated/manifest.json 
 - 機器：AMD Ryzen 9 9950X（16C/32T）、128 GB RAM、Windows 11 Pro。
 - 結果摘要與 zpdf 的比較見 `docs/engine-comparison.md`。
 - 2026-10-05 以配對方式比較 M1 與 HEAD（`756dfe1`）：84 個檔案狀態相同，到第一頁的時間幾何平均比值 1.001，沒有退步，所以 baseline 沒有更新（`docs/benchmarks/b1-paired.md`）。
+- 2026-10-11 Hayro 升到 `14410d75`：配對比較沒有退步，baseline 沒有更新。`transparency/softmask-groups.pdf` 的首頁因為現在正確地計算 soft mask 而多約 1 ms（+19%），`compare` 標出這一項是預期中的（`docs/benchmarks/hayro-0.8.md`）。
 
 ## 有背景負載時：配對比較
 

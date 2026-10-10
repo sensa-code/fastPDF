@@ -6,6 +6,17 @@
 - 方法：讀碼（下文以 `檔案:行號` 標示，路徑相對於 `upstream/hayro`）、`gh` 唯讀查 issue、在暫存資料夾寫實驗程式（path dependency 指向 upstream）實測。所有數字都是**粗略單次量測**；量測期間其他子 agent 同時在編譯，數字有雜訊（例如同一個 JPX 頁面在負載下量到 54–94 ms，負載降低後重量為約 30 ms）。
 - 限制：沒有下載 hayro-tests 的 1,400+ 遠端測試 PDF（需從外部 R2 下載大量檔案），也沒有跑 upstream 的 render regression 測試；正確性只引用其方法與規模。studio-memory 中 fastPDF 專案沒有 approved memory 或 observation，本文件只依 repository 與實測。
 
+## 升級紀錄
+
+本文件其餘內容是 M0 稽核當時（`ced00dd0`）的紀錄，沒有隨升級改寫。
+
+| 日期 | pin | 內容 | 驗證 |
+|---|---|---|---|
+| 2026-10-04 | `ced00dd0` | M1 起的第一個 pin | 本文件 |
+| 2026-10-11 | `14410d75`（0.8.0 版本線） | #1394（group 沒有 /CS 時保留 soft mask，FastPDF 送的 PR）、JPEG 2000 的 POC／RGN／precinct 修正（#1397–#1400）；FastPDF 程式碼不需修改 | [`docs/benchmarks/hayro-0.8.md`](../benchmarks/hayro-0.8.md)：corpus 只有 `softmask-groups` p1 改變（變正確），開檔狀態與效能沒有退步 |
+
+crates.io 的 0.8.0（2026-10-04，= `ea9c81dc`）已經有 `render_into`、#1343 的 race 修正與 #1389，但沒有 #1394，所以仍 pin git rev；有包含 #1394 的 release 後改用 crates.io。
+
 ---
 
 ## Summary
@@ -102,6 +113,8 @@ repository 沒有 CHANGELOG，以下由 git tags 與 diff 整理。
 | hayro 0.7.0 | 2026-05-15 | tag `hayro-v0.7.0` | 再 8 commits；vello_cpu 0.0.8 |
 | hayro 0.7.1（crates.io 最新） | 2026-06-05 | `1e5b8eb7` | 仍是舊版 Device API，沒有 `render_into` |
 | HEAD | 2026-10-03 | `ced00dd0` | 0.7.1 之後 137 個 commits，大量 breaking change；maintainer 在 #1343 表示下一版是 minor bump（0.8） |
+| hayro 0.8.0（crates.io） | 2026-10-04 | `ea9c81dc` | 稽核之後補記：版本提升只改版本號，API 與 `ced00dd0` 相同 |
+| FastPDF 目前的 pin | 2026-10-10 | `14410d75` | 稽核之後補記：0.8.0 加上 #1394 與 JPEG 2000 修正（#1397–#1400），見〈升級紀錄〉 |
 
 pdf-reader-gpui（0.5）移植到 HEAD 需要改的地方：
 
