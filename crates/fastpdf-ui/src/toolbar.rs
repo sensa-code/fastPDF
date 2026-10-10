@@ -4,13 +4,14 @@
 
 use fastpdf_core::keymap::{ReaderCommand, keystrokes_for};
 use gpui::{
-    AnyView, App, AppContext, ClickEvent, Context, Div, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div,
-    px,
+    AnyView, App, AppContext, ClickEvent, Context, Div, ElementId, InteractiveElement, IntoElement,
+    MouseDownEvent, ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement,
+    Styled, Window, anchored, deferred, div, prelude::FluentBuilder, px,
 };
 
 use crate::i18n::Strings;
 use crate::reader::ReaderView;
+use crate::settings::PageLayout;
 use crate::theme::Theme;
 
 /// Toolbar height in logical pixels.
@@ -43,18 +44,16 @@ pub(crate) fn render(
     };
 
     use ReaderCommand as C;
-    div()
+    // In a narrow window the end of this row is cut off, never the
+    // settings button after it.
+    let row = div()
         .flex()
         .flex_row()
-        .flex_none()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
         .items_center()
         .gap_1()
-        .h(px(HEIGHT))
-        .px_2()
-        .bg(theme.toolbar_bg)
-        .border_b_1()
-        .border_color(theme.toolbar_border)
-        .text_size(px(14.0))
         .child(tools.toggle(
             "sidebar",
             strings.sidebar,
@@ -80,7 +79,7 @@ pub(crate) fn render(
             has_doc,
             cx,
         ))
-        .child(label(page_text, 76.0))
+        .child(label(page_text, 64.0))
         .child(tools.button(
             "next",
             "\u{203a}",
@@ -98,7 +97,7 @@ pub(crate) fn render(
             has_doc,
             cx,
         ))
-        .child(label(zoom_text, 52.0))
+        .child(label(zoom_text, 46.0))
         .child(tools.button("zoom-in", "+", strings.tip_zoom_in, C::ZoomIn, has_doc, cx))
         .child(tools.button(
             "fit-width",
@@ -116,6 +115,7 @@ pub(crate) fn render(
             has_doc,
             cx,
         ))
+        .child(layout_control(view, tools, cx))
         .child(separator(&theme))
         .child(tools.button(
             "rotate-ccw",
@@ -162,7 +162,20 @@ pub(crate) fn render(
                 .whitespace_nowrap()
                 .max_w(px(360.0))
                 .child(title),
-        )
+        );
+    div()
+        .flex()
+        .flex_row()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .h(px(HEIGHT))
+        .px_2()
+        .bg(theme.toolbar_bg)
+        .border_b_1()
+        .border_color(theme.toolbar_border)
+        .text_size(px(14.0))
+        .child(row)
         .child(
             styled_button("settings", "\u{2699}", true, view.settings_open, &theme)
                 .text_size(px(16.0))
@@ -171,6 +184,148 @@ pub(crate) fn render(
                     this.toggle_settings_panel(cx);
                 })),
         )
+}
+
+/// The page layout button and, while it is open, its menu. The layout is a
+/// setting, so it can be chosen without a document too.
+fn layout_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView>) -> Div {
+    let theme = tools.theme;
+    let strings = tools.strings;
+    let current = view.settings.page_layout;
+    let short = PageLayout::ALL
+        .iter()
+        .position(|l| *l == current)
+        .and_then(|i| strings.layout_button.get(i))
+        .copied()
+        .unwrap_or_default();
+    let label = format!("{short} \u{25be}");
+    let button = styled_button("layout", label, true, view.layout_menu.open, &theme)
+        .tooltip(tooltip(strings.tip_layout.into(), theme, tools.font))
+        .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+            this.toggle_layout_menu(event, cx);
+        }));
+    div()
+        .relative()
+        .flex_none()
+        .child(button)
+        .when(view.layout_menu.open, |d| {
+            d.child(layout_menu(view, tools, cx))
+        })
+}
+
+fn layout_name(strings: &Strings, layout: PageLayout) -> &'static str {
+    match layout {
+        PageLayout::SinglePage => strings.layout_single_page,
+        PageLayout::Continuous => strings.layout_continuous,
+        PageLayout::TwoPage => strings.layout_two_page,
+        PageLayout::TwoPageContinuous => strings.layout_two_page_continuous,
+    }
+}
+
+fn layout_command(layout: PageLayout) -> ReaderCommand {
+    match layout {
+        PageLayout::SinglePage => ReaderCommand::LayoutSinglePage,
+        PageLayout::Continuous => ReaderCommand::LayoutContinuous,
+        PageLayout::TwoPage => ReaderCommand::LayoutTwoPage,
+        PageLayout::TwoPageContinuous => ReaderCommand::LayoutTwoPageContinuous,
+    }
+}
+
+/// The open layout menu, below its button, over everything else.
+fn layout_menu(
+    view: &ReaderView,
+    tools: Tools,
+    cx: &mut Context<'_, ReaderView>,
+) -> impl IntoElement + use<> {
+    let theme = tools.theme;
+    let strings = tools.strings;
+    let current = view.settings.page_layout;
+    let items: Vec<Stateful<Div>> = PageLayout::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(i, layout)| {
+            menu_item(
+                ("layout-item", i),
+                layout_name(strings, layout),
+                layout == current,
+                true,
+                layout_command(layout),
+                tools,
+                cx,
+            )
+        })
+        .collect();
+    let cover = menu_item(
+        "layout-cover",
+        strings.cover_page,
+        view.settings.cover_page,
+        current.is_two_page(),
+        ReaderCommand::ToggleCoverPage,
+        tools,
+        cx,
+    );
+    let menu = div()
+        .id("layout-menu")
+        .occlude()
+        .flex()
+        .flex_col()
+        .py_1()
+        .min_w(px(180.0))
+        .rounded(px(6.0))
+        .bg(theme.toolbar_bg)
+        .border_1()
+        .border_color(theme.toolbar_border)
+        .shadow_md()
+        .font_family(tools.font)
+        .text_color(theme.text)
+        .text_size(px(14.0))
+        .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+            this.dismiss_layout_menu(event, cx);
+        }))
+        .children(items)
+        .child(div().h(px(1.0)).mx_2().my_1().bg(theme.toolbar_border))
+        .child(cover);
+    div().absolute().top(px(32.0)).left(px(0.0)).child(
+        deferred(anchored().snap_to_window_with_margin(px(8.0)).child(menu)).with_priority(1),
+    )
+}
+
+/// A menu row with a check mark column; a disabled row is shown muted.
+fn menu_item(
+    id: impl Into<ElementId>,
+    label: &'static str,
+    checked: bool,
+    enabled: bool,
+    command: ReaderCommand,
+    tools: Tools,
+    cx: &mut Context<'_, ReaderView>,
+) -> Stateful<Div> {
+    let theme = tools.theme;
+    let row = div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .h(px(28.0))
+        .px_3()
+        .whitespace_nowrap()
+        .child(
+            div()
+                .flex_none()
+                .w(px(14.0))
+                .child(if checked { "\u{2713}" } else { "" }),
+        )
+        .child(label);
+    if !enabled {
+        return row.text_color(theme.text_muted);
+    }
+    let hover = theme.button_hover;
+    row.cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            this.run_command(command, window, cx);
+        }))
 }
 
 fn separator(theme: &Theme) -> Div {
@@ -209,7 +364,7 @@ pub(crate) fn styled_button(
         .justify_center()
         .h(px(28.0))
         .min_w(px(28.0))
-        .px_2()
+        .px(px(6.0))
         .rounded(px(4.0))
         .whitespace_nowrap()
         .child(label.into());

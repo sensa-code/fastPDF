@@ -80,8 +80,9 @@ pub(crate) fn guess_view(settings: &Settings, screen: ScreenGuess) -> Option<Vie
     } else {
         0.0
     };
+    // The vertical scroll bar is always there while a document is open.
     let view = ViewGuess {
-        width: width - sidebar,
+        width: width - sidebar - crate::scrollbar::THICKNESS,
         height: height - crate::toolbar::HEIGHT,
         scale,
     };
@@ -179,7 +180,10 @@ impl Startup {
         let pending = file.map(|path| {
             let early = screen.and_then(|s| guess_view(&settings, s)).map(|view| {
                 let parts = SessionParts {
-                    config: options.session.clone(),
+                    config: SessionConfig {
+                        layout: settings.layout_mode(),
+                        ..options.session.clone()
+                    },
                     color: if settings.night_mode {
                         ColorMode::Inverted
                     } else {
@@ -217,9 +221,9 @@ mod tests {
     #[test]
     fn the_default_window_is_predicted_like_the_real_one() {
         // 1080 * 0.85 = 918 high, 826.2 wide (826 device pixels); minus
-        // the 40 px toolbar.
+        // the 40 px toolbar and the 12 px scroll bar.
         let view = guess_view(&Settings::default(), FULL_HD).expect("predictable");
-        assert_eq!((view.width, view.height, view.scale), (826.0, 878.0, 1.0));
+        assert_eq!((view.width, view.height, view.scale), (814.0, 878.0, 1.0));
         // 4K at 150%: the same logical screen as 2560 x 1440.
         let hidpi = ScreenGuess {
             width_px: 3840,
@@ -231,7 +235,7 @@ mod tests {
         // 1440 * 0.85 = 1224 logical = 1836 device pixels; minus the toolbar.
         assert_eq!(view.height, 1184.0);
         let (width, _) = default_window_size(2560.0, 1440.0);
-        assert_eq!(view.width, (width * 1.5).round() / 1.5);
+        assert_eq!(view.width, (width * 1.5).round() / 1.5 - 12.0);
     }
 
     #[test]
@@ -249,7 +253,10 @@ mod tests {
             ..Settings::default()
         };
         let view = guess_view(&settings, FULL_HD).expect("predictable");
-        assert_eq!((view.width, view.height), (1184.0 - 220.0, 781.0 - 40.0));
+        assert_eq!(
+            (view.width, view.height),
+            (1184.0 - 220.0 - 12.0, 781.0 - 40.0)
+        );
         let maximized = Settings {
             window: settings.window.map(|w| WindowPlacement {
                 maximized: true,

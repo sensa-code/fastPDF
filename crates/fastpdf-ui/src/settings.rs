@@ -1,5 +1,5 @@
 //! UI settings kept between runs (M7): appearance, night mode, sidebar,
-//! default zoom and window placement.
+//! default zoom, page layout and window placement.
 //!
 //! The file is a handful of `key = value` lines, a subset of TOML, read and
 //! written with std only (spec §36: no serde / toml for this). Reading never
@@ -14,6 +14,8 @@
 //! sidebar_open = true
 //! sidebar_tab = "pages"
 //! default_zoom = "fit-page"
+//! page_layout = "two-page"
+//! cover_page = true
 //! language = "zh-TW"
 //! smooth_scrolling = true
 //! window = [120, 80, 900, 1100]
@@ -24,6 +26,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use fastpdf_core::{LayoutMode, Spread};
 use gpui::BackgroundExecutor;
 
 use crate::i18n::Language;
@@ -90,6 +93,62 @@ impl DefaultZoom {
         Self::ALL
             .into_iter()
             .find(|z| z.name().eq_ignore_ascii_case(name.trim()))
+    }
+}
+
+/// How pages are arranged (the toolbar's layout menu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum PageLayout {
+    /// One page per row, scrolling.
+    #[default]
+    Continuous,
+    /// One page at a time.
+    SinglePage,
+    /// Two pages side by side, one pair at a time.
+    TwoPage,
+    /// Two pages side by side, scrolling.
+    TwoPageContinuous,
+}
+
+impl PageLayout {
+    pub(crate) const ALL: [Self; 4] = [
+        Self::SinglePage,
+        Self::Continuous,
+        Self::TwoPage,
+        Self::TwoPageContinuous,
+    ];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Continuous => "continuous",
+            Self::SinglePage => "single-page",
+            Self::TwoPage => "two-page",
+            Self::TwoPageContinuous => "two-page-continuous",
+        }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|l| l.name().eq_ignore_ascii_case(name.trim()))
+    }
+
+    pub(crate) fn is_two_page(self) -> bool {
+        matches!(self, Self::TwoPage | Self::TwoPageContinuous)
+    }
+
+    /// The session's layout; `cover` puts page 1 on its own in two-page
+    /// layouts.
+    pub(crate) fn mode(self, cover: bool) -> LayoutMode {
+        let spread = match (self.is_two_page(), cover) {
+            (false, _) => Spread::Single,
+            (true, false) => Spread::Double,
+            (true, true) => Spread::DoubleCover,
+        };
+        LayoutMode {
+            spread,
+            continuous: matches!(self, Self::Continuous | Self::TwoPageContinuous),
+        }
     }
 }
 
@@ -172,6 +231,9 @@ pub(crate) struct Settings {
     pub sidebar_open: bool,
     pub sidebar_tab: SidebarTab,
     pub default_zoom: DefaultZoom,
+    pub page_layout: PageLayout,
+    /// Two-page layouts show page 1 on its own, like a book's cover.
+    pub cover_page: bool,
     pub language: LanguageChoice,
     /// Mouse-wheel notches scroll with a short ease-out animation.
     pub smooth_scrolling: bool,
@@ -186,10 +248,19 @@ impl Default for Settings {
             sidebar_open: false,
             sidebar_tab: SidebarTab::default(),
             default_zoom: DefaultZoom::default(),
+            page_layout: PageLayout::default(),
+            cover_page: false,
             language: LanguageChoice::default(),
             smooth_scrolling: true,
             window: None,
         }
+    }
+}
+
+impl Settings {
+    /// The page layout for document sessions.
+    pub(crate) fn layout_mode(&self) -> LayoutMode {
+        self.page_layout.mode(self.cover_page)
     }
 }
 
@@ -276,6 +347,13 @@ impl Settings {
                 ("default_zoom", Value::Text(name)) => DefaultZoom::from_name(name)
                     .map(|z| settings.default_zoom = z)
                     .is_some(),
+                ("page_layout", Value::Text(name)) => PageLayout::from_name(name)
+                    .map(|l| settings.page_layout = l)
+                    .is_some(),
+                ("cover_page", Value::Bool(on)) => {
+                    settings.cover_page = on;
+                    true
+                }
                 ("window", Value::Numbers(n)) if n.len() == 4 => {
                     window = Some([n[0], n[1], n[2], n[3]]);
                     true
@@ -293,7 +371,8 @@ impl Settings {
                 }
                 (
                     "appearance" | "night_mode" | "sidebar_open" | "sidebar_tab" | "default_zoom"
-                    | "language" | "smooth_scrolling" | "window" | "window_maximized",
+                    | "page_layout" | "cover_page" | "language" | "smooth_scrolling" | "window"
+                    | "window_maximized",
                     _,
                 ) => false,
                 _ => {
@@ -328,6 +407,7 @@ impl Settings {
             "# FastPDF settings, written by FastPDF. Unknown keys and bad values are ignored.\n\
              # appearance: \"system\", \"light\" or \"dark\"\n\
              # default_zoom: \"fit-width\", \"fit-page\" or \"actual-size\"\n\
+             # page_layout: \"single-page\", \"continuous\", \"two-page\" or \"two-page-continuous\"\n\
              # language: \"system\", \"en\" or \"zh-TW\"\n",
         );
         let mut line = |key: &str, value: String| {
@@ -341,6 +421,8 @@ impl Settings {
         line("sidebar_open", self.sidebar_open.to_string());
         line("sidebar_tab", format!("\"{}\"", tab_name(self.sidebar_tab)));
         line("default_zoom", format!("\"{}\"", self.default_zoom.name()));
+        line("page_layout", format!("\"{}\"", self.page_layout.name()));
+        line("cover_page", self.cover_page.to_string());
         line("language", format!("\"{}\"", self.language.name()));
         line("smooth_scrolling", self.smooth_scrolling.to_string());
         if let Some(w) = self.window.filter(WindowPlacement::is_plausible) {
@@ -489,6 +571,8 @@ mod tests {
             sidebar_open: true,
             sidebar_tab: SidebarTab::Pages,
             default_zoom: DefaultZoom::FitPage,
+            page_layout: PageLayout::TwoPage,
+            cover_page: true,
             language: LanguageChoice::Fixed(Language::TraditionalChinese),
             smooth_scrolling: false,
             window: Some(WindowPlacement {
@@ -669,12 +753,31 @@ mod tests {
     }
 
     #[test]
+    fn page_layouts_map_to_session_modes() {
+        let mode = |layout: PageLayout, cover| layout.mode(cover);
+        assert_eq!(mode(PageLayout::Continuous, true), LayoutMode::default());
+        let single = mode(PageLayout::SinglePage, false);
+        assert_eq!((single.spread, single.continuous), (Spread::Single, false));
+        let two = mode(PageLayout::TwoPage, false);
+        assert_eq!((two.spread, two.continuous), (Spread::Double, false));
+        let book = mode(PageLayout::TwoPageContinuous, true);
+        assert_eq!((book.spread, book.continuous), (Spread::DoubleCover, true));
+        let (s, problems) = Settings::parse("page_layout = \"single-page\"\ncover_page = maybe\n");
+        assert_eq!(s.page_layout, PageLayout::SinglePage);
+        assert!(!s.cover_page);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+    }
+
+    #[test]
     fn names_parse_back() {
         for a in Appearance::ALL {
             assert_eq!(Appearance::from_name(a.name()), Some(a));
         }
         for z in DefaultZoom::ALL {
             assert_eq!(DefaultZoom::from_name(z.name()), Some(z));
+        }
+        for l in PageLayout::ALL {
+            assert_eq!(PageLayout::from_name(l.name()), Some(l));
         }
         assert_eq!(tab_from_name(" Pages "), Some(SidebarTab::Pages));
         assert_eq!(Appearance::from_name("auto"), None);

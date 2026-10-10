@@ -62,7 +62,8 @@ impl Viewport {
     }
 
     /// Keeps the view inside the document; centers documents narrower than
-    /// the view horizontally.
+    /// the view horizontally, and in page mode a row shorter than the view
+    /// vertically.
     pub fn clamp_scroll(&mut self, layout: &DocumentLayout) {
         let (doc_w, doc_h) = layout.total_size();
         let visible = self.visible_rect();
@@ -71,7 +72,24 @@ impl Viewport {
         } else {
             self.scroll_x.clamp(0.0, doc_w - visible.width)
         };
-        self.scroll_y = self.scroll_y.clamp(0.0, (doc_h - visible.height).max(0.0));
+        self.scroll_y = if layout.is_paged() && doc_h <= visible.height {
+            (doc_h - visible.height) / 2.0
+        } else {
+            self.scroll_y.clamp(0.0, (doc_h - visible.height).max(0.0))
+        };
+    }
+
+    /// Whether the view can move further down (`forward`) or up.
+    pub fn can_scroll_y(&self, layout: &DocumentLayout, forward: bool) -> bool {
+        // A fraction of a pixel left to go does not count.
+        let slack = 0.5 / self.px_per_point();
+        let (_, doc_h) = layout.total_size();
+        let max = doc_h - self.visible_rect().height;
+        if forward {
+            self.scroll_y < max - slack
+        } else {
+            self.scroll_y > slack
+        }
     }
 
     /// Changes zoom while keeping the layout point under (`anchor_x`,
@@ -149,5 +167,24 @@ mod tests {
         v.scroll_y = 1e12;
         v.clamp_scroll(&layout);
         assert!((v.scroll_y - (2.0 * 792.0 - 225.0)).abs() < 1e-3);
+        assert!(!v.can_scroll_y(&layout, true));
+        assert!(v.can_scroll_y(&layout, false));
+    }
+
+    #[test]
+    fn a_short_row_is_centered_in_page_mode() {
+        let mut layout = DocumentLayout::new(3, PageSize::LETTER, 0.0);
+        let mut v = Viewport::new(1000.0, 2000.0, ZoomLevel::ACTUAL_SIZE, 1.0);
+        v.clamp_scroll(&layout);
+        assert_eq!(v.scroll_y, 0.0); // continuous: top aligned
+        layout.set_mode(crate::LayoutMode {
+            spread: crate::Spread::Single,
+            continuous: false,
+        });
+        v.clamp_scroll(&layout);
+        // 2000 px = 1500 pt of view around a 792-pt page.
+        assert!((v.scroll_y - (792.0 - 1500.0) / 2.0).abs() < 1e-3);
+        assert!(!v.can_scroll_y(&layout, true));
+        assert!(!v.can_scroll_y(&layout, false));
     }
 }

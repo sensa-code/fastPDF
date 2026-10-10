@@ -29,7 +29,7 @@ use fastpdf_engine_api::{
     RenderRequest, RenderScale, Rgba8, Rotation,
 };
 use fastpdf_render::{
-    DocumentLayout, Lane, LayoutRect, PlanConfig, Priority, RenderJob, RenderScheduler,
+    DocumentLayout, Lane, LayoutMode, LayoutRect, PlanConfig, Priority, RenderJob, RenderScheduler,
     ScaleBucket, SchedulerConfig, SchedulerStats, TileCache, TileGrid, TileKey, Viewport,
     ZoomLevel, plan_tiles,
 };
@@ -53,6 +53,8 @@ pub struct SessionConfig {
     pub near_margin: f32,
     /// Pixels rendered around each tile so scaled tiles meet without seams.
     pub tile_gutter: u32,
+    /// Pages per row, continuous or one row at a time.
+    pub layout: LayoutMode,
 }
 
 impl Default for SessionConfig {
@@ -67,8 +69,33 @@ impl Default for SessionConfig {
             paper: Rgba8::WHITE,
             near_margin: 0.5,
             tile_gutter: 2,
+            layout: LayoutMode::default(),
         }
     }
+}
+
+/// A scroll bar's thumb, as fractions of its track.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollThumb {
+    /// Where the thumb starts, `0..=1 - size`.
+    pub start: f64,
+    /// Thumb length, `0 < size < 1`.
+    pub size: f64,
+}
+
+/// The scroll bars the view needs: `None` when everything fits.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScrollBars {
+    /// Continuous: the visible part of the document. Page mode with more
+    /// than one row: the shown row among all rows.
+    pub vertical: Option<ScrollThumb>,
+    pub horizontal: Option<ScrollThumb>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollAxis {
+    Vertical,
+    Horizontal,
 }
 
 /// How zoom follows window resizes.
@@ -261,7 +288,8 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         let id = DocumentId::next();
         let first = doc.page_info(PageIndex::FIRST).ok();
         let estimate = first.map_or(PageSize::LETTER, |i| i.display_size(Rotation::R0));
-        let mut layout = DocumentLayout::new(doc.page_count(), estimate, config.page_gap);
+        let mut layout =
+            DocumentLayout::with_mode(doc.page_count(), estimate, config.page_gap, config.layout);
         if first.is_some() {
             layout.set_page_sizes([(PageIndex::FIRST, estimate)]);
         }
@@ -405,7 +433,27 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         &self.tiles
     }
 
-    /// The page at the top third of the view — what users consider "current".
+    /// Pages per row, continuous or one row at a time.
+    pub fn layout_mode(&self) -> LayoutMode {
+        self.layout.mode()
+    }
+
+    /// Switches the arrangement, staying on the current page.
+    pub fn set_layout_mode(&mut self, mode: LayoutMode) {
+        if mode == self.layout.mode() {
+            return;
+        }
+        let current = self.current_page();
+        self.layout.set_mode(mode);
+        self.layout.set_focus(current);
+        self.config.layout = mode;
+        self.layout_version += 1;
+        self.apply_zoom_mode();
+        self.go_to_page(current);
+    }
+
+    /// The page at the top third of the view — what users consider
+    /// "current" (the first page of its row; page mode: of the shown row).
     pub fn current_page(&self) -> PageIndex {
         let v = self.viewport.visible_rect();
         self.layout.page_at(v.y + v.height / 3.0)
@@ -457,7 +505,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         let ppp = self.viewport.px_per_point();
         let lx = self.viewport.scroll_x + f64::from(x) / ppp;
         let ly = self.viewport.scroll_y + f64::from(y) / ppp;
-        let page = self.layout.page_at(ly);
+        let page = self.layout.page_at_point(lx, ly);
         let (page_rect, info, rotation) = self.page_frame(page)?;
         if lx < page_rect.x || lx > page_rect.right() || ly < page_rect.y || ly > page_rect.bottom()
         {
@@ -485,25 +533,103 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         }
     }
 
+    /// Scrolls the top of `page`'s row to the top of the view (page mode:
+    /// shows that row).
     pub fn go_to_page(&mut self, page: PageIndex) {
         let page = PageIndex::new(page.get().min(self.page_count().saturating_sub(1)));
-        self.resolve_pages(page.get()..page.get() + 1);
-        if let Some(rect) = self.layout.page_rect(page) {
-            self.viewport.scroll_y = rect.y - f64::from(self.config.page_gap);
+        let turned = self.layout.is_paged() && self.layout.set_focus(page);
+        if turned {
+            self.layout_version += 1;
+        }
+        self.resolve_pages(self.layout.row_pages(self.layout.row_of(page)));
+        // Fit page fits every row shown in page mode.
+        if turned && self.zoom_mode == ZoomMode::FitPage {
+            self.apply_zoom_mode();
+        }
+        if let Some(top) = self.layout.row_top_of(page) {
+            self.viewport.scroll_y = top - f64::from(self.config.page_gap);
             self.viewport.clamp_scroll(&self.layout);
         }
     }
 
     pub fn next_page(&mut self) {
-        if let Some(next) = self.current_page().next(self.page_count()) {
+        if let Some(next) = self.layout.next_row_page(self.current_page()) {
             self.go_to_page(next);
         }
     }
 
     pub fn prev_page(&mut self) {
-        if let Some(prev) = self.current_page().prev() {
+        if let Some(prev) = self.layout.prev_row_page(self.current_page()) {
             self.go_to_page(prev);
         }
+    }
+
+    /// Whether the view can scroll further down (`forward`) or up.
+    pub fn can_scroll(&self, forward: bool) -> bool {
+        self.viewport.can_scroll_y(&self.layout, forward)
+    }
+
+    /// Page mode: shows the next row from its top, or the previous row from
+    /// its bottom. False at either end of the document.
+    pub fn turn_page(&mut self, forward: bool) -> bool {
+        let current = self.current_page();
+        let target = if forward {
+            self.layout.next_row_page(current)
+        } else {
+            self.layout.prev_row_page(current)
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        self.go_to_page(target);
+        if !forward {
+            self.viewport.scroll_y = f64::INFINITY;
+            self.viewport.clamp_scroll(&self.layout);
+        }
+        true
+    }
+
+    /// Where the scroll bars' thumbs are.
+    pub fn scroll_bars(&self) -> ScrollBars {
+        let (doc_w, doc_h) = self.layout.total_size();
+        let visible = self.viewport.visible_rect();
+        let rows = self.layout.row_count();
+        let vertical = if self.layout.is_paged() && rows > 1 {
+            let rows = rows as f64;
+            Some(ScrollThumb {
+                start: self.layout.focus_row() as f64 / rows,
+                size: 1.0 / rows,
+            })
+        } else {
+            thumb(self.viewport.scroll_y, visible.height, doc_h)
+        };
+        ScrollBars {
+            vertical,
+            horizontal: thumb(self.viewport.scroll_x, visible.width, doc_w),
+        }
+    }
+
+    /// Moves a scroll bar's thumb to `start` (a fraction of its track, as in
+    /// [`ScrollThumb::start`]). Page mode: the vertical thumb picks the row.
+    pub fn scroll_to(&mut self, axis: ScrollAxis, start: f64) {
+        if !start.is_finite() {
+            return;
+        }
+        let start = start.clamp(0.0, 1.0);
+        let (doc_w, doc_h) = self.layout.total_size();
+        let rows = self.layout.row_count();
+        match axis {
+            ScrollAxis::Horizontal => self.viewport.scroll_x = start * doc_w,
+            ScrollAxis::Vertical if self.layout.is_paged() && rows > 1 => {
+                let row = ((start * rows as f64).round() as usize).min(rows - 1);
+                if row != self.layout.focus_row() {
+                    self.go_to_page(PageIndex::new(self.layout.row_pages(row).start));
+                }
+                return;
+            }
+            ScrollAxis::Vertical => self.viewport.scroll_y = start * doc_h,
+        }
+        self.viewport.clamp_scroll(&self.layout);
     }
 
     pub fn first_page(&mut self) {
@@ -514,12 +640,21 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         self.go_to_page(PageIndex::new(self.page_count().saturating_sub(1)));
     }
 
-    /// Scrolls one view height (minus a little overlap for context).
+    /// Scrolls one view height (minus a little overlap for context); in
+    /// page mode, at the bottom of the row, turns the page.
     pub fn page_down(&mut self) {
+        if self.layout.is_paged() && !self.can_scroll(true) {
+            self.turn_page(true);
+            return;
+        }
         self.scroll_by(0.0, self.viewport.height * 0.9);
     }
 
     pub fn page_up(&mut self) {
+        if self.layout.is_paged() && !self.can_scroll(false) {
+            self.turn_page(false);
+            return;
+        }
         self.scroll_by(0.0, -self.viewport.height * 0.9);
     }
 
@@ -573,7 +708,12 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             .doc
             .page_info(PageIndex::FIRST)
             .map_or(PageSize::LETTER, |i| i.display_size(rotation));
-        self.layout = DocumentLayout::new(self.page_count(), estimate, self.config.page_gap);
+        self.layout = DocumentLayout::with_mode(
+            self.page_count(),
+            estimate,
+            self.config.page_gap,
+            self.layout.mode(),
+        );
         self.layout_version += 1;
         self.apply_zoom_mode();
         self.go_to_page(current);
@@ -586,11 +726,11 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
                 .viewport
                 .fit_width_zoom(&self.layout, self.config.fit_margin),
             ZoomMode::FitPage => {
-                let page = self
+                let size = self
                     .layout
-                    .page_size(self.current_page())
+                    .fit_size(self.current_page())
                     .unwrap_or(PageSize::LETTER);
-                self.viewport.fit_page_zoom(page, self.config.fit_margin)
+                self.viewport.fit_page_zoom(size, self.config.fit_margin)
             }
         };
         self.viewport.zoom = zoom;
@@ -615,7 +755,14 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         let visible = self.viewport.visible_rect();
         let near = visible.expand_y(visible.height * f64::from(self.config.near_margin));
         let range = self.layout.pages_intersecting(near.y, near.bottom());
+        // Page mode renders the next row ahead of a page turn, which needs
+        // its pages' sizes.
+        let ahead = match self.layout.next_row_page(self.current_page()) {
+            Some(next) if self.layout.is_paged() => self.layout.row_pages(self.layout.row_of(next)),
+            _ => 0..0,
+        };
         self.resolve_pages(range);
+        self.resolve_pages(ahead);
 
         let inputs = PlanInputs {
             viewport: self.viewport,
@@ -1172,6 +1319,19 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             snap((y - self.viewport.scroll_y) * ppp),
         ]
     }
+}
+
+/// The thumb of a scroll bar over `total` with `visible` of it shown from
+/// `position`; `None` when it all fits.
+fn thumb(position: f64, visible: f64, total: f64) -> Option<ScrollThumb> {
+    if total.is_nan() || total <= 0.0 || visible >= total - 1e-6 {
+        return None;
+    }
+    let size = (visible / total).clamp(0.0, 1.0);
+    Some(ScrollThumb {
+        start: (position / total).clamp(0.0, 1.0 - size),
+        size,
+    })
 }
 
 /// Page space (unrotated, `size`) to displayed page space after a
@@ -1876,5 +2036,101 @@ mod tests {
         }
         assert_eq!(kept, crate::retry::MAX_ATTEMPTS - 1);
         assert!(retries.is_empty());
+    }
+
+    fn mode(spread: fastpdf_render::Spread, continuous: bool) -> LayoutMode {
+        LayoutMode { spread, continuous }
+    }
+
+    #[test]
+    fn two_pages_per_row_step_by_rows() {
+        use fastpdf_render::Spread;
+        let mut s = session();
+        s.go_to_page(PageIndex::new(10));
+        s.set_layout_mode(mode(Spread::Double, true));
+        assert_eq!(s.current_page(), PageIndex::new(10));
+        s.next_page();
+        assert_eq!(s.current_page(), PageIndex::new(12));
+        s.prev_page();
+        s.prev_page();
+        assert_eq!(s.current_page(), PageIndex::new(8));
+        // Fit width fits both columns (page 2, landscape, widens the left).
+        s.fit_width();
+        let (doc_w, _) = s.layout().total_size();
+        let width_px = doc_w * s.viewport().px_per_point();
+        assert!((width_px - (1280.0 - 2.0 * 8.0)).abs() < 1.0, "{width_px}");
+        // The right page of a row is hit-testable.
+        let frame = settle(&mut s);
+        let right = frame
+            .pages
+            .iter()
+            .find(|p| p.page == PageIndex::new(9))
+            .expect("page 9 is shown next to page 8");
+        let hit = s.view_to_page(right.rect[0] + 10.0, right.rect[1] + 10.0);
+        assert_eq!(hit.map(|h| h.0), Some(PageIndex::new(9)));
+        // Switching back keeps the page.
+        s.set_layout_mode(mode(Spread::Single, true));
+        assert_eq!(s.current_page(), PageIndex::new(8));
+    }
+
+    #[test]
+    fn page_mode_turns_pages_at_the_edges() {
+        use fastpdf_render::Spread;
+        let mut s = session();
+        s.set_layout_mode(mode(Spread::Single, false));
+        s.fit_page();
+        assert_eq!(s.current_page(), PageIndex::FIRST);
+        let frame = settle(&mut s);
+        let shown: Vec<u32> = frame.pages.iter().map(|p| p.page.get()).collect();
+        assert_eq!(shown, [0]);
+        // The whole page fits: nothing to scroll, so paging turns it.
+        assert!(!s.can_scroll(true));
+        s.page_down();
+        assert_eq!(s.current_page(), PageIndex::new(1));
+        s.page_up();
+        assert_eq!(s.current_page(), PageIndex::FIRST);
+        assert!(!s.turn_page(false));
+        // Zoomed in, paging scrolls within the page first.
+        s.set_zoom(ZoomLevel::new(3.0), None);
+        s.go_to_page(PageIndex::new(5));
+        assert!(s.can_scroll(true));
+        s.page_down();
+        assert_eq!(s.current_page(), PageIndex::new(5));
+        while s.can_scroll(true) {
+            s.page_down();
+        }
+        s.page_down();
+        assert_eq!(s.current_page(), PageIndex::new(6));
+        // Turning back shows the previous page from its bottom.
+        s.page_up();
+        assert_eq!(s.current_page(), PageIndex::new(5));
+        assert!(!s.can_scroll(true));
+        // The vertical scroll bar has one slot per row.
+        let v = s.scroll_bars().vertical.expect("50 rows");
+        assert!((v.size - 1.0 / 50.0).abs() < 1e-9);
+        assert!((v.start - 5.0 / 50.0).abs() < 1e-9);
+        s.scroll_to(ScrollAxis::Vertical, 0.5);
+        assert_eq!(s.current_page(), PageIndex::new(25));
+    }
+
+    #[test]
+    fn scroll_bars_follow_the_view() {
+        let mut s = session();
+        let bars = s.scroll_bars();
+        let v = bars.vertical.expect("50 pages do not fit");
+        assert_eq!(v.start, 0.0);
+        assert!(v.size > 0.0 && v.size < 0.1, "{}", v.size);
+        assert!(bars.horizontal.is_none(), "fit width");
+        s.scroll_to(ScrollAxis::Vertical, 1.0);
+        assert!(!s.can_scroll(true));
+        let v = s.scroll_bars().vertical.expect("still scrollable");
+        assert!((v.start + v.size - 1.0).abs() < 1e-6);
+        s.set_zoom(ZoomLevel::new(4.0), None);
+        assert!(s.scroll_bars().horizontal.is_some());
+        s.scroll_to(ScrollAxis::Horizontal, 0.0);
+        let h = s.scroll_bars().horizontal.expect("zoomed in");
+        assert_eq!(h.start, 0.0);
+        s.scroll_to(ScrollAxis::Horizontal, f64::NAN);
+        assert_eq!(s.scroll_bars().horizontal, Some(h));
     }
 }

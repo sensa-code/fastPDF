@@ -12,7 +12,7 @@
 //! | `wait-open` | waits for the document to open (stops if it fails) |
 //! | `wait=MS` | sleeps MS milliseconds |
 //! | `idle` | waits until no tile render is queued or running |
-//! | `cmd=NAME` | runs a command by name (`ZoomIn`, `Print`, `ToggleDevOverlay`, `CloseDocument`, `Quit`, ...) |
+//! | `cmd=NAME` | runs a command by name (`ZoomIn`, `Print`, `LayoutTwoPage`, `ToggleDevOverlay`, `CloseDocument`, `Quit`, ...) |
 //! | `find=TEXT` | opens the find bar and searches for TEXT |
 //! | `wait-find` | waits until the search finished |
 //! | `page=N` | goes to page N (one-based) |
@@ -32,6 +32,7 @@
 //! | `sidebar=off`, `=outline`, `=pages` | closes the sidebar or shows a tab |
 //! | `default-zoom=fit-width`, `=fit-page`, `=actual-size` | sets the default zoom |
 //! | `settings` | shows (or hides) the settings panel |
+//! | `layout-menu` | opens (or closes) the toolbar's page layout menu |
 //! | `language=system`, `=en`, `=zh-TW` | sets the UI language setting |
 //! | `smooth=on`, `=off` | turns smooth wheel scrolling on or off |
 //! | `wheel=NOTCHES` | a mouse-wheel turn (negative: up), as the wheel sends it |
@@ -84,6 +85,7 @@ pub(crate) enum Step {
     Sidebar(Option<SidebarTab>),
     DefaultZoom(DefaultZoom),
     SettingsPanel,
+    LayoutMenu,
     Language(LanguageChoice),
     Smooth(bool),
     /// Wheel notches over the document (positive: down).
@@ -141,6 +143,7 @@ fn parse_step(step: &str) -> Option<Step> {
         ("sidebar", Some(tab)) => Step::Sidebar(Some(tab_from_name(tab)?)),
         ("default-zoom", Some(name)) => Step::DefaultZoom(DefaultZoom::from_name(name)?),
         ("settings", None) => Step::SettingsPanel,
+        ("layout-menu", None) => Step::LayoutMenu,
         ("language", Some(name)) => Step::Language(LanguageChoice::from_name(name)?),
         ("smooth", Some("on")) => Step::Smooth(true),
         ("smooth", Some("off")) => Step::Smooth(false),
@@ -152,7 +155,7 @@ fn parse_step(step: &str) -> Option<Step> {
 /// The command called `name` (the `ReaderCommand` variant name).
 fn command_named(name: &str) -> Option<ReaderCommand> {
     use ReaderCommand as C;
-    const ALL: [ReaderCommand; 29] = [
+    const ALL: [ReaderCommand; 34] = [
         C::OpenFile,
         C::CloseDocument,
         C::Quit,
@@ -179,6 +182,11 @@ fn command_named(name: &str) -> Option<ReaderCommand> {
         C::ToggleSidebar,
         C::ToggleDevOverlay,
         C::ToggleNightMode,
+        C::LayoutSinglePage,
+        C::LayoutContinuous,
+        C::LayoutTwoPage,
+        C::LayoutTwoPageContinuous,
+        C::ToggleCoverPage,
         C::Copy,
         C::SelectAll,
         C::Cancel,
@@ -425,6 +433,11 @@ impl ReaderView {
                 self.toggle_settings_panel(cx);
                 Done
             }
+            Step::LayoutMenu => {
+                self.layout_menu.open = !self.layout_menu.open;
+                cx.notify();
+                Done
+            }
             Step::Language(choice) => {
                 self.set_language(*choice, cx);
                 Done
@@ -473,7 +486,7 @@ mod tests {
     fn settings_steps_parse() {
         let steps = parse(
             "appearance=dark; night=on; night=toggle; sidebar=pages; sidebar=off; \
-             default-zoom=fit-page; settings",
+             default-zoom=fit-page; settings; layout-menu",
         )
         .unwrap();
         assert_eq!(
@@ -486,6 +499,7 @@ mod tests {
                 Step::Sidebar(None),
                 Step::DefaultZoom(DefaultZoom::FitPage),
                 Step::SettingsPanel,
+                Step::LayoutMenu,
             ]
         );
         assert_eq!(

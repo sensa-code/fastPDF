@@ -38,6 +38,10 @@ pub(crate) struct Theme {
     pub input_bg: Rgba,
     /// Current page in the thumbnail list, focused controls, text caret.
     pub accent: Rgba,
+    pub scrollbar_track: Rgba,
+    pub scrollbar_thumb: Rgba,
+    /// Thumb under the mouse or being dragged.
+    pub scrollbar_thumb_active: Rgba,
 }
 
 impl Theme {
@@ -70,6 +74,9 @@ impl Theme {
         sidebar_bg: rgb_const(0xececec),
         input_bg: rgb_const(0xffffff),
         accent: rgb_const(0x0067c0),
+        scrollbar_track: rgb_const(0xdedede),
+        scrollbar_thumb: rgb_const(0xa3a3a3),
+        scrollbar_thumb_active: rgb_const(0x7a7a7a),
     };
 
     pub(crate) const DARK: Self = Self {
@@ -88,6 +95,9 @@ impl Theme {
         sidebar_bg: rgb_const(0x262626),
         input_bg: rgb_const(0x2d2d2d),
         accent: rgb_const(0x4cc2ff),
+        scrollbar_track: rgb_const(0x242424),
+        scrollbar_thumb: rgb_const(0x5c5c5c),
+        scrollbar_thumb_active: rgb_const(0x8a8a8a),
     };
 }
 

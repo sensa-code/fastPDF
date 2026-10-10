@@ -4,7 +4,8 @@
 //!   render resolutions so the tile cache does not fragment.
 //! * [`TileGrid`] splits a rendered page into fixed-size tiles; only tiles
 //!   that intersect the viewport are rendered.
-//! * [`DocumentLayout`] + [`Viewport`] describe the continuous-scroll view;
+//! * [`DocumentLayout`] + [`Viewport`] describe the view: rows of one or
+//!   two pages, scrolled continuously or shown one row at a time;
 //!   [`plan_tiles`] turns them into prioritized tile requests.
 //! * [`RenderScheduler`] runs those requests on a bounded worker pool,
 //!   cancelling work the user has scrolled away from.
@@ -19,7 +20,7 @@ mod tile;
 mod tile_cache;
 mod viewport;
 
-pub use layout::{DocumentLayout, LayoutRect, ScrollAnchor};
+pub use layout::{DocumentLayout, LayoutMode, LayoutRect, ScrollAnchor, Spread};
 pub use plan::{PlanConfig, PlannedTile, Priority, RenderJob, plan_tiles};
 pub use scale::{ScaleBucket, ZoomLevel};
 pub use scheduler::{Lane, RenderScheduler, SchedulerConfig, SchedulerStats, TileResult};

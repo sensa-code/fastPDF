@@ -14,6 +14,8 @@ mod retry;
 pub mod selection;
 pub mod session;
 
+pub use fastpdf_render::{LayoutMode, Spread};
 pub use session::{
-    DocumentSession, Frame, FramePage, FrameTile, SessionConfig, SessionStats, ZoomMode,
+    DocumentSession, Frame, FramePage, FrameTile, ScrollAxis, ScrollBars, ScrollThumb,
+    SessionConfig, SessionStats, ZoomMode,
 };

@@ -35,6 +35,16 @@ pub enum ReaderCommand {
     ToggleDevOverlay,
     /// Night mode: invert page colors.
     ToggleNightMode,
+    /// One page at a time.
+    LayoutSinglePage,
+    /// One page per row, scrolling.
+    LayoutContinuous,
+    /// Two pages side by side, one pair at a time.
+    LayoutTwoPage,
+    /// Two pages side by side, scrolling.
+    LayoutTwoPageContinuous,
+    /// Two-page layouts: show page 1 on its own (a book's cover) or not.
+    ToggleCoverPage,
     /// Copy the selected text.
     Copy,
     SelectAll,

@@ -49,6 +49,7 @@ mod i18n;
 mod overlay;
 mod print;
 mod reader;
+mod scrollbar;
 mod select;
 mod settings;
 mod settings_panel;

@@ -63,6 +63,60 @@ impl SmoothScroll {
     }
 }
 
+/// Page mode: wheel travel past the edge of the shown row that turns the
+/// page. A mouse turns one page per notch (99 px at the Windows default of
+/// three lines). A touchpad sends a stream of small deltas and keeps going
+/// with inertia, so it needs more travel, and after a turn its motion is
+/// ignored for a moment.
+const TURN_TRAVEL_NOTCH: f32 = 90.0;
+const TURN_TRAVEL_TOUCHPAD: f32 = 160.0;
+const TURN_PAUSE_TOUCHPAD: Duration = Duration::from_millis(400);
+
+/// Collects wheel travel past the edge of the shown row (page mode).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct PageTurn {
+    travel: f32,
+    last_turn: Option<Instant>,
+}
+
+impl PageTurn {
+    /// Adds `delta` logical pixels of view motion (positive: down) at the
+    /// edge of the row; true when the travel adds up to a page turn in
+    /// `delta`'s direction. `notch`: the delta came from a mouse wheel.
+    pub(crate) fn push(&mut self, delta: f32, notch: bool, now: Instant) -> bool {
+        if delta == 0.0 || !delta.is_finite() {
+            return false;
+        }
+        if !notch
+            && self
+                .last_turn
+                .is_some_and(|t| now.saturating_duration_since(t) < TURN_PAUSE_TOUCHPAD)
+        {
+            return false;
+        }
+        if self.travel * delta < 0.0 {
+            self.travel = 0.0;
+        }
+        self.travel += delta;
+        let needed = if notch {
+            TURN_TRAVEL_NOTCH
+        } else {
+            TURN_TRAVEL_TOUCHPAD
+        };
+        if self.travel.abs() < needed {
+            return false;
+        }
+        self.travel = 0.0;
+        self.last_turn = Some(now);
+        true
+    }
+
+    /// The view moved within the row: travel toward an edge starts over.
+    pub(crate) fn reset(&mut self) {
+        self.travel = 0.0;
+    }
+}
+
 /// Whether a wheel event is whole mouse-wheel notches. On Windows every
 /// wheel message arrives as lines: a notch is a whole number of lines (the
 /// system's lines per notch), a precision touchpad sends fractions.
@@ -127,6 +181,31 @@ mod tests {
         s.add((0.0, -50.0), start);
         s.stop();
         assert!(!s.is_active());
+    }
+
+    #[test]
+    fn page_turns_need_a_notch_or_a_long_touchpad_swipe() {
+        let start = Instant::now();
+        let mut turn = PageTurn::default();
+        assert!(turn.push(99.0, true, start), "one notch turns");
+        assert!(turn.push(99.0, true, at(start, 10)), "every notch turns");
+        assert!(turn.push(-99.0, true, at(start, 20)), "both ways");
+        // A touchpad adds up its small deltas, then pauses.
+        let mut turn = PageTurn::default();
+        let swipes = (1..=20u64)
+            .filter(|&i| turn.push(10.0, false, at(start, i * 10)))
+            .count();
+        assert_eq!(swipes, 1, "160 px of 200 turn once; the rest is paused");
+        assert!(!turn.push(-200.0, false, at(start, 300)), "still paused");
+        assert!(turn.push(-200.0, false, at(start, 700)));
+        // Changing direction or moving inside the row starts over.
+        let mut turn = PageTurn::default();
+        assert!(!turn.push(60.0, true, start));
+        assert!(!turn.push(-60.0, true, start));
+        assert!(!turn.push(60.0, true, start));
+        turn.reset();
+        assert!(!turn.push(60.0, true, start));
+        assert!(!turn.push(f32::NAN, true, start));
     }
 
     #[test]

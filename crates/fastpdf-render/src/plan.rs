@@ -90,74 +90,90 @@ pub fn plan_tiles(
     let near_pages = layout.pages_intersecting(near.y, near.bottom());
     let visible_pages = layout.pages_intersecting(visible.y, visible.bottom());
 
-    let mut plan_area =
-        |page: PageIndex, area: &LayoutRect, priority_for: &dyn Fn(bool) -> Priority| {
-            let (Some(info), Some(page_rect)) = (page_info(page), layout.page_rect(page)) else {
-                return;
-            };
-            let Some(area) = area.intersect(&page_rect) else {
-                return;
-            };
-            let page_px = scale.page_pixels(info.size, info.rotation.then(config.rotation));
-            let grid = TileGrid::new(page_px, config.tile_size);
-            let sx = f64::from(page_px.width) / page_rect.width;
-            let sy = f64::from(page_px.height) / page_rect.height;
-            let px_rect = to_pixels(&area, &page_rect, sx, sy);
-            for coord in grid.tiles_intersecting(px_rect) {
-                let Some((rendered, region)) = grid.rendered_region(coord, config.gutter) else {
-                    continue;
-                };
-                let tile_center =
-                    page_rect.y + (f64::from(region.y) + f64::from(region.height) / 2.0) / sy;
-                let tile_layout = LayoutRect {
-                    x: page_rect.x + f64::from(region.x) / sx,
-                    y: page_rect.y + f64::from(region.y) / sy,
-                    width: f64::from(region.width) / sx,
-                    height: f64::from(region.height) / sy,
-                };
-                let on_screen = tile_layout.intersect(&visible).is_some();
-                out.push(PlannedTile {
-                    key: TileKey {
-                        page: PageId::new(document, page),
-                        bucket,
-                        rotation: config.rotation,
-                        color: config.color,
-                        tile_size: grid.tile_size(),
-                        coord,
-                    },
-                    priority: priority_for(on_screen),
-                    distance: (tile_center - center_y).abs() as f32,
-                    request: RenderRequest {
-                        page,
-                        scale,
-                        rotation: config.rotation,
-                        region: rendered,
-                        background: config.background,
-                        color_mode: config.color,
-                        annotations: true,
-                    },
-                });
-            }
+    let mut plan_area = |page: PageIndex,
+                         page_rect: LayoutRect,
+                         area: &LayoutRect,
+                         priority_for: &dyn Fn(bool) -> Priority| {
+        let Some(info) = page_info(page) else {
+            return;
         };
+        let Some(area) = area.intersect(&page_rect) else {
+            return;
+        };
+        let page_px = scale.page_pixels(info.size, info.rotation.then(config.rotation));
+        let grid = TileGrid::new(page_px, config.tile_size);
+        let sx = f64::from(page_px.width) / page_rect.width;
+        let sy = f64::from(page_px.height) / page_rect.height;
+        let px_rect = to_pixels(&area, &page_rect, sx, sy);
+        for coord in grid.tiles_intersecting(px_rect) {
+            let Some((rendered, region)) = grid.rendered_region(coord, config.gutter) else {
+                continue;
+            };
+            let tile_center =
+                page_rect.y + (f64::from(region.y) + f64::from(region.height) / 2.0) / sy;
+            let tile_layout = LayoutRect {
+                x: page_rect.x + f64::from(region.x) / sx,
+                y: page_rect.y + f64::from(region.y) / sy,
+                width: f64::from(region.width) / sx,
+                height: f64::from(region.height) / sy,
+            };
+            let on_screen = tile_layout.intersect(&visible).is_some();
+            out.push(PlannedTile {
+                key: TileKey {
+                    page: PageId::new(document, page),
+                    bucket,
+                    rotation: config.rotation,
+                    color: config.color,
+                    tile_size: grid.tile_size(),
+                    coord,
+                },
+                priority: priority_for(on_screen),
+                distance: (tile_center - center_y).abs() as f32,
+                request: RenderRequest {
+                    page,
+                    scale,
+                    rotation: config.rotation,
+                    region: rendered,
+                    background: config.background,
+                    color_mode: config.color,
+                    annotations: true,
+                },
+            });
+        }
+    };
 
     for p in near_pages.clone() {
         let page = PageIndex::new(p);
+        let Some(page_rect) = layout.page_rect(page) else {
+            continue;
+        };
         let page_visible = visible_pages.contains(&p);
-        plan_area(page, &near, &|on_screen| match (on_screen, page_visible) {
-            (true, _) => Priority::Visible,
-            (false, true) => Priority::VisiblePage,
-            (false, false) => Priority::Near,
-        });
+        plan_area(
+            page,
+            page_rect,
+            &near,
+            &|on_screen| match (on_screen, page_visible) {
+                (true, _) => Priority::Visible,
+                (false, true) => Priority::VisiblePage,
+                (false, false) => Priority::Near,
+            },
+        );
     }
 
+    // The row after the near area. In page mode that is the next row, laid
+    // out where a page turn will show it: tiles do not depend on where a
+    // page sits, so they are ready when the page turns.
     if config.prefetch_next_page && near_pages.end < layout.page_count() {
-        let next = PageIndex::new(near_pages.end);
-        if let Some(rect) = layout.page_rect(next) {
-            let first_screen = LayoutRect {
-                height: visible.height.min(rect.height),
-                ..rect
-            };
-            plan_area(next, &first_screen, &|_| Priority::Prefetch);
+        let row = layout.row_of(PageIndex::new(near_pages.end));
+        for p in layout.row_pages(row) {
+            let next = PageIndex::new(p);
+            if let Some(rect) = layout.page_rect_if_focused(next) {
+                let first_screen = LayoutRect {
+                    height: visible.height.min(rect.height),
+                    ..rect
+                };
+                plan_area(next, rect, &first_screen, &|_| Priority::Prefetch);
+            }
         }
     }
 
@@ -223,6 +239,39 @@ mod tests {
         // Nothing beyond the near margin + one prefetched page is planned.
         let max_page = plan.iter().map(|t| t.request.page.get()).max().unwrap();
         assert!(max_page <= 2, "{max_page}");
+    }
+
+    #[test]
+    fn page_mode_plans_the_shown_row_and_prefetches_the_next() {
+        let (mut layout, mut viewport) = setup(10, 1.0);
+        layout.set_mode(crate::LayoutMode {
+            spread: crate::Spread::Double,
+            continuous: false,
+        });
+        layout.set_focus(PageIndex::new(4));
+        viewport.clamp_scroll(&layout);
+        let plan = plan_tiles(
+            DocumentId::from_raw(1),
+            &layout,
+            &viewport,
+            info,
+            &PlanConfig::default(),
+        );
+        let pages = |priority: Priority| {
+            let mut pages: Vec<u32> = plan
+                .iter()
+                .filter(|t| t.priority == priority)
+                .map(|t| t.request.page.get())
+                .collect();
+            pages.sort_unstable();
+            pages.dedup();
+            pages
+        };
+        // Both pages of the shown row (4-5) are planned, nothing else is,
+        // except the top of both pages of the next row (6-7).
+        assert_eq!(pages(Priority::Visible), [4, 5]);
+        assert_eq!(pages(Priority::Prefetch), [6, 7]);
+        assert!(plan.iter().all(|t| (4..8).contains(&t.request.page.get())));
     }
 
     #[test]

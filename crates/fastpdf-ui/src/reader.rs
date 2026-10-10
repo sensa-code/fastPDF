@@ -10,15 +10,15 @@ use fastpdf_cache::{BudgetConfig, MemoryBudgetManager};
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_core::memory::MemoryMonitor;
 use fastpdf_core::recent::RecentFiles;
-use fastpdf_core::{DocumentSession, SessionConfig};
+use fastpdf_core::{DocumentSession, ScrollAxis, SessionConfig};
 use fastpdf_engine_api::{CancelToken, ColorMode, EngineDocument, PageIndex, PageRect, PdfEngine};
 use fastpdf_search::TextCache;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
     App, AppContext, Bounds, ClickEvent, ClipboardItem, Context, Entity, ExternalPaths,
-    FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    PathPromptOptions, PinchEvent, Pixels, Render, ScrollWheelEvent, SharedString,
+    FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ParentElement, PathPromptOptions, PinchEvent, Pixels, Render, ScrollWheelEvent, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Task, TitlebarOptions, Window,
     WindowAppearance, WindowBounds, WindowHandle, WindowOptions, canvas, div,
     prelude::FluentBuilder, px, size,
@@ -31,12 +31,13 @@ use crate::find::{FindBar, SearchTarget};
 use crate::i18n::{Language, Strings};
 use crate::overlay::DevOverlay;
 use crate::print::PrintPanel;
+use crate::scrollbar::{Drag, Hit, ScrollBarState};
 use crate::select::{PagePoint, TextSelection};
 use crate::settings::{
-    Appearance, DefaultZoom, MIN_WINDOW, Settings, SettingsStore, WindowPlacement,
+    Appearance, DefaultZoom, MIN_WINDOW, PageLayout, Settings, SettingsStore, WindowPlacement,
 };
 use crate::sidebar::Sidebar;
-use crate::smooth_scroll::SmoothScroll;
+use crate::smooth_scroll::{PageTurn, SmoothScroll};
 use crate::startup::{SessionParts, Startup, default_window_size};
 use crate::textures::{DEFAULT_UPLOAD_BUDGET, TileImage, TileTextures};
 use crate::theme::{ActiveTheme, Theme};
@@ -231,6 +232,16 @@ pub(crate) struct OpenDoc {
     pub exact_reported: bool,
 }
 
+/// The toolbar's page layout menu.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct LayoutMenu {
+    pub open: bool,
+    /// Where the press that closed the menu (outside it) happened: a press
+    /// on the menu's own button closes the menu, and the click it ends must
+    /// not open it again.
+    pub dismissed_at: Option<gpui::Point<Pixels>>,
+}
+
 pub(crate) enum DocState {
     Empty,
     Loading { path: PathBuf },
@@ -279,6 +290,11 @@ pub struct ReaderView {
     placeholders: Option<Language>,
     /// Mouse-wheel notches in flight (`crate::smooth_scroll`).
     pub(crate) smooth_scroll: SmoothScroll,
+    /// Page mode: wheel travel past the edge of the shown row.
+    page_turn: PageTurn,
+    /// The document area's scroll bars (`crate::scrollbar`).
+    pub(crate) scrollbars: ScrollBarState,
+    pub(crate) layout_menu: LayoutMenu,
     open_task: Option<Task<()>>,
     pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
@@ -374,6 +390,9 @@ impl ReaderView {
             system_language,
             placeholders: None,
             smooth_scroll: SmoothScroll::default(),
+            page_turn: PageTurn::default(),
+            scrollbars: ScrollBarState::default(),
+            layout_menu: LayoutMenu::default(),
             open_task: None,
             dev_script: None,
             _wake_task: wake_task,
@@ -525,6 +544,7 @@ impl ReaderView {
             // nothing of it has been shown yet, so apply the current ones.
             Some(mut session) => {
                 session.set_color_mode(self.color_mode());
+                session.set_layout_mode(self.settings.layout_mode());
                 apply_default_zoom(&mut session, self.settings.default_zoom);
                 session
             }
@@ -574,6 +594,8 @@ impl ReaderView {
         self.selection.reset();
         self.sidebar.reset_document();
         self.smooth_scroll.stop();
+        self.page_turn = PageTurn::default();
+        self.scrollbars.clear();
         // A print job keeps the document alive until it stops.
         self.print.cancel_job();
         if let DocState::Open(open) = mem::replace(&mut self.doc, DocState::Empty) {
@@ -715,6 +737,16 @@ impl ReaderView {
             C::SelectAll => self.select_current_page(cx),
             C::Cancel => self.cancel(window, cx),
             C::Print => self.toggle_print_panel(window, cx),
+            C::LayoutSinglePage => self.set_page_layout(PageLayout::SinglePage, cx),
+            C::LayoutContinuous => self.set_page_layout(PageLayout::Continuous, cx),
+            C::LayoutTwoPage => self.set_page_layout(PageLayout::TwoPage, cx),
+            C::LayoutTwoPageContinuous => {
+                self.set_page_layout(PageLayout::TwoPageContinuous, cx);
+            }
+            C::ToggleCoverPage => {
+                self.settings.cover_page = !self.settings.cover_page;
+                self.apply_page_layout(cx);
+            }
             C::ZoomIn
             | C::ZoomOut
             | C::ActualSize
@@ -738,10 +770,13 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// Esc: stops printing or closes the print panel, then the settings
-    /// panel, then the find bar, then clears the selection.
+    /// Esc: closes the layout menu, stops printing or closes the print
+    /// panel, then the settings panel, then the find bar, then clears the
+    /// selection.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if self.print.printing() {
+        if self.layout_menu.open {
+            self.layout_menu.open = false;
+        } else if self.print.printing() {
             self.print.cancel_job();
         } else if self.print.open {
             self.close_print_panel(window, cx);
@@ -751,6 +786,52 @@ impl ReaderView {
             self.close_find(window, cx);
         } else {
             self.selection.clear();
+        }
+    }
+
+    // ---- page layout ------------------------------------------------------------
+
+    fn set_page_layout(&mut self, layout: PageLayout, cx: &mut Context<'_, Self>) {
+        self.settings.page_layout = layout;
+        self.apply_page_layout(cx);
+    }
+
+    /// Saves the layout settings and shows the document in them.
+    fn apply_page_layout(&mut self, cx: &mut Context<'_, Self>) {
+        self.layout_menu.open = false;
+        self.save_settings(cx);
+        let mode = self.settings.layout_mode();
+        self.smooth_scroll.stop();
+        self.page_turn = PageTurn::default();
+        if let Some(session) = self.session_mut() {
+            session.set_layout_mode(mode);
+        }
+        cx.notify();
+    }
+
+    /// The layout menu's button was clicked.
+    pub(crate) fn toggle_layout_menu(&mut self, event: &ClickEvent, cx: &mut Context<'_, Self>) {
+        let dismissed = self.layout_menu.dismissed_at.take();
+        let closed_by_this_click =
+            matches!(event, ClickEvent::Mouse(m) if Some(m.down.position) == dismissed);
+        if !closed_by_this_click {
+            self.layout_menu.open = !self.layout_menu.open;
+        }
+        cx.notify();
+    }
+
+    /// A press outside the open layout menu closes it.
+    pub(crate) fn dismiss_layout_menu(
+        &mut self,
+        event: &MouseDownEvent,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.layout_menu.open {
+            self.layout_menu = LayoutMenu {
+                open: false,
+                dismissed_at: Some(event.position),
+            };
+            cx.notify();
         }
     }
 
@@ -890,6 +971,10 @@ impl ReaderView {
         cx: &mut Context<'_, Self>,
     ) {
         window.focus(&self.focus, cx);
+        if let Some(hit) = self.scrollbars.hit(event.position) {
+            self.on_scrollbar_press(hit, cx);
+            return;
+        }
         match self.page_point(event.position) {
             Some(point) => {
                 let missing = self.selection.begin(point);
@@ -922,6 +1007,91 @@ impl ReaderView {
         cx.notify();
     }
 
+    // ---- scroll bars --------------------------------------------------------------
+
+    fn on_scrollbar_press(&mut self, hit: Hit, cx: &mut Context<'_, Self>) {
+        self.smooth_scroll.stop();
+        let width = self.session().map_or(0.0, |s| s.viewport().width);
+        match hit {
+            Hit::Thumb { axis, grab } => self.scrollbars.drag = Some(Drag { axis, grab }),
+            Hit::Before(ScrollAxis::Vertical) => {
+                if let Some(s) = self.session_mut() {
+                    s.page_up();
+                }
+            }
+            Hit::After(ScrollAxis::Vertical) => {
+                if let Some(s) = self.session_mut() {
+                    s.page_down();
+                }
+            }
+            Hit::Before(ScrollAxis::Horizontal) => {
+                if let Some(s) = self.session_mut() {
+                    s.scroll_by(-width * 0.9, 0.0);
+                }
+            }
+            Hit::After(ScrollAxis::Horizontal) => {
+                if let Some(s) = self.session_mut() {
+                    s.scroll_by(width * 0.9, 0.0);
+                }
+            }
+            Hit::Nothing => {}
+        }
+        cx.notify();
+    }
+
+    /// Drag update from the canvas' window-wide listener.
+    pub(crate) fn on_scrollbar_drag(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(drag) = self.scrollbars.drag else {
+            return;
+        };
+        let Some(bar) = self.scrollbars.bar(drag.axis) else {
+            return;
+        };
+        let start = bar.start_for(bar.coordinate(position) - drag.grab);
+        if let Some(session) = self.session_mut() {
+            session.scroll_to(drag.axis, start);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn end_scrollbar_drag(&mut self, cx: &mut Context<'_, Self>) {
+        if self.scrollbars.drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Highlights the thumb under the mouse.
+    fn on_document_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let hover = match self.scrollbars.hit(event.position) {
+            Some(Hit::Thumb { axis, .. }) => Some(axis),
+            _ => None,
+        };
+        if hover != self.scrollbars.hover {
+            self.scrollbars.hover = hover;
+            cx.notify();
+        }
+    }
+
+    fn on_document_hover(
+        &mut self,
+        hovered: &bool,
+        _window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !*hovered && self.scrollbars.hover.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// The page-space point under a window position.
     fn page_point(&self, position: gpui::Point<Pixels>) -> Option<PagePoint> {
         let (x, y) = self.local_position(position)?;
@@ -946,23 +1116,34 @@ impl ReaderView {
         cx: &mut Context<'_, Self>,
     ) {
         let anchor = self.local_position(event.position);
-        let smooth = self.settings.smooth_scrolling
-            && !event.modifiers.control
-            && crate::smooth_scroll::is_wheel_notch(&event.delta);
+        let notch = crate::smooth_scroll::is_wheel_notch(&event.delta);
+        let smooth = self.settings.smooth_scrolling && !event.modifiers.control && notch;
         let delta = event.delta.pixel_delta(px(LINE_SCROLL_PX));
         let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
-        let Some(session) = self.session_mut() else {
+        let DocState::Open(open) = &mut self.doc else {
             return;
         };
+        let session = &mut open.session;
+        // GPUI deltas move the content; the view moves the other way.
+        let down = -dy;
+        let paged = !session.layout_mode().continuous;
         if event.modifiers.control {
             // Wheel away from the user zooms in, around the cursor.
             let factor = 2f32.powf(dy / WHEEL_PX_PER_ZOOM_DOUBLING);
             session.set_zoom(session.zoom().scaled(factor), anchor);
+        } else if paged && down != 0.0 && !session.can_scroll(down > 0.0) {
+            // Page mode at the edge of the shown row: wheel travel past it
+            // turns the page (`crate::smooth_scroll::PageTurn`).
+            if self.page_turn.push(down, notch, Instant::now()) {
+                self.smooth_scroll.stop();
+                session.turn_page(down > 0.0);
+            }
         } else if smooth {
+            self.page_turn.reset();
             // Animated by the viewport's prepaint (`crate::smooth_scroll`).
             self.smooth_scroll.add((-dx, -dy), Instant::now());
         } else {
-            // GPUI deltas move the content; the session scrolls the view.
+            self.page_turn.reset();
             session.scroll_by(-dx, -dy);
         }
         cx.stop_propagation();
@@ -1038,9 +1219,19 @@ fn navigate(session: &mut DocumentSession<TileImage>, command: ReaderCommand) {
         C::LastPage => session.last_page(),
         C::PageDown => session.page_down(),
         C::PageUp => session.page_up(),
-        C::ScrollDown => session.scroll_by(0.0, LINE_SCROLL_PX * 2.0),
-        C::ScrollUp => session.scroll_by(0.0, -LINE_SCROLL_PX * 2.0),
+        C::ScrollDown => scroll_or_turn(session, LINE_SCROLL_PX * 2.0),
+        C::ScrollUp => scroll_or_turn(session, -LINE_SCROLL_PX * 2.0),
         _ => {}
+    }
+}
+
+/// Arrow keys: scroll; in page mode, at the edge of the shown row, turn
+/// the page.
+fn scroll_or_turn(session: &mut DocumentSession<TileImage>, dy: f32) {
+    if !session.layout_mode().continuous && !session.can_scroll(dy > 0.0) {
+        session.turn_page(dy > 0.0);
+    } else {
+        session.scroll_by(0.0, dy);
     }
 }
 
@@ -1083,7 +1274,10 @@ impl ReaderView {
     /// Everything a new session needs besides the document.
     fn session_parts(&self) -> SessionParts {
         SessionParts {
-            config: self.options.session.clone(),
+            config: SessionConfig {
+                layout: self.settings.layout_mode(),
+                ..self.options.session.clone()
+            },
             color: self.color_mode(),
             zoom: self.settings.default_zoom,
             wake: self.waker.clone(),
@@ -1224,11 +1418,13 @@ impl ReaderView {
                 prepaint_view.update(cx, |this, _| this.prepare_viewport(bounds, window))
             },
             move |bounds, state, window, cx| {
-                let dragging = view.update(cx, |this, cx| {
+                let (selecting, scrolling) = view.update(cx, |this, cx| {
                     this.paint_viewport(bounds, state, window, cx);
-                    this.selection.dragging
+                    (this.selection.dragging, this.scrollbars.drag.is_some())
                 });
-                if dragging {
+                if scrolling {
+                    crate::viewport::track_scrollbar_drag(view, window);
+                } else if selecting {
                     crate::viewport::track_selection_drag(view, window);
                 }
             },
@@ -1246,6 +1442,8 @@ impl ReaderView {
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .on_pinch(cx.listener(Self::on_pinch))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_document_mouse_down))
+            .on_mouse_move(cx.listener(Self::on_document_mouse_move))
+            .on_hover(cx.listener(Self::on_document_hover))
             .on_drop(cx.listener(Self::on_drop_paths))
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.drop_highlight))
             .child(document)
