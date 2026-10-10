@@ -5,6 +5,10 @@
 
 **#1 與 #7 已經以 PR 送出（2026-10-06）**：[LaurenzV/hayro#1394](https://github.com/LaurenzV/hayro/pull/1394)（#1）與 [LaurenzV/hayro#1395](https://github.com/LaurenzV/hayro/pull/1395)（#7），從 fork `sensa-code/hayro` 的分支 `fastpdf/soft-mask-without-cs`、`fastpdf/knockout-groups` 送出，兩者都 rebase 到 `ea9c81dc`。`patches/` 中的 patch 檔是送出前的版本（base `ced00dd0`）。各 issue 的〈Proposed fix〉小節說明改了什麼，驗證過程見〈修正 patch：驗證與送 PR 前的步驟〉。FastPDF 本身仍 pin 在 `ced00dd0`，沒有用這些 patch。
 
+- **#1394 已於 2026-10-07 合併。** maintainer 拿掉了 luminosity mask 的那一半：沒有 `/CS` 時以 device 色彩空間解讀 `/BC`。理由是 Acrobat 也不這麼做，而且那是無效的 PDF。alpha mask 的修正照原樣合併。
+- **#1395 仍在等待審查**（2026-10-11）。
+- FastPDF 要升級 hayro 的 pin 才會用到合併的修正。升級時照 `PROJECT_AUDIT.md` R6 跑 corpus，並以 `fastpdf-bench diff-corpus` 和 zpdf 對照（ADR 0007）。
+
 證據：
 
 - 每個重現步驟都在 Windows 11 Pro 10.0.26200 x86_64、rustc 1.99.0 上，對 `ced00dd0` 的 upstream clone（path dependency、預設 features：`embed-fonts`、`embed-cmaps`、`simd`）實際執行過，數字照抄輸出。
@@ -24,7 +28,7 @@
 
 | # | 標題 | 類型 | 嚴重度 | 相關 issue | FastPDF 的處理 |
 |---|---|---|---|---|---|
-| 1 | Alpha soft masks whose group has no `/CS` are dropped: the masked content is painted fully opaque | Bug | 高 | — | **patch 0001**（PR #1394） |
+| 1 | Alpha soft masks whose group has no `/CS` are dropped: the masked content is painted fully opaque | Bug | 高 | — | **patch 0001**（PR #1394，2026-10-07 合併，不含 luminosity mask 的部分） |
 | 2 | The owner password is rejected for revision 2–4 security handlers (RC4, AES-128) | Bug | 中高 | — | 無 |
 | 3 | Stack overflow on long chains of indirect color spaces (follow-up to #1347) | Bug（robustness） | 高 | #1347 最後一則留言 | adapter 靜態掃描擋下 + 64 MiB thread stack |
 | 4 | No limit on decoded stream size or on up-front image allocations | Feature（security） | 高 | #1259、#273、#1382 | adapter 預先做 bounded inflate、宣告尺寸檢查 |
