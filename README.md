@@ -99,3 +99,5 @@ FastPDF 以 [MIT](LICENSE-MIT) **或** [Apache-2.0](LICENSE-APACHE) 授權，你
 除非你另外聲明，你提交、希望納入本專案的貢獻，同樣以上述雙授權發佈，不附加其他條款或條件。
 
 第三方依賴的授權見 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md)。release zip 另外附上各依賴自己的授權全文（`licenses/third-party/`）。`vendor/gpui_windows` 是修改過的 Apache-2.0 程式碼（ADR 0011）。
+
+`fastpdf.exe` 本身也帶著這些授權聲明：`fastpdf.exe --licenses` 會印出 FastPDF 與它包含的所有第三方程式碼的授權全文（[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt)），所以單獨散布的 exe 也附有各授權要求的聲明。

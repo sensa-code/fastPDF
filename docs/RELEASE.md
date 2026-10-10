@@ -64,6 +64,10 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
 - [ ] `python tools/license_report.py --all-features --check`：重新產生 `THIRD_PARTY_LICENSES.md`，不可出現待審項目。commit 的清單涵蓋所有 feature（含 `engine-zpdf`），不加 `--all-features` 會改掉清單的檔頭與內容。依賴有變動時，逐一審查新增的 crate。
 - [ ] 檢查 Apache-2.0 依賴是否有 `NOTICE` 檔。有的話，內容必須隨 binary 一起發佈。`package.ps1` 的 bundle 步驟（下一項）會自動收錄，並列出有 NOTICE 的 crate。
 - [ ] 檢查 `THIRD_PARTY_LICENSES.md` 的 Ported source 章節，確認所有移植自 upstream 的程式碼都有登記。
+- [ ] **exe 內建的授權聲明（`THIRD_PARTY_NOTICES.txt`）**：`python tools/license_report.py --notices THIRD_PARTY_NOTICES.txt` 重新產生。
+  - 內容和下一項的 bundle 相同（同樣的範圍與選項），合成一個檔：FastPDF 自己的兩份授權、每個 crate 一行（授權與它附的檔案），以及每份不同的授權全文各一次。去掉重複後約 535 KB；
+  - `fastpdf-app` 以 `include_str!` 把它嵌進 exe，`fastpdf.exe --licenses` 印出全文。所以單獨下載的 exe 也帶著它需要的授權聲明；
+  - 依賴有變動時要重新產生並 commit。CI 會重新產生並比對，不一致就失敗；`package.ps1` 的 smoke test 也會確認 `--licenses` 的輸出和這個檔案相同。
 - [ ] **各 crate 的授權全文（`licenses/third-party/`）**：
   - MIT／BSD／ISC／Zlib 要求隨 binary 附上**每個 crate 自己的 copyright 與授權全文**。`package.ps1` 在 staging 時執行 `python tools/license_report.py --bundle <staging>/licenses/third-party` 收錄這些檔案。
   - 範圍：從 `fastpdf-app` 經 normal 依賴可達的 crate（含 proc-macro），涵蓋 release binary 實際連結的所有 crate。build 依賴只在編譯時執行，不會連結進 exe，所以不收錄。`THIRD_PARTY_LICENSES.md` 的清單範圍比較大：包含所有 workspace member 與 build 依賴。
@@ -108,7 +112,12 @@ pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf fixtures/generated
 pwsh -File tools/package.ps1            # build + stage + zip + sha256 + 驗證 + smoke test
 ```
 
-輸出：`dist/FastPDF-X.Y.Z-win-x64.zip` 與 `dist/FastPDF-X.Y.Z-win-x64.zip.sha256`。`dist/` 已被 git ignore。zip 的內容：
+輸出（`dist/` 已被 git ignore）：
+
+- `dist/FastPDF-X.Y.Z-win-x64.zip` 與 `.zip.sha256`；
+- `dist/FastPDF-X.Y.Z-win-x64.exe` 與 `.exe.sha256`：和 zip 裡相同的 `fastpdf.exe`，給不想解壓縮的使用者。它只依賴 Windows 內建的 DLL（C runtime 靜態連結），授權聲明以 `--licenses` 內建（§1.5）。
+
+zip 的內容：
 
 | 檔案 | 說明 |
 |---|---|
@@ -197,6 +206,7 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 ### 1.8 SHA-256 與發佈
 
 - [ ] release notes 附上 zip 的 SHA-256（`.sha256` 檔的格式為 `<hex>  <檔名>`）。使用者可以用 `Get-FileHash -Algorithm SHA256 <zip>` 驗證。
+- [ ] 0.0.2 起，release 的 assets 是 zip、單獨的 exe，以及兩者的 `.sha256`。release notes 同時列出兩個 SHA-256；exe 的雜湊也記在 `BUILDINFO.txt`。
 - [ ] release notes 附上 `BUILDINFO.txt` 的內容，以及 MSVC、Windows SDK、PowerShell／.NET 的版本。zip 可重現（§1.6〈可重現性〉），所以任何人都可以重新產生同一個 zip 來驗證：
   1. 用全新的 `git clone` checkout release 的 tag（長期使用的 working tree 可能有 `git status` 看不出來的換行差異，見 §1.6）；
   2. 用同一套工具鏈執行 `pwsh -File tools/package.ps1`；

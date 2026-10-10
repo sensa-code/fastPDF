@@ -37,6 +37,11 @@ jobs:
         run: python tools/license_report.py --all-features --check --out ${{ runner.temp }}/licenses.md
       - name: THIRD_PARTY_LICENSES.md is up to date
         run: git diff --no-index --exit-code THIRD_PARTY_LICENSES.md ${{ runner.temp }}/licenses.md
+      - name: License notices embedded in fastpdf.exe (fastpdf --licenses)
+        # Default features: the crates the release binary links, as tools/package.ps1 builds it.
+        run: python tools/license_report.py --notices ${{ runner.temp }}/notices.txt
+      - name: THIRD_PARTY_NOTICES.txt is up to date
+        run: git diff --no-index --exit-code THIRD_PARTY_NOTICES.txt ${{ runner.temp }}/notices.txt
 
   bench-smoke:
     # Runs the harness on the quick corpus so crashes and hangs fail CI.

@@ -24,11 +24,14 @@
   4. zips the staging folder (top-level folder inside the zip), writes <zip>.sha256.
      The zip is reproducible: entries sorted by path (ordinal), each stamped with the
      source date, no file attributes, no directory entries, so the same exe and commit
-     give the same zip bytes (with the same PowerShell/.NET, whose zlib does the deflate)
+     give the same zip bytes (with the same PowerShell/.NET, whose zlib does the deflate).
+     Also writes <name>.exe (+ .sha256), the same fastpdf.exe for downloading without the
+     zip: it carries its license notices itself (`fastpdf --licenses`, THIRD_PARTY_NOTICES.txt)
   5. verifies the zip: exact entry list (under licenses/third-party/ exactly the files the
      bundle step reported writing), no directory entries, sorted entries stamped with the
      source date, and the exe's SHA-256 inside the zip
-  6. smoke test on the extracted copy: --version and --help (no window), then one
+  6. smoke test on the extracted copy: --version, --help and --licenses (no window; the
+     notices must equal THIRD_PARTY_NOTICES.txt), then one
      GUI start with FASTPDF_BENCH=1 on a fixture until the first frame is presented;
      the process tree is always terminated. Saved settings and recent files are
      not touched (FASTPDF_SETTINGS_FILE / FASTPDF_RECENT_FILE are set empty).
@@ -288,6 +291,14 @@ Write-Host "  $($zipFiles.Count) entries dated $($SourceDate.UtcDateTime.ToStrin
 $zipHash = (Get-FileHash -Algorithm SHA256 $Zip).Hash.ToLowerInvariant()
 "$zipHash  $Name.zip" | Set-Content "$Zip.sha256" -Encoding ascii -NoNewline
 
+# ------------------------------------------------------------------ standalone exe
+# The same fastpdf.exe, for a download without unpacking. Its license notices travel inside
+# it (`fastpdf --licenses`, checked by the smoke test below).
+$StandaloneExe = Join-Path $OutDir "$Name.exe"
+Copy-Item -Force $Exe $StandaloneExe
+if ((Get-FileHash -Algorithm SHA256 $StandaloneExe).Hash.ToLowerInvariant() -ne $exeHash) { throw "copy of fastpdf.exe differs: $StandaloneExe" }
+"$exeHash  $Name.exe" | Set-Content "$StandaloneExe.sha256" -Encoding ascii -NoNewline
+
 # ------------------------------------------------------------------ verify zip
 Step 'verify zip contents'
 $expected = @("$Name/fastpdf.exe", "$Name/README.md", "$Name/LICENSE-MIT", "$Name/LICENSE-APACHE", "$Name/THIRD_PARTY_LICENSES.md", "$Name/BUILDINFO.txt") +
@@ -329,11 +340,13 @@ if (-not $NoSmokeTest) {
     [System.IO.Compression.ZipFile]::ExtractToDirectory($Zip, $SmokeDir)
     $SmokeExe = Join-Path $SmokeDir "$Name\fastpdf.exe"
     try {
-        Step 'smoke: --version / --help (no window)'
+        Step 'smoke: --version / --help / --licenses (no window)'
         function Invoke-Cli([string[]]$cliArgs) {
             $psi = New-Object System.Diagnostics.ProcessStartInfo $SmokeExe
             foreach ($a in $cliArgs) { $psi.ArgumentList.Add($a) }
             $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+            # The app writes UTF-8 to pipes (the license notices are not all ASCII in general).
+            $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
             # Never read or write the user's settings / recent files, even for CLI-only runs.
             $psi.Environment['FASTPDF_SETTINGS_FILE'] = ''
             $psi.Environment['FASTPDF_RECENT_FILE'] = ''
@@ -348,7 +361,14 @@ if (-not $NoSmokeTest) {
         if ($h.code -ne 0 -or $h.out -notmatch '^usage: fastpdf') { throw "--help: exit $($h.code), output '$($h.out)' $($h.err)" }
         $smoke.version = $v.out
         $smoke.help_first_line = ($h.out -split "`r?`n")[0]
-        Write-Host "  $($v.out); $($smoke.help_first_line)"
+        # The embedded notices must be the committed ones (a stale build would print older ones).
+        $l = Invoke-Cli @('--licenses')
+        $notices = [IO.File]::ReadAllText((Join-Path $Repo 'THIRD_PARTY_NOTICES.txt'), [Text.Encoding]::UTF8).Replace("`r`n", "`n").Trim()
+        if ($l.code -ne 0 -or $l.out.Replace("`r`n", "`n") -cne $notices) {
+            throw "--licenses: exit $($l.code), $($l.out.Length) chars, differs from THIRD_PARTY_NOTICES.txt ($($notices.Length) chars) $($l.err)"
+        }
+        $smoke.licenses_chars = $l.out.Length
+        Write-Host "  $($v.out); $($smoke.help_first_line); --licenses: $($l.out.Length) chars, same as THIRD_PARTY_NOTICES.txt"
 
         if (-not $NoGuiSmoke) {
             if (-not $SmokePdf) {
@@ -404,9 +424,10 @@ if (-not $NoSmokeTest) {
 Step 'done'
 Write-Host "  package : $Zip ($([math]::Round((Get-Item $Zip).Length / 1MB, 2)) MB)"
 Write-Host "  sha256  : $zipHash"
-Write-Host "  exe     : $exeHash"
+Write-Host "  exe     : $StandaloneExe ($([math]::Round((Get-Item $StandaloneExe).Length / 1MB, 2)) MB)"
+Write-Host "  sha256  : $exeHash"
 Write-Host "  source  : $gitRev, $($SourceDate.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss')) UTC ($sourceDateOrigin)"
 [pscustomobject]@{
-    version = $Version; zip = $Zip; sha256 = $zipHash; exe_sha256 = $exeHash; smoke = $smoke
+    version = $Version; zip = $Zip; sha256 = $zipHash; exe = $StandaloneExe; exe_sha256 = $exeHash; smoke = $smoke
     git = $gitRev; dirty = $dirty; eol_drift_files = $eolDrift.Count; source_date = $SourceDate
 }

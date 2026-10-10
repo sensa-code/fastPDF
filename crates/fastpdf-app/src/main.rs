@@ -3,11 +3,14 @@
 //! ```text
 //! fastpdf [--engine NAME] [file.pdf]
 //! fastpdf --register-file-types | --unregister-file-types [--dry-run]
+//! fastpdf --licenses
 //! ```
 //!
 //! The second form adds FastPDF to (or removes it from) Explorer's "Open
 //! with" list and Default apps for `.pdf` files, for the current user only
-//! (`file_types.rs`); `--dry-run` prints the registry changes instead.
+//! (`file_types.rs`); `--dry-run` prints the registry changes instead. The
+//! third prints the licenses of FastPDF and of the third-party code it
+//! contains (`licenses.rs`).
 //!
 //! On Windows the default engine renders through a render host process
 //! (ADR 0008): without `--engine`, FastPDF uses `hayro-isolated`, and
@@ -45,6 +48,7 @@
 mod bench;
 mod engines;
 mod file_types;
+mod licenses;
 mod logger;
 mod render_host;
 #[cfg(feature = "engine-synthetic")]
@@ -60,7 +64,8 @@ use fastpdf_ui::{ReaderOptions, Startup};
 use crate::file_types::FileTypes;
 
 const USAGE: &str = "usage: fastpdf [--engine NAME] [file.pdf]
-       fastpdf --register-file-types | --unregister-file-types [--dry-run]";
+       fastpdf --register-file-types | --unregister-file-types [--dry-run]
+       fastpdf --licenses";
 
 #[derive(Debug, Default, PartialEq)]
 struct Args {
@@ -68,6 +73,8 @@ struct Args {
     engine: Option<String>,
     help: bool,
     version: bool,
+    /// Print the licenses of FastPDF and its third-party code.
+    licenses: bool,
     /// Register or unregister the `.pdf` association instead of reading.
     file_types: Option<FileTypes>,
     /// With `file_types`: print the registry changes, make none.
@@ -82,6 +89,7 @@ impl Args {
             match arg.to_str() {
                 Some("-h" | "--help") => parsed.help = true,
                 Some("-V" | "--version") => parsed.version = true,
+                Some("--licenses") => parsed.licenses = true,
                 Some("--engine") => {
                     let name = args
                         .next()
@@ -204,7 +212,7 @@ fn reader_main() {
             std::process::exit(2);
         }
     };
-    if args.help || args.version || args.file_types.is_some() {
+    if args.help || args.version || args.licenses || args.file_types.is_some() {
         // Command-line uses: their output belongs in the calling terminal.
         console::attach_to_parent();
     }
@@ -218,6 +226,10 @@ fn reader_main() {
     }
     if args.version {
         println!("fastpdf {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if args.licenses {
+        licenses::print();
         return;
     }
     if let Some(action) = args.file_types {
@@ -408,6 +420,15 @@ mod tests {
         let b = parse(&["--engine=hayro"]).expect("valid");
         assert_eq!(b.engine.as_deref(), Some("hayro"));
         assert_eq!(b.file, None);
+    }
+
+    #[test]
+    fn parses_licenses() {
+        let a = parse(&["--licenses"]).expect("valid");
+        assert!(a.licenses);
+        assert_eq!((a.file, a.file_types), (None, None));
+        assert!(!parse(&[]).expect("valid").licenses);
+        assert!(USAGE.contains("fastpdf --licenses"));
     }
 
     #[test]

@@ -37,6 +37,7 @@ python tools/bench_tile_matrix.py --bench target/release/fastpdf-bench.exe   # B
 pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf <file> -Runs 3   # B-8 app KPIs
 pwsh -File tools/bench-app/bench-app.ps1 -Preset fastpdf -Pdf <file> -Affinity 0x5 -Slowdown 6   # low-end CPU emulation (docs/benchmarks/low-end.md)
 python tools/license_report.py --all-features --check   # rewrites THIRD_PARTY_LICENSES.md
+python tools/license_report.py --notices THIRD_PARTY_NOTICES.txt   # notices embedded in fastpdf.exe (--licenses)
 python tools/vendor_gpui_windows.py --check               # vendor/gpui_windows == pinned zed rev + patches
 ```
 
@@ -46,7 +47,8 @@ python tools/vendor_gpui_windows.py --check               # vendor/gpui_windows 
 - Code comments in English; project documents in Traditional Chinese (Taiwan) with English technical terms.
 - Commit messages: Conventional Commits in English (`feat(render): ...`).
 - License: FastPDF is `MIT OR Apache-2.0` (ADR 0012). New dependencies must be permissive and
-  compatible (`python tools/license_report.py --all-features --check`).
+  compatible (`python tools/license_report.py --all-features --check`); when the dependency
+  graph changes, also regenerate `THIRD_PARTY_NOTICES.txt` (`--notices`, embedded in the exe).
 - `vendor/gpui_windows` is generated (ADR 0011): never edit it by hand. Change a patch in
   `vendor/gpui_windows-patches/` and run `python tools/vendor_gpui_windows.py`; drop a patch
   once upstream GPUI has it.

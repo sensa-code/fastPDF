@@ -41,11 +41,21 @@ crate's copyright notice and license text, Apache-2.0 needs any NOTICE file.
   - Output is deterministic (sorted, no timestamps). DIR must be empty or absent.
 With --bundle the report is written only when --out is given.
 
+--notices FILE writes the text fastpdf.exe embeds and prints with `fastpdf --licenses`
+(THIRD_PARTY_NOTICES.txt at the repository root), so that a copy of the exe on its own
+still carries the notices its dependencies' licenses require: the release also offers the
+bare exe. It is --bundle's content for the same scope and options, in one file: FastPDF's
+own LICENSE-MIT and LICENSE-APACHE, one line per crate with its license and its files,
+then every distinct license file once (compared after normalizing the BOM, line endings,
+trailing spaces and blank lines at either end). CI regenerates it and fails when the
+committed file differs. Like --bundle, it writes the report only when --out is given.
+
 Usage:
     python tools/license_report.py [--features "a,b"] [--all-features]
                                    [--target TRIPLE] [--out THIRD_PARTY_LICENSES.md] [--check]
     python tools/license_report.py --bundle DIR [--bundle-list FILE]
                                    [--features "a,b"] [--all-features] [--target TRIPLE]
+    python tools/license_report.py --notices THIRD_PARTY_NOTICES.txt
 
 --check exits with status 1 when a crate needs review, for CI.
 """
@@ -60,6 +70,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -92,6 +104,8 @@ NOTICE_FILE = re.compile(r"^notice", re.IGNORECASE)
 SHARED_APACHE = ROOT / "licenses" / "Apache-2.0.txt"
 # License texts kept in the repository for crates that ship none (README.md there).
 OVERRIDES = ROOT / "licenses" / "overrides"
+# --notices: FastPDF's own license texts, first in the notices.
+OWN_LICENSES = ("LICENSE-MIT", "LICENSE-APACHE")
 OVERRIDE_FOLDER = re.compile(r"^(?P<name>[A-Za-z0-9_-]+?)-(?P<version>\d+\.\d+\.\d+\S*)$")
 
 
@@ -470,9 +484,14 @@ def render_missing(scope: str, without_text: list[dict], shared_apache: list[dic
     return "\n".join(lines)
 
 
-def write_bundle(packages: list[dict], dest: Path, scope: str) -> list[str]:
+def write_bundle(packages: list[dict], dest: Path, scope: str, index: dict | None = None) -> list[str]:
     """Copies each crate's license files to dest/<crate>-<version>/ and writes
-    dest/MISSING.md. Returns the bundle's files, relative to dest, sorted."""
+    dest/MISSING.md. Returns the bundle's files, relative to dest, sorted.
+    With `index`, also records there which package each folder holds ("folders",
+    in bundle order) and which folders rely on the shared Apache-2.0 text
+    ("shared_apache") or have no license text ("missing")."""
+    if index is not None:
+        index.update(folders={}, shared_apache=set(), missing=set())
     if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
         sys.exit(f"error: --bundle {dest} must be a new or empty directory")
     dest.mkdir(parents=True, exist_ok=True)
@@ -488,6 +507,8 @@ def write_bundle(packages: list[dict], dest: Path, scope: str) -> list[str]:
             n += 1
             folder = f"{p['name']}-{p['version']}-{n}"
         folders.add(folder.lower())
+        if index is not None:
+            index["folders"][folder] = p
         if n > 1:
             renamed.append(f"{folder} ({p.get('source')})")
         has_text = any(LICENSE_TEXT.match(name.split("/")[0]) for name, _, _ in files)
@@ -514,7 +535,10 @@ def write_bundle(packages: list[dict], dest: Path, scope: str) -> list[str]:
         if any(NOTICE_FILE.match(part) for name, _, _ in files for part in name.split("/")):
             notices.append(p)
         if not has_text:
-            (shared_apache if allows_apache(p.get("license")) else without_text).append(p)
+            shared = allows_apache(p.get("license"))
+            (shared_apache if shared else without_text).append(p)
+            if index is not None:
+                index["shared_apache" if shared else "missing"].add(folder)
     # Overrides left over: for another version (stale after an upgrade) or another graph.
     versions: dict[str, set[str]] = {}
     for p in packages:
@@ -558,6 +582,78 @@ def write_bundle(packages: list[dict], dest: Path, scope: str) -> list[str]:
     return sorted(written)
 
 
+def notice_text(raw: bytes) -> str:
+    """A license file as notice text: UTF-8 (undecodable bytes replaced), no BOM, LF line
+    endings, no trailing spaces, no leading or trailing blank lines."""
+    text = raw.decode("utf-8", errors="replace").lstrip("﻿")
+    lines = [line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines) + "\n"
+
+
+def render_notices(bundle: Path, index: dict, scope: str) -> str:
+    """The text `fastpdf --licenses` prints (THIRD_PARTY_NOTICES.txt, embedded in the binary):
+    FastPDF's own licenses, then every crate of the bundle with its license expression and the
+    license files that came with it. Identical files (after notice_text) appear once."""
+    texts: dict[str, int] = {}          # normalized text -> position in blocks
+    blocks: list[list] = []             # [id, first file name, text, number of crates]
+
+    def use(text: str, name: str) -> str:
+        if text not in texts:
+            texts[text] = len(blocks)
+            blocks.append([f"T{len(blocks) + 1}", name, text, 0])
+        block = blocks[texts[text]]
+        block[3] += 1
+        return block[0]
+
+    wrap = lambda s: textwrap.wrap(s, width=100, break_on_hyphens=False)  # noqa: E731
+    lines = [
+        "FastPDF license notices",
+        "=======================",
+        "",
+        "Generated by tools/license_report.py --notices; do not edit by hand.",
+        "fastpdf.exe embeds this text and prints it with `fastpdf --licenses`.",
+        "",
+        "FastPDF",
+        "-------",
+        "",
+        "Copyright (c) 2026 sensa-code and FastPDF contributors.",
+        "Licensed under the MIT license or the Apache License, Version 2.0, at your option",
+        "(MIT OR Apache-2.0); both texts are below as F1 and F2.",
+        "",
+        "Third-party code",
+        "----------------",
+        "",
+        *wrap(f"fastpdf.exe contains the following crates ({scope}). Each line names a crate, "
+              "its license and the license files that came with it, printed below under "
+              "their T numbers."),
+        "",
+    ]
+    shared = index["shared_apache"]
+    for folder, p in index["folders"].items():
+        refs = []
+        crate_dir = bundle / folder
+        files = sorted((f for f in crate_dir.rglob("*") if f.is_file()),
+                       key=lambda f: f.relative_to(crate_dir).as_posix().lower()) if crate_dir.is_dir() else []
+        for f in files:
+            refs.append(f"{use(notice_text(f.read_bytes()), f.name)} {f.relative_to(crate_dir).as_posix()}")
+        if folder in shared:
+            refs.append(f"{use(notice_text(SHARED_APACHE.read_bytes()), 'Apache-2.0')} "
+                        "(the crate ships no license text; Apache-2.0 is one of its options)")
+        if folder in index["missing"]:
+            refs.append("no license text found")
+        lines += wrap(f"- {label(p)}, {p.get('license') or 'no license metadata'}: {'; '.join(refs)}")
+    lines += ["", "Texts", "-----", ""]
+    for n, name in enumerate(OWN_LICENSES, start=1):
+        lines += [f"=== F{n}: FastPDF, {name} ===", "", notice_text((ROOT / name).read_bytes())]
+    for tid, name, text, users in blocks:
+        lines += [f"=== {tid}: {name}, {users} crate{'' if users == 1 else 's'} ===", "", text]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--features")
@@ -571,13 +667,16 @@ def main() -> int:
                         help=f"copy the license files of the crates linked into {RELEASE_PACKAGE} to DIR")
     parser.add_argument("--bundle-list", type=Path, metavar="FILE",
                         help="with --bundle: write the bundle's files (relative paths, one per line) to FILE")
+    parser.add_argument("--notices", type=Path, metavar="FILE",
+                        help=f"write the license notices embedded in {RELEASE_PACKAGE} "
+                             "(THIRD_PARTY_NOTICES.txt, printed by `fastpdf --licenses`) to FILE")
     args = parser.parse_args()
     if args.bundle_list and not args.bundle:
         parser.error("--bundle-list needs --bundle")
 
     meta = cargo_metadata(args.features, args.all_features, args.target)
     review_count = 0
-    if args.bundle is None or args.out is not None:
+    if (args.bundle is None and args.notices is None) or args.out is not None:
         out = args.out or ROOT / "THIRD_PARTY_LICENSES.md"
         text, review_count = render(shipped_packages(meta), args)
         out.write_text(text, encoding="utf-8", newline="\n")
@@ -585,16 +684,24 @@ def main() -> int:
     elif args.check:
         _, review_count = render(shipped_packages(meta), args)
         print(f"{review_count} crate(s) need review")
+    feature_note = "all features" if args.all_features else (args.features or "default features")
+    scope = (f"crates reachable from `{RELEASE_PACKAGE}` through normal dependencies "
+             f"(proc-macro crates included), {feature_note}, target `{args.target}`; workspace "
+             "crates excluded. This covers every crate linked into the release binary; the "
+             "`cargo metadata` resolve also keeps weak optional dependencies (`dep?/feature`), "
+             "so a few listed crates may not be linked")
     if args.bundle is not None:
-        feature_note = "all features" if args.all_features else (args.features or "default features")
-        scope = (f"crates reachable from `{RELEASE_PACKAGE}` through normal dependencies "
-                 f"(proc-macro crates included), {feature_note}, target `{args.target}`; workspace "
-                 "crates excluded. This covers every crate linked into the release binary; the "
-                 "`cargo metadata` resolve also keeps weak optional dependencies (`dep?/feature`), "
-                 "so a few listed crates may not be linked")
         files = write_bundle(linked_packages(meta), args.bundle, scope)
         if args.bundle_list:
             args.bundle_list.write_text("".join(f"{f}\n" for f in files), encoding="utf-8", newline="\n")
+    if args.notices is not None:
+        index: dict = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            write_bundle(linked_packages(meta), Path(tmp) / "bundle", scope, index)
+            text = render_notices(Path(tmp) / "bundle", index, scope)
+        args.notices.write_text(text, encoding="utf-8", newline="\n")
+        print(f"wrote {args.notices} ({len(text.encode('utf-8')):,} bytes, "
+              f"{len(index['folders'])} crates)")
     return 1 if args.check and review_count else 0
 
 
