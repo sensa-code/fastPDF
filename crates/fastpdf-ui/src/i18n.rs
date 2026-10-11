@@ -173,6 +173,22 @@ pub(crate) struct Strings {
     pub no_edit_font: &'static str,
     pub edit_suffix: &'static str,
     pub apply: &'static str,
+    pub sign_menu: &'static str,
+    pub sign_title: &'static str,
+    pub sign_hint: &'static str,
+    pub sign_certificate: &'static str,
+    pub refresh: &'static str,
+    pub reading_certificates: &'static str,
+    pub no_certificates: &'static str,
+    pub sign_visible: &'static str,
+    pub sign_no_stamp: &'static str,
+    pub sign_reason: &'static str,
+    pub sign_location: &'static str,
+    pub sign_pending_changes: &'static str,
+    pub sign_save: &'static str,
+    pub sign_suffix: &'static str,
+    pub choose_certificate: &'static str,
+    pub test_signer: &'static str,
     pub no_pages_given: &'static str,
     pub cannot_delete_all: &'static str,
     pub nothing_to_merge: &'static str,
@@ -317,6 +333,22 @@ const EN: Strings = Strings {
     no_edit_font: "None of the fonts for new text (DFKai-SB, PMingLiU, Microsoft JhengHei) is installed.",
     edit_suffix: " - edited",
     apply: "Apply",
+    sign_menu: "Digital signature…",
+    sign_title: "Digital signature",
+    sign_hint: "Sign with a certificate of the Windows certificate store, such as a citizen certificate card in the reader. Signing saves a new file; any change after signing makes the signature invalid. The signing time is this computer's clock.",
+    sign_certificate: "Certificate",
+    refresh: "Refresh",
+    reading_certificates: "Reading certificates…",
+    no_certificates: "No certificate to sign with. Insert the card into the reader, then choose Refresh.",
+    sign_visible: "Show a stamp as the signature",
+    sign_no_stamp: "(place a stamp on a page with Stamps first)",
+    sign_reason: "Reason",
+    sign_location: "Location",
+    sign_pending_changes: "Unsaved text edits and stamps are written first, then signed.",
+    sign_save: "Sign and save as…",
+    sign_suffix: " - signed",
+    choose_certificate: "Choose a certificate first.",
+    test_signer: "FastPDF test signer (a key made for one signature; development only)",
     no_pages_given: "Enter the pages first.",
     cannot_delete_all: "Every page would be deleted.",
     nothing_to_merge: "Add the files to merge first.",
@@ -456,6 +488,22 @@ const ZH_TW: Strings = Strings {
     no_edit_font: "找不到可用的字型（標楷體、新細明體或微軟正黑體）。",
     edit_suffix: "-修改",
     apply: "套用",
+    sign_menu: "數位簽章…",
+    sign_title: "數位簽章",
+    sign_hint: "以 Windows 憑證存放區中的憑證簽署，例如插入讀卡機的自然人憑證。簽署會另存新檔；簽署之後再修改，簽章就會失效。簽署時間取自這台電腦的時鐘。",
+    sign_certificate: "憑證",
+    refresh: "重新整理",
+    reading_certificates: "正在讀取憑證…",
+    no_certificates: "找不到可簽署的憑證。插入讀卡機與卡片後，按「重新整理」。",
+    sign_visible: "以印章作為簽章外觀",
+    sign_no_stamp: "（先用「蓋章」在頁面上放置印章）",
+    sign_reason: "原因",
+    sign_location: "地點",
+    sign_pending_changes: "未儲存的文字修改與印章會先寫入，再簽署。",
+    sign_save: "簽署並另存…",
+    sign_suffix: "-簽章",
+    choose_certificate: "請先選擇憑證。",
+    test_signer: "FastPDF 測試簽署者（只用一次的暫時金鑰，開發用）",
     no_pages_given: "請先輸入頁面。",
     cannot_delete_all: "不能刪除所有頁面。",
     nothing_to_merge: "請先加入要合併的檔案。",
@@ -690,6 +738,62 @@ impl Strings {
             format!("沒有第 {page} 頁")
         } else {
             format!("There is no page {page}")
+        }
+    }
+
+    pub(crate) fn certificate_detail(&self, issuer: &str, until: &str) -> String {
+        if self.zh() {
+            format!("{issuer}・有效至 {until}")
+        } else {
+            format!("{issuer} · valid until {until}")
+        }
+    }
+
+    pub(crate) fn sign_visible_stamp(&self, page: u32, name: &str) -> String {
+        if self.zh() {
+            format!("第 {page} 頁的「{name}」（點選頁面上的印章可改用另一個）")
+        } else {
+            format!("\"{name}\" on page {page} (click another placed stamp to use it)")
+        }
+    }
+
+    pub(crate) fn signatures_removed(&self, count: u32) -> String {
+        if self.zh() {
+            format!("原有的 {count} 個數位簽章因內容改變已失效，已從新檔移除。")
+        } else {
+            format!(
+                "{count} earlier digital signature(s) no longer applied to the changed content and were removed."
+            )
+        }
+    }
+
+    /// Why a document cannot be signed.
+    pub(crate) fn sign_failed(&self, problem: &fastpdf_engine_api::write::SignProblem) -> String {
+        use fastpdf_engine_api::write::SignProblem as P;
+        if self.zh() {
+            match problem {
+                P::CertificateMissing => "找不到所選的憑證（卡片可能已從讀卡機取出）。".into(),
+                P::CardMissing => "讀卡機中沒有卡片，或卡片已被取出。".into(),
+                P::Cancelled => "已取消簽署。".into(),
+                P::WrongPin => "卡片拒絕了 PIN 碼。".into(),
+                P::TooLarge => "簽章資料超過預留的空間。".into(),
+                P::Unsignable => "這份文件的交互參照表損壞，而且已有簽章，無法再簽署。".into(),
+                P::Unavailable => "這個版本無法簽署。".into(),
+                P::Failed(reason) => format!("簽署失敗：{reason}"),
+            }
+        } else {
+            match problem {
+                P::CertificateMissing => {
+                    "The chosen certificate is not there (the card may have been taken out).".into()
+                }
+                P::CardMissing => "There is no card in the reader, or it was taken out.".into(),
+                P::Cancelled => "Signing was cancelled.".into(),
+                P::WrongPin => "The card refused the PIN.".into(),
+                P::TooLarge => "The signature does not fit the room reserved for it.".into(),
+                P::Unsignable => "The document's cross-reference table is broken and it has signatures already; it cannot be signed again.".into(),
+                P::Unavailable => "This build cannot sign.".into(),
+                P::Failed(reason) => format!("Signing failed: {reason}"),
+            }
         }
     }
 

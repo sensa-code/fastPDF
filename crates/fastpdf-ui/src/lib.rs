@@ -54,6 +54,7 @@ mod select;
 mod settings;
 mod settings_panel;
 mod sidebar;
+mod signing;
 mod smooth_scroll;
 mod stamps;
 mod startup;

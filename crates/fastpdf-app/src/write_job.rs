@@ -7,6 +7,10 @@
 //! The child runs the hayro writer and leaves its report in the result
 //! file; nothing else passes between the two processes. Like the render
 //! host, the child is dispatched before settings, logging or GPUI.
+//!
+//! Signatures are made in the child too (`fastpdf-sign`): the card's PIN
+//! dialog belongs to the reader's window, which lets the child bring it to
+//! the front.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -16,9 +20,11 @@ use std::time::{Duration, Instant};
 
 use fastpdf_engine_api::CancelToken;
 use fastpdf_engine_api::write::{
-    self, WriteError, WriteJob, WriteReport, backup_path, discard_backups, temp_path,
+    self, OutputContent, SignProblem, SignatureSpec, WriteError, WriteJob, WriteReport,
+    backup_path, discard_backups, temp_path,
 };
 use fastpdf_engine_remote::{IsolatedExit, IsolatedProcess};
+use fastpdf_sign::{SignError, Signer};
 
 /// First argument of a writer process.
 const FLAG: &str = "--write-job";
@@ -61,8 +67,40 @@ fn read_job(job: &Path) -> Result<WriteJob, WriteError> {
 #[cfg(feature = "engine-hayro")]
 fn execute(job: &WriteJob) -> Result<WriteReport, WriteError> {
     // Sources are hostile input: a panic still ends with a report.
-    std::panic::catch_unwind(|| fastpdf_engine_hayro::write::execute_keeping_backups(job))
-        .unwrap_or_else(|_| Err(WriteError::Process("the writer stopped on an error".into())))
+    std::panic::catch_unwind(|| {
+        fastpdf_engine_hayro::write::execute_keeping_backups_with(job, &sign)
+    })
+    .unwrap_or_else(|_| Err(WriteError::Process("the writer stopped on an error".into())))
+}
+
+/// Signs for the writer: with a certificate of the user's store or, with
+/// the development overlay on (`FASTPDF_DEV_OVERLAY`, which development
+/// scripts need too), with a key made for the job (`test`).
+fn sign(spec: &SignatureSpec, parts: &[&[u8]]) -> Result<Vec<u8>, SignProblem> {
+    let signer = if spec.signer == "test" {
+        let development = std::env::var("FASTPDF_DEV_OVERLAY").is_ok_and(|v| v.trim() != "0");
+        if !development {
+            return Err(SignProblem::Failed(
+                "the test signer needs FASTPDF_DEV_OVERLAY=1".into(),
+            ));
+        }
+        Signer::Ephemeral
+    } else {
+        let thumbprint =
+            fastpdf_sign::parse_thumbprint(&spec.signer).ok_or(SignProblem::CertificateMissing)?;
+        Signer::Store {
+            thumbprint,
+            window: spec.window as isize,
+        }
+    };
+    fastpdf_sign::sign(&signer, parts).map_err(|e| match e {
+        SignError::CertificateMissing => SignProblem::CertificateMissing,
+        SignError::CardMissing => SignProblem::CardMissing,
+        SignError::Cancelled => SignProblem::Cancelled,
+        SignError::WrongPin => SignProblem::WrongPin,
+        SignError::Unavailable => SignProblem::Unavailable,
+        SignError::Failed { what, code } => SignProblem::Failed(format!("{what} (0x{code:08X})")),
+    })
 }
 
 #[cfg(not(feature = "engine-hayro"))]
@@ -94,6 +132,14 @@ pub(crate) fn run(job: &WriteJob, cancel: &CancelToken) -> Result<WriteReport, W
     let existed: Vec<bool> = job.outputs.iter().map(|o| o.path.exists()).collect();
     let child = IsolatedProcess::spawn(&exe, &args, memory_limit(job))
         .map_err(|e| WriteError::Process(format!("cannot start the writer: {e}")))?;
+    if job
+        .outputs
+        .iter()
+        .any(|o| matches!(o.content, OutputContent::Signed { .. }))
+    {
+        // The card's PIN dialog comes from the child: let it take the front.
+        allow_foreground(child.pid());
+    }
     let started = Instant::now();
     let exit = loop {
         if let Some(exit) = child.wait(Duration::from_millis(100)) {
@@ -152,6 +198,16 @@ pub(crate) fn run(job: &WriteJob, cancel: &CancelToken) -> Result<WriteReport, W
         }
     }
 }
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn allow_foreground(pid: u32) {
+    // SAFETY: lets process `pid` set the foreground window; no pointers.
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid) };
+}
+
+#[cfg(not(windows))]
+fn allow_foreground(_: u32) {}
 
 /// Undoes what writer `pid` may have left after it ended abnormally: its
 /// staging files go, a file it set aside comes back (the user's file it

@@ -140,3 +140,5 @@
   - 拒絕：Form XObject 裡的文字、看不見的辨識文字、狀態無法確定的 content、字型沒有的字、找不到的字型檔、文字不符或同一行改兩次。
 - corpus 測試（`cargo test --release -p fastpdf-engine-hayro --test text_edits -- --ignored`）：27 份含文字的文件（繁中公文與檢驗報告的內嵌 TrueType 子集、Type0、未內嵌 MSung，日文，標準 14 字型、Type1、Type3、大量文字），每份最多 3 頁、每頁 6 行，把最後一個字改成「改」。除了直書文字（拒絕，Unsupported）與一行看不見的文字（拒絕，Invisible）之外全部寫入成功，並通過寫入端的重新解讀驗證。
 - GUI 實測（dev script，虛構公文樣本）：修改兩行（日期、承辦人），面板列出修改、頁面預覽新字、在原位編輯的欄位、另存後重新開啟。輸出另以 pypdf 檢查：舊文字不在任何 stream 裡，新文字可以擷取（layout 模式讀成完整的一行）。
+
+結果（2026-10-11，數位簽章）：依 `docs/digital-signatures.md` 實作 PAdES B-B 的增量更新簽章，新增 `fastpdf-sign` crate（Windows 憑證存放區與 CMS，只依賴已有的 `windows-sys`）。測試與 pyHanko 的獨立驗證結果記在該文件的「實作結果」。重寫已簽章的文件時，原有簽章的值會被移除並在存檔通知中說明。

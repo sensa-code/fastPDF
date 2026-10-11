@@ -257,6 +257,16 @@ fn edit_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView
                 cx,
             )
             .into_any_element(),
+            menu_item(
+                "edit-sign",
+                strings.sign_menu,
+                view.signing.open,
+                has_doc,
+                ReaderCommand::Sign,
+                tools,
+                cx,
+            )
+            .into_any_element(),
         ]
     })
 }

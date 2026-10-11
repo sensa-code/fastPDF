@@ -38,6 +38,7 @@ use crate::settings::{
     Appearance, DefaultZoom, MIN_WINDOW, PageLayout, Settings, SettingsStore, WindowPlacement,
 };
 use crate::sidebar::Sidebar;
+use crate::signing::SignaturePanel;
 use crate::smooth_scroll::{PageTurn, SmoothScroll};
 use crate::stamps::StampPanel;
 use crate::startup::{SessionParts, Startup, default_window_size};
@@ -331,6 +332,8 @@ pub struct ReaderView {
     pub(crate) stamps: StampPanel,
     /// Lines of text changed on the open document and the text edit panel.
     pub(crate) text_edits: TextEditPanel,
+    /// The signature panel.
+    pub(crate) signing: SignaturePanel,
     open_task: Option<Task<()>>,
     pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
@@ -438,6 +441,7 @@ impl ReaderView {
             tools: ToolsPanel::new(cx),
             stamps: StampPanel::default(),
             text_edits: TextEditPanel::new(cx),
+            signing: SignaturePanel::new(cx),
             open_task: None,
             dev_script: None,
             _wake_task: wake_task,
@@ -809,6 +813,10 @@ impl ReaderView {
                 self.apply_line_edit(cx);
                 window.focus(&self.focus, cx);
             }
+            C::Sign => {
+                self.menus.open = None;
+                self.toggle_sign_panel(window, cx);
+            }
             C::LayoutSinglePage => self.set_page_layout(PageLayout::SinglePage, cx),
             C::LayoutContinuous => self.set_page_layout(PageLayout::Continuous, cx),
             C::LayoutTwoPage => self.set_page_layout(PageLayout::TwoPage, cx),
@@ -857,6 +865,8 @@ impl ReaderView {
             self.toggle_stamp_panel(cx);
         } else if self.text_edits.open {
             self.close_text_edit_panel(window, cx);
+        } else if self.signing.open {
+            self.toggle_sign_panel(window, cx);
         } else if self.print.printing() {
             self.print.cancel_job();
         } else if self.print.open {
@@ -1567,6 +1577,9 @@ impl ReaderView {
             })
             .when(self.text_edits.open, |area| {
                 area.child(self.render_text_edit_panel(cx))
+            })
+            .when(self.signing.open, |area| {
+                area.child(self.render_sign_panel(cx))
             })
             .when_some(self.render_line_editor(cx), |area, editor| {
                 area.child(editor)

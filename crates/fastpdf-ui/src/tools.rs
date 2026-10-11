@@ -1011,7 +1011,7 @@ fn spec_problem(strings: &Strings, problem: &SpecError) -> String {
 }
 
 fn saved_text(strings: &Strings, report: &WriteReport) -> String {
-    match report.outputs.as_slice() {
+    let saved = match report.outputs.as_slice() {
         [one] => strings.saved_file(&display_name(&one.path), one.pages),
         many => {
             let dir = many
@@ -1021,6 +1021,12 @@ fn saved_text(strings: &Strings, report: &WriteReport) -> String {
                 .unwrap_or_default();
             strings.saved_files(many.len(), &dir)
         }
+    };
+    let removed: u32 = report.outputs.iter().map(|o| o.signatures_removed).sum();
+    if removed == 0 {
+        saved
+    } else {
+        format!("{saved} {}", strings.signatures_removed(removed))
     }
 }
 
@@ -1035,6 +1041,7 @@ pub(crate) fn write_error_text(strings: &Strings, error: &WriteError) -> String 
         WriteError::Edit { page, problem, .. } => {
             strings.edit_failed(page.display_number(), problem)
         }
+        WriteError::Sign(problem) => strings.sign_failed(problem),
         WriteError::Output { path, message } => {
             strings.write_output_failed(&display_name(path), message)
         }

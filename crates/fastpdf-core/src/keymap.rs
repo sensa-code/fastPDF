@@ -58,6 +58,8 @@ pub enum ReaderCommand {
     EditText,
     /// Applies the line being edited (its field's Enter).
     ConfirmEdit,
+    /// The signature panel: sign the document with a certificate.
+    Sign,
     /// Copy the selected text.
     Copy,
     SelectAll,

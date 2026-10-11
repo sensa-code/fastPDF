@@ -241,6 +241,9 @@ impl ReaderView {
         if self.stamps.open && self.text_edits.open {
             self.hide_text_edit_panel(cx);
         }
+        if self.stamps.open {
+            self.signing.open = false;
+        }
         if !self.stamps.open {
             self.stamps.armed = None;
             // Nothing shows the previews any more: free their GPU memory

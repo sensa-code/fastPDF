@@ -2,8 +2,9 @@
 //!
 //! [`execute`] runs a [`WriteJob`]: it reads the sources, builds every
 //! output in memory (a byte copy, or a rewrite of picked pages with their
-//! stamps and text edits, `rewrite`), opens each result again with hayro to
-//! check it (and interprets every edited page again, `edit::compare`),
+//! stamps and text edits, `rewrite`; then maybe signed in an incremental
+//! update, `sign`), opens each result again with hayro to check it (and
+//! interprets every edited page again, `edit::compare`),
 //! writes it to a temporary file next to its destination and, once every
 //! output is ready, moves them into place. A file an output replaces is set
 //! aside first and only deleted once the job's success is established
@@ -26,31 +27,52 @@ mod edit;
 mod font;
 mod image;
 mod rewrite;
+mod sign;
 mod syntax;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use fastpdf_engine_api::PageIndex;
 use fastpdf_engine_api::write::{
-    EditProblem, OutputContent, PagePick, WriteError, WriteJob, WriteReport, WrittenOutput,
-    backup_path, discard_backups, temp_path,
+    EditProblem, OutputContent, PagePick, SignFn, SignProblem, SignatureSpec, WriteError, WriteJob,
+    WriteReport, WrittenOutput, backup_path, discard_backups, temp_path,
 };
 use hayro::hayro_syntax::Pdf;
 
 use edit::Mismatch;
 use rewrite::{PageCheck, Source};
 
-/// Runs `job`; see the module documentation.
+/// Runs `job`; see the module documentation. Signed outputs fail: this
+/// has no signer ([`execute_with`]).
 pub fn execute(job: &WriteJob) -> Result<WriteReport, WriteError> {
-    let report = execute_keeping_backups(job)?;
+    execute_with(job, &no_signer)
+}
+
+/// Runs `job`, asking `signer` for the signatures of signed outputs.
+pub fn execute_with(job: &WriteJob, signer: SignFn<'_>) -> Result<WriteReport, WriteError> {
+    let report = execute_keeping_backups_with(job, signer)?;
     discard_backups(job, std::process::id());
     Ok(report)
+}
+
+fn no_signer(_: &SignatureSpec, _: &[&[u8]]) -> Result<Vec<u8>, SignProblem> {
+    Err(SignProblem::Unavailable)
 }
 
 /// Like [`execute`], but the files that outputs replaced stay set aside
 /// (`backup_path` with this process's id) until the caller discards them.
 pub fn execute_keeping_backups(job: &WriteJob) -> Result<WriteReport, WriteError> {
+    execute_keeping_backups_with(job, &no_signer)
+}
+
+/// Like [`execute_with`], keeping replaced files aside like
+/// [`execute_keeping_backups`].
+pub fn execute_keeping_backups_with(
+    job: &WriteJob,
+    signer: SignFn<'_>,
+) -> Result<WriteReport, WriteError> {
     job.check()?;
     if let Some(folder) = job.outputs.iter().find(|o| o.path.is_dir()) {
         return Err(WriteError::Output {
@@ -67,36 +89,11 @@ pub fn execute_keeping_backups(job: &WriteJob) -> Result<WriteReport, WriteError
     let mut staged: Vec<Staged> = Vec::with_capacity(job.outputs.len());
     let built = (|| {
         for output in &job.outputs {
-            let (bytes, pages) = match &output.content {
-                OutputContent::Copy { source } => {
-                    let source = &sources[*source];
-                    (Arc::clone(&source.bytes), source.page_count())
-                }
-                OutputContent::Pages(picks) => {
-                    let (bytes, checks) = rewrite::pages(&sources, picks)?;
-                    verify(&bytes, picks.len()).map_err(|message| WriteError::Verify {
-                        path: output.path.clone(),
-                        message,
-                    })?;
-                    verify_edits(&bytes, &checks, &output.path)?;
-                    (Arc::new(bytes), picks.len())
-                }
-                OutputContent::Merge(list) => {
-                    let picks: Vec<PagePick> = list
-                        .iter()
-                        .flat_map(|&s| {
-                            (0..sources[s].page_count())
-                                .map(move |p| PagePick::new(s, PageIndex::new(p as u32)))
-                        })
-                        .collect();
-                    let (bytes, _) = rewrite::pages(&sources, &picks)?;
-                    verify(&bytes, picks.len()).map_err(|message| WriteError::Verify {
-                        path: output.path.clone(),
-                        message,
-                    })?;
-                    (Arc::new(bytes), picks.len())
-                }
-            };
+            let Built {
+                bytes,
+                pages,
+                removed,
+            } = build(&output.content, &sources, &output.path, signer)?;
             let temp = temp_path(&output.path, std::process::id());
             std::fs::write(&temp, bytes.as_slice()).map_err(|e| WriteError::Output {
                 path: output.path.clone(),
@@ -107,6 +104,7 @@ pub fn execute_keeping_backups(job: &WriteJob) -> Result<WriteReport, WriteError
                 path: output.path.clone(),
                 pages: u32::try_from(pages).unwrap_or(u32::MAX),
                 bytes: bytes.len() as u64,
+                removed,
             });
         }
         Ok(())
@@ -123,9 +121,133 @@ pub fn execute_keeping_backups(job: &WriteJob) -> Result<WriteReport, WriteError
                 path: o.path.clone(),
                 pages: o.pages,
                 bytes: o.bytes,
+                signatures_removed: o.removed,
             })
             .collect(),
     })
+}
+
+/// An output built in memory.
+struct Built {
+    bytes: Arc<Vec<u8>>,
+    pages: usize,
+    /// Signatures of the sources a rewrite made invalid and removed.
+    removed: u32,
+}
+
+/// Builds and checks the bytes of an output.
+fn build(
+    content: &OutputContent,
+    sources: &[Source],
+    path: &Path,
+    signer: SignFn<'_>,
+) -> Result<Built, WriteError> {
+    let failed = |message: String| WriteError::Verify {
+        path: path.to_path_buf(),
+        message,
+    };
+    let rewritten = |picks: &[PagePick]| -> Result<Built, WriteError> {
+        let (bytes, checks, removed) = rewrite::pages(sources, picks)?;
+        verify(&bytes, picks.len()).map_err(failed)?;
+        verify_edits(&bytes, &checks, path)?;
+        Ok(Built {
+            bytes: Arc::new(bytes),
+            pages: picks.len(),
+            removed,
+        })
+    };
+    match content {
+        OutputContent::Copy { source } => {
+            let source = &sources[*source];
+            Ok(Built {
+                bytes: Arc::clone(&source.bytes),
+                pages: source.page_count(),
+                removed: 0,
+            })
+        }
+        OutputContent::Pages(picks) => rewritten(picks),
+        OutputContent::Merge(list) => {
+            let picks: Vec<PagePick> = list
+                .iter()
+                .flat_map(|&s| {
+                    (0..sources[s].page_count())
+                        .map(move |p| PagePick::new(s, PageIndex::new(p as u32)))
+                })
+                .collect();
+            rewritten(&picks)
+        }
+        OutputContent::Signed { base, signature } => {
+            let built = build(base, sources, path, signer)?;
+            let now = SystemTime::now();
+            let signed = match sign::sign(&built.bytes, signature, signer, now) {
+                Ok(bytes) => bytes,
+                Err(sign::Refusal::Error(e)) => return Err(e),
+                Err(sign::Refusal::NeedsRewrite) => {
+                    // A broken cross-reference table: sign a rewrite, unless
+                    // that breaks signatures.
+                    let source = Source::open(built.bytes.to_vec())
+                        .map_err(|message| WriteError::Source { index: 0, message })?;
+                    let picks: Vec<PagePick> = (0..source.page_count())
+                        .map(|p| PagePick::new(0, PageIndex::new(p as u32)))
+                        .collect();
+                    let (bytes, _, removed) =
+                        rewrite::pages(std::slice::from_ref(&source), &picks)?;
+                    if removed > 0 {
+                        return Err(WriteError::Sign(SignProblem::Unsignable));
+                    }
+                    match sign::sign(&bytes, signature, signer, now) {
+                        Ok(signed) => signed,
+                        Err(sign::Refusal::Error(e)) => return Err(e),
+                        Err(sign::Refusal::NeedsRewrite) => {
+                            return Err(WriteError::Sign(SignProblem::Failed(
+                                "the rewritten document cannot be signed".into(),
+                            )));
+                        }
+                    }
+                }
+            };
+            verify(&signed, built.pages).map_err(failed)?;
+            verify_byte_range(&signed).map_err(failed)?;
+            Ok(Built {
+                bytes: Arc::new(signed),
+                pages: built.pages,
+                removed: built.removed,
+            })
+        }
+    }
+}
+
+/// The last signature's `/ByteRange` covers the whole file but its
+/// `/Contents` value.
+fn verify_byte_range(bytes: &[u8]) -> Result<(), String> {
+    let at = bytes
+        .windows(12)
+        .rposition(|w| w == b"/ByteRange [")
+        .ok_or("no /ByteRange")?;
+    let close = bytes[at..]
+        .iter()
+        .position(|&b| b == b']')
+        .ok_or("an unterminated /ByteRange")?;
+    let numbers: Vec<usize> = std::str::from_utf8(&bytes[at + 12..at + close])
+        .map_err(|_| "a garbled /ByteRange")?
+        .split_ascii_whitespace()
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .map_err(|_| "a garbled /ByteRange")?;
+    let [0, gap_start, gap_end, rest] = numbers[..] else {
+        return Err(format!("/ByteRange {numbers:?}"));
+    };
+    let gap = bytes
+        .get(gap_start..gap_end)
+        .ok_or("/ByteRange beyond the file")?;
+    let digits = gap.len() >= 2
+        && gap[0] == b'<'
+        && gap[gap.len() - 1] == b'>'
+        && gap[1..gap.len() - 1].iter().all(u8::is_ascii_hexdigit);
+    if !digits || gap_end + rest != bytes.len() {
+        return Err("/ByteRange does not cover the file but /Contents".into());
+    }
+    Ok(())
 }
 
 /// Moves every staged output into place, or none.
@@ -178,6 +300,7 @@ struct Staged {
     path: PathBuf,
     pages: u32,
     bytes: u64,
+    removed: u32,
 }
 
 fn discard(staged: &[Staged]) {
@@ -284,12 +407,14 @@ mod tests {
                 path: first.clone(),
                 pages: 1,
                 bytes: 3,
+                removed: 0,
             },
             Staged {
                 temp: temp_path(&second, pid),
                 path: second.clone(),
                 pages: 1,
                 bytes: 3,
+                removed: 0,
             },
         ];
         assert!(matches!(commit(&staged), Err(WriteError::Output { .. })));

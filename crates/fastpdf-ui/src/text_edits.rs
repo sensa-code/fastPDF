@@ -224,6 +224,7 @@ impl ReaderView {
         if self.stamps.open {
             self.toggle_stamp_panel(cx);
         }
+        self.signing.open = false;
         let panel = &mut self.text_edits;
         panel.open = true;
         panel.problem = None;
@@ -381,19 +382,11 @@ impl ReaderView {
             self.report_change_problem(strings.nothing_changed.into(), cx);
             return;
         }
-        let font = if self.text_edits.edits.is_empty() {
-            None
-        } else {
-            if self.text_edits.installed.is_none() {
-                let installed: Vec<bool> = EDIT_FONTS.iter().map(EditFont::installed).collect();
-                self.text_edits.installed = Some(installed);
-            }
-            match self.text_edits.chosen_font() {
-                Some(font) => Some(font.face()),
-                None => {
-                    self.report_change_problem(strings.no_edit_font.into(), cx);
-                    return;
-                }
+        let font = match self.edit_font_face() {
+            Ok(font) => font,
+            Err(problem) => {
+                self.report_change_problem(problem, cx);
+                return;
             }
         };
         let DocState::Open(open) = &self.doc else {
@@ -452,6 +445,22 @@ impl ReaderView {
                 })
             },
         );
+    }
+
+    /// The font new text is drawn with: `None` without text edits; the
+    /// message to show when no font for new text is installed.
+    pub(crate) fn edit_font_face(&mut self) -> Result<Option<FontFace>, String> {
+        if self.text_edits.edits.is_empty() {
+            return Ok(None);
+        }
+        if self.text_edits.installed.is_none() {
+            let installed: Vec<bool> = EDIT_FONTS.iter().map(EditFont::installed).collect();
+            self.text_edits.installed = Some(installed);
+        }
+        match self.text_edits.chosen_font() {
+            Some(font) => Ok(Some(font.face())),
+            None => Err(self.strings().no_edit_font.into()),
+        }
     }
 
     /// Shows why the changes cannot be saved, in the panel that is open.

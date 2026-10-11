@@ -14,6 +14,7 @@ members = [
     "crates/fastpdf-bench",
     "crates/fastpdf-print",
     "crates/fastpdf-shell",
+    "crates/fastpdf-sign",
 ]
 # Upstream clones are audit references only; they must never join this workspace.
 # vendor/gpui_windows is upstream code built through [patch] below (ADR 0011):
@@ -41,6 +42,7 @@ fastpdf-core = { path = "crates/fastpdf-core" }
 fastpdf-ui = { path = "crates/fastpdf-ui" }
 fastpdf-print = { path = "crates/fastpdf-print" }
 fastpdf-shell = { path = "crates/fastpdf-shell" }
+fastpdf-sign = { path = "crates/fastpdf-sign" }
 
 # Third-party. Every entry here needs a reason (spec §36); see
 # THIRD_PARTY_LICENSES.md for the license review.
@@ -62,6 +64,7 @@ windows-sys = "0.61.2"      # Win32 process metrics / file APIs; no runtime cost
 futures = "0.3"             # render workers -> UI thread wake channel
 image = { version = "0.25", default-features = false } # GPUI RenderImage frames
 log = "0.4"                 # logging facade (FASTPDF_LOG, spec §31)
+raw-window-handle = "0.6"   # the window a smart card's PIN dialog belongs to (signing)
 # Build-time only: compiles fastpdf.exe's icon + VERSIONINFO (fastpdf-app
 # build.rs, spec §33). Already a GPUI build-dependency (windows-manifest), so
 # no new crate; MIT.

@@ -19,6 +19,9 @@ gpui.workspace = true
 futures.workspace = true
 image.workspace = true
 log.workspace = true
+# Digital signatures (ADR 0013 §5): the certificates to sign with.
+fastpdf-sign.workspace = true
+raw-window-handle.workspace = true
 
 [lints]
 workspace = true

@@ -22,6 +22,10 @@
 //! metadata, structure tree); a merged one gets the sources' form fields
 //! and layers.
 //!
+//! Signature fields lose their value (`/V`): a rewritten document is not
+//! the one that was signed, so the signatures could only show as broken.
+//! The fields stay, unsigned, and the count is reported.
+//!
 //! A page with text edits gets one new content stream (`super::edit`) and
 //! the fonts its new text uses; its old content streams are not copied
 //! (unless another kept page uses them too), so removed text does not stay
@@ -196,11 +200,12 @@ pub(crate) struct PageCheck {
     pub(crate) expected: Vec<Expected>,
 }
 
-/// A new document made of `picks`, and the checks of its edited pages.
+/// A new document made of `picks`, the checks of its edited pages, and how
+/// many signatures it lost.
 pub(crate) fn pages(
     sources: &[Source],
     picks: &[PagePick],
-) -> Result<(Vec<u8>, Vec<PageCheck>), WriteError> {
+) -> Result<(Vec<u8>, Vec<PageCheck>, u32), WriteError> {
     for pick in picks {
         let source = sources
             .get(pick.source)
@@ -261,7 +266,8 @@ pub(crate) fn pages(
     w.write_fonts()?;
     let info = w.write_info(single.unwrap_or(first))?;
     let checks = std::mem::take(&mut w.checks);
-    Ok((w.finish(info)?, checks))
+    let removed = w.signatures_removed;
+    Ok((w.finish(info)?, checks, removed))
 }
 
 /// Entries for a resource dictionary: names and values (references in the
@@ -303,6 +309,8 @@ struct Writer<'s> {
     fonts: Vec<FontSlot>,
     /// Checks of the pages with text edits.
     checks: Vec<PageCheck>,
+    /// Signature values left out.
+    signatures_removed: u32,
     /// A reference could not get a number (too many objects).
     overflow: bool,
 }
@@ -326,6 +334,7 @@ impl<'s> Writer<'s> {
             dropped_elements: HashSet::new(),
             fonts: Vec::new(),
             checks: Vec::new(),
+            signatures_removed: 0,
             overflow: false,
         }
     }
@@ -734,6 +743,11 @@ impl<'s> Writer<'s> {
                     }
                     syntax::rebuild_dict(d.data(), &[], &add, |v| self.remap(s, v))
                         .unwrap_or_else(|| self.remap(s, d.data()))
+                }
+                Some(Object::Dict(d)) if is_signed_field(d.data()) => {
+                    self.signatures_removed += 1;
+                    syntax::rebuild_dict(d.data(), &[b"V"], &[], |v| self.remap(s, v))
+                        .unwrap_or_else(|| b"null".to_vec())
                 }
                 Some(Object::Dict(d)) => self.remap(s, d.data()),
                 Some(Object::Array(a)) => self.remap(s, a.data()),
@@ -1231,6 +1245,12 @@ impl<'s> Writer<'s> {
         );
         Ok(self.out)
     }
+}
+
+/// Whether a dictionary is a signature field with a value (a signature).
+fn is_signed_field(dict: &[u8]) -> bool {
+    syntax::dict_value(dict, b"FT").is_some_and(|t| t.trim_ascii() == b"/Sig")
+        && syntax::dict_value(dict, b"V").is_some_and(|v| v.trim_ascii() != b"null")
 }
 
 /// A value of `key` inherited from the page's ancestors.

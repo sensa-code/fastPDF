@@ -57,6 +57,8 @@ subsetter = { workspace = true }
 [dev-dependencies]
 # Tests check that text layers still select and copy correctly.
 fastpdf-core.workspace = true
+# Signing tests make real CMS signatures with a key that is never stored.
+fastpdf-sign.workspace = true
 
 [features]
 # Lets FASTPDF_HAYRO_PREFLIGHT switch guardrails off to measure their cost.

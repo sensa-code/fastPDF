@@ -7,7 +7,8 @@
 //! new document made of picked pages (from any source, in any order,
 //! turned, with images stamped on them and lines of text replaced), or
 //! every page of some sources one after the other (merging files whose
-//! page count the reader does not know).
+//! page count the reader does not know). Any of these can then be signed
+//! (an incremental update with a digital signature, ADR 0013 §5).
 //!
 //! The text form is one item per line, paths last so they may contain
 //! spaces; texts are written as `x` and their UTF-8 bytes in hex:
@@ -21,6 +22,10 @@
 //! edit 72 90 300 104 0 x414243 x414244 C:\Windows\Fonts\kaiu.ttf
 //! output D:\out\a-copy.pdf
 //! copy 0
+//! output D:\out\a-signed.pdf
+//! copy 0
+//! sign 197420 3F2A...(40 hex digits) x x
+//! sign-stamp 0 400 700 480 780 0 D:\seals\big.png
 //! output D:\out\both.pdf
 //! merge 0 1
 //! ```
@@ -55,7 +60,80 @@ pub enum OutputContent {
     Pages(Vec<PagePick>),
     /// A new document of every page of these sources, in this order.
     Merge(Vec<usize>),
+    /// `base` (never itself signed), then a digital signature added in an
+    /// incremental update.
+    Signed {
+        base: Box<OutputContent>,
+        signature: SignatureSpec,
+    },
 }
+
+/// A digital signature (ADR 0013 §5, `docs/digital-signatures.md`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignatureSpec {
+    /// Who signs: the SHA-1 thumbprint (40 hex digits) of a certificate in
+    /// the user's personal store, or `test` (development: a key made for
+    /// the job alone).
+    pub signer: String,
+    /// The window the card's PIN dialog belongs to (a raw window handle; 0
+    /// for none).
+    pub window: u64,
+    pub reason: String,
+    pub location: String,
+    /// What the signature looks like on the page; `None`: invisible.
+    pub appearance: Option<SignatureAppearance>,
+}
+
+/// A visible signature: an image placed on a page of the signed output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignatureAppearance {
+    pub page: PageIndex,
+    pub stamp: Stamp,
+}
+
+/// Why a document cannot be signed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignProblem {
+    /// The certificate is not in the store (any more).
+    CertificateMissing,
+    /// No smart card in the reader, or it was taken out.
+    CardMissing,
+    /// The PIN dialog was cancelled.
+    Cancelled,
+    /// The card refused the PIN.
+    WrongPin,
+    /// The signature is larger than the room reserved for it.
+    TooLarge,
+    /// The document's cross-reference table is broken, so it would have to
+    /// be rewritten, and it already has signatures a rewrite would break.
+    Unsignable,
+    /// This build cannot sign.
+    Unavailable,
+    /// Anything else (with what failed).
+    Failed(String),
+}
+
+impl fmt::Display for SignProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CertificateMissing => write!(f, "the certificate is not in the store"),
+            Self::CardMissing => write!(f, "the smart card is not in the reader"),
+            Self::Cancelled => write!(f, "signing was cancelled"),
+            Self::WrongPin => write!(f, "the card refused the PIN"),
+            Self::TooLarge => write!(f, "the signature does not fit the room reserved for it"),
+            Self::Unsignable => write!(
+                f,
+                "the cross-reference table is broken and the document has signatures"
+            ),
+            Self::Unavailable => write!(f, "signing is not available"),
+            Self::Failed(m) => write!(f, "signing failed: {m}"),
+        }
+    }
+}
+
+/// Makes the CMS signature (DER) of `parts` (the signed byte ranges, in
+/// order) for a signature: the writer asks it once per signed output.
+pub type SignFn<'a> = &'a dyn Fn(&SignatureSpec, &[&[u8]]) -> Result<Vec<u8>, SignProblem>;
 
 /// A page of a new document.
 #[derive(Debug, Clone, PartialEq)]
@@ -200,6 +278,9 @@ pub struct WrittenOutput {
     pub path: PathBuf,
     pub pages: u32,
     pub bytes: u64,
+    /// Digital signatures of the source that a rewrite made invalid, and
+    /// so removed (their fields stay, unsigned).
+    pub signatures_removed: u32,
 }
 
 /// Why a job wrote nothing. A job is all or nothing: when any output fails,
@@ -223,6 +304,8 @@ pub enum WriteError {
         page: PageIndex,
         problem: EditProblem,
     },
+    /// An output cannot be signed.
+    Sign(SignProblem),
     /// An output cannot be written or moved into place.
     Output { path: PathBuf, message: String },
     /// A written file did not open again as the expected document.
@@ -251,6 +334,7 @@ impl fmt::Display for WriteError {
                 "source {source}, page {}: {problem}",
                 page.display_number()
             ),
+            Self::Sign(problem) => write!(f, "{problem}"),
             Self::Output { path, message } => write!(f, "{}: {message}", path.display()),
             Self::Verify { path, message } => {
                 write!(f, "{}: verification failed: {message}", path.display())
@@ -313,54 +397,7 @@ impl WriteJob {
         }
         for output in &self.outputs {
             let _ = writeln!(out, "output {}", path_text(&output.path)?);
-            match &output.content {
-                OutputContent::Copy { source } => {
-                    let _ = writeln!(out, "copy {source}");
-                }
-                OutputContent::Merge(sources) => {
-                    let list: Vec<String> = sources.iter().map(usize::to_string).collect();
-                    let _ = writeln!(out, "merge {}", list.join(" "));
-                }
-                OutputContent::Pages(pages) => {
-                    for pick in pages {
-                        let _ = writeln!(
-                            out,
-                            "page {} {} {}",
-                            pick.source,
-                            pick.page.get(),
-                            pick.rotate.degrees()
-                        );
-                        for stamp in &pick.stamps {
-                            let r = stamp.rect;
-                            let _ = writeln!(
-                                out,
-                                "stamp {} {} {} {} {} {}",
-                                r.x0,
-                                r.y0,
-                                r.x1,
-                                r.y1,
-                                stamp.rotate.degrees(),
-                                path_text(&stamp.image)?
-                            );
-                        }
-                        for edit in &pick.edits {
-                            let r = edit.rect;
-                            let _ = writeln!(
-                                out,
-                                "edit {} {} {} {} {} {} {} {}",
-                                r.x0,
-                                r.y0,
-                                r.x1,
-                                r.y1,
-                                edit.font.index,
-                                hex_text(&edit.old),
-                                hex_text(&edit.new),
-                                path_text(&edit.font.path)?
-                            );
-                        }
-                    }
-                }
-            }
+            content_text(&output.content, &mut out)?;
         }
         Ok(out)
     }
@@ -368,174 +405,347 @@ impl WriteJob {
     /// Parses the text form and checks the job is consistent (indices in
     /// range, every output has content).
     pub fn from_text(text: &str) -> Result<Self, WriteError> {
-        let bad = |line: usize, what: &str| WriteError::Job(format!("line {line}: {what}"));
-        let mut lines = text.lines().enumerate().map(|(i, l)| (i + 1, l));
-        match lines.next() {
-            Some((_, header)) if header.trim_start_matches('\u{feff}') == JOB_HEADER => {}
-            _ => return Err(WriteError::Job("not a write job".into())),
-        }
-        let mut job = Self::default();
-        for (number, line) in lines {
-            if line.trim().is_empty() {
-                continue;
+        parse_job(text)
+    }
+}
+
+/// The lines of an output's content.
+fn content_text(content: &OutputContent, out: &mut String) -> Result<(), WriteError> {
+    match content {
+        OutputContent::Signed { base, signature } => {
+            content_text(base, out)?;
+            let signer = &signature.signer;
+            if signer.is_empty() || signer.contains(char::is_whitespace) {
+                return Err(WriteError::Job(format!("unusable signer {signer:?}")));
             }
-            let (keyword, rest) = line.split_once(' ').unwrap_or((line, ""));
-            match keyword {
-                "source" => job.sources.push(PathBuf::from(rest)),
-                "output" => job.outputs.push(OutputSpec {
-                    path: PathBuf::from(rest),
-                    content: OutputContent::Pages(Vec::new()),
-                }),
-                "copy" => {
-                    let source = rest.parse().map_err(|_| bad(number, "bad source index"))?;
-                    let output = job
-                        .outputs
-                        .last_mut()
-                        .ok_or_else(|| bad(number, "copy before output"))?;
-                    match &output.content {
-                        OutputContent::Pages(pages) if pages.is_empty() => {
-                            output.content = OutputContent::Copy { source };
-                        }
-                        _ => return Err(bad(number, "an output has one kind of content")),
-                    }
-                }
-                "merge" => {
-                    let sources = rest
-                        .split(' ')
-                        .map(str::parse)
-                        .collect::<Result<Vec<usize>, _>>()
-                        .map_err(|_| bad(number, "bad source list"))?;
-                    let output = job
-                        .outputs
-                        .last_mut()
-                        .ok_or_else(|| bad(number, "merge before output"))?;
-                    match &output.content {
-                        OutputContent::Pages(pages) if pages.is_empty() => {
-                            output.content = OutputContent::Merge(sources);
-                        }
-                        _ => return Err(bad(number, "an output has one kind of content")),
-                    }
-                }
-                "page" => {
-                    let fields: Vec<&str> = rest.split(' ').collect();
-                    let [source, page, degrees] = fields[..] else {
-                        return Err(bad(number, "page needs source, page and rotation"));
-                    };
-                    let source = source.parse().map_err(|_| bad(number, "bad source"))?;
-                    let page = page.parse().map_err(|_| bad(number, "bad page"))?;
-                    let rotate = degrees
-                        .parse()
-                        .ok()
-                        .and_then(Rotation::from_degrees)
-                        .ok_or_else(|| bad(number, "bad rotation"))?;
-                    match job.outputs.last_mut().map(|o| &mut o.content) {
-                        Some(OutputContent::Pages(pages)) => pages.push(PagePick {
-                            rotate,
-                            ..PagePick::new(source, PageIndex::new(page))
-                        }),
-                        _ => return Err(bad(number, "page outside a page output")),
-                    }
-                }
-                "stamp" => {
-                    let mut fields = rest.splitn(6, ' ');
-                    let mut number_field = || -> Result<f32, WriteError> {
-                        fields
-                            .next()
-                            .and_then(|f| f.parse::<f32>().ok())
-                            .filter(|v| v.is_finite())
-                            .ok_or_else(|| bad(number, "bad stamp rectangle"))
-                    };
-                    let rect = PageRect::new(
-                        number_field()?,
-                        number_field()?,
-                        number_field()?,
-                        number_field()?,
+            let _ = writeln!(
+                out,
+                "sign {} {signer} {} {}",
+                signature.window,
+                hex_text(&signature.reason),
+                hex_text(&signature.location)
+            );
+            if let Some(appearance) = &signature.appearance {
+                let (r, stamp) = (appearance.stamp.rect, &appearance.stamp);
+                let _ = writeln!(
+                    out,
+                    "sign-stamp {} {} {} {} {} {} {}",
+                    appearance.page.get(),
+                    r.x0,
+                    r.y0,
+                    r.x1,
+                    r.y1,
+                    stamp.rotate.degrees(),
+                    path_text(&stamp.image)?
+                );
+            }
+        }
+        OutputContent::Copy { source } => {
+            let _ = writeln!(out, "copy {source}");
+        }
+        OutputContent::Merge(sources) => {
+            let list: Vec<String> = sources.iter().map(usize::to_string).collect();
+            let _ = writeln!(out, "merge {}", list.join(" "));
+        }
+        OutputContent::Pages(pages) => {
+            for pick in pages {
+                let _ = writeln!(
+                    out,
+                    "page {} {} {}",
+                    pick.source,
+                    pick.page.get(),
+                    pick.rotate.degrees()
+                );
+                for stamp in &pick.stamps {
+                    let r = stamp.rect;
+                    let _ = writeln!(
+                        out,
+                        "stamp {} {} {} {} {} {}",
+                        r.x0,
+                        r.y0,
+                        r.x1,
+                        r.y1,
+                        stamp.rotate.degrees(),
+                        path_text(&stamp.image)?
                     );
-                    let rotate = fields
-                        .next()
-                        .and_then(|f| f.parse().ok())
-                        .and_then(Rotation::from_degrees)
-                        .ok_or_else(|| bad(number, "bad stamp rotation"))?;
-                    let image = fields
-                        .next()
-                        .filter(|p| !p.is_empty())
-                        .ok_or_else(|| bad(number, "stamp without an image"))?;
-                    let pick = match job.outputs.last_mut().map(|o| &mut o.content) {
-                        Some(OutputContent::Pages(pages)) => pages.last_mut(),
-                        _ => None,
+                }
+                for edit in &pick.edits {
+                    let r = edit.rect;
+                    let _ = writeln!(
+                        out,
+                        "edit {} {} {} {} {} {} {} {}",
+                        r.x0,
+                        r.y0,
+                        r.x1,
+                        r.y1,
+                        edit.font.index,
+                        hex_text(&edit.old),
+                        hex_text(&edit.new),
+                        path_text(&edit.font.path)?
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_job(text: &str) -> Result<WriteJob, WriteError> {
+    let bad = |line: usize, what: &str| WriteError::Job(format!("line {line}: {what}"));
+    let mut lines = text.lines().enumerate().map(|(i, l)| (i + 1, l));
+    match lines.next() {
+        Some((_, header)) if header.trim_start_matches('\u{feff}') == JOB_HEADER => {}
+        _ => return Err(WriteError::Job("not a write job".into())),
+    }
+    let mut job = WriteJob::default();
+    for (number, line) in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (keyword, rest) = line.split_once(' ').unwrap_or((line, ""));
+        match keyword {
+            "source" => job.sources.push(PathBuf::from(rest)),
+            "output" => job.outputs.push(OutputSpec {
+                path: PathBuf::from(rest),
+                content: OutputContent::Pages(Vec::new()),
+            }),
+            "copy" => {
+                let source = rest.parse().map_err(|_| bad(number, "bad source index"))?;
+                let output = job
+                    .outputs
+                    .last_mut()
+                    .ok_or_else(|| bad(number, "copy before output"))?;
+                match &output.content {
+                    OutputContent::Pages(pages) if pages.is_empty() => {
+                        output.content = OutputContent::Copy { source };
                     }
-                    .ok_or_else(|| bad(number, "stamp before a page"))?;
-                    pick.stamps.push(Stamp {
-                        image: PathBuf::from(image),
-                        rect,
+                    _ => return Err(bad(number, "an output has one kind of content")),
+                }
+            }
+            "merge" => {
+                let sources = rest
+                    .split(' ')
+                    .map(str::parse)
+                    .collect::<Result<Vec<usize>, _>>()
+                    .map_err(|_| bad(number, "bad source list"))?;
+                let output = job
+                    .outputs
+                    .last_mut()
+                    .ok_or_else(|| bad(number, "merge before output"))?;
+                match &output.content {
+                    OutputContent::Pages(pages) if pages.is_empty() => {
+                        output.content = OutputContent::Merge(sources);
+                    }
+                    _ => return Err(bad(number, "an output has one kind of content")),
+                }
+            }
+            "page" => {
+                let fields: Vec<&str> = rest.split(' ').collect();
+                let [source, page, degrees] = fields[..] else {
+                    return Err(bad(number, "page needs source, page and rotation"));
+                };
+                let source = source.parse().map_err(|_| bad(number, "bad source"))?;
+                let page = page.parse().map_err(|_| bad(number, "bad page"))?;
+                let rotate = degrees
+                    .parse()
+                    .ok()
+                    .and_then(Rotation::from_degrees)
+                    .ok_or_else(|| bad(number, "bad rotation"))?;
+                match job.outputs.last_mut().map(|o| &mut o.content) {
+                    Some(OutputContent::Pages(pages)) => pages.push(PagePick {
                         rotate,
-                    });
+                        ..PagePick::new(source, PageIndex::new(page))
+                    }),
+                    _ => return Err(bad(number, "page outside a page output")),
                 }
-                "edit" => {
-                    let fields: Vec<&str> = rest.splitn(8, ' ').collect();
-                    let [x0, y0, x1, y1, index, old, new, font] = fields[..] else {
-                        return Err(bad(number, "edit needs a box, texts and a font"));
-                    };
-                    let coordinate = |f: &str| {
-                        f.parse::<f32>()
-                            .ok()
-                            .filter(|v| v.is_finite())
-                            .ok_or_else(|| bad(number, "bad edit box"))
-                    };
-                    let rect = PageRect::new(
-                        coordinate(x0)?,
-                        coordinate(y0)?,
-                        coordinate(x1)?,
-                        coordinate(y1)?,
-                    );
-                    let index = index
-                        .parse()
-                        .map_err(|_| bad(number, "bad font face index"))?;
-                    let (Some(old), Some(new)) = (parse_hex_text(old), parse_hex_text(new)) else {
-                        return Err(bad(number, "bad edit text"));
-                    };
-                    if font.is_empty() {
-                        return Err(bad(number, "edit without a font"));
-                    }
-                    let pick = match job.outputs.last_mut().map(|o| &mut o.content) {
-                        Some(OutputContent::Pages(pages)) => pages.last_mut(),
-                        _ => None,
-                    }
-                    .ok_or_else(|| bad(number, "edit before a page"))?;
-                    pick.edits.push(TextEdit {
-                        rect,
-                        old,
-                        new,
-                        font: FontFace {
-                            path: PathBuf::from(font),
-                            index,
-                        },
-                    });
+            }
+            "stamp" => {
+                let mut fields = rest.splitn(6, ' ');
+                let mut number_field = || -> Result<f32, WriteError> {
+                    fields
+                        .next()
+                        .and_then(|f| f.parse::<f32>().ok())
+                        .filter(|v| v.is_finite())
+                        .ok_or_else(|| bad(number, "bad stamp rectangle"))
+                };
+                let rect = PageRect::new(
+                    number_field()?,
+                    number_field()?,
+                    number_field()?,
+                    number_field()?,
+                );
+                let rotate = fields
+                    .next()
+                    .and_then(|f| f.parse().ok())
+                    .and_then(Rotation::from_degrees)
+                    .ok_or_else(|| bad(number, "bad stamp rotation"))?;
+                let image = fields
+                    .next()
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| bad(number, "stamp without an image"))?;
+                let pick = match job.outputs.last_mut().map(|o| &mut o.content) {
+                    Some(OutputContent::Pages(pages)) => pages.last_mut(),
+                    _ => None,
                 }
-                other => return Err(bad(number, &format!("unknown item {other:?}"))),
+                .ok_or_else(|| bad(number, "stamp before a page"))?;
+                pick.stamps.push(Stamp {
+                    image: PathBuf::from(image),
+                    rect,
+                    rotate,
+                });
+            }
+            "edit" => {
+                let fields: Vec<&str> = rest.splitn(8, ' ').collect();
+                let [x0, y0, x1, y1, index, old, new, font] = fields[..] else {
+                    return Err(bad(number, "edit needs a box, texts and a font"));
+                };
+                let coordinate = |f: &str| {
+                    f.parse::<f32>()
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .ok_or_else(|| bad(number, "bad edit box"))
+                };
+                let rect = PageRect::new(
+                    coordinate(x0)?,
+                    coordinate(y0)?,
+                    coordinate(x1)?,
+                    coordinate(y1)?,
+                );
+                let index = index
+                    .parse()
+                    .map_err(|_| bad(number, "bad font face index"))?;
+                let (Some(old), Some(new)) = (parse_hex_text(old), parse_hex_text(new)) else {
+                    return Err(bad(number, "bad edit text"));
+                };
+                if font.is_empty() {
+                    return Err(bad(number, "edit without a font"));
+                }
+                let pick = match job.outputs.last_mut().map(|o| &mut o.content) {
+                    Some(OutputContent::Pages(pages)) => pages.last_mut(),
+                    _ => None,
+                }
+                .ok_or_else(|| bad(number, "edit before a page"))?;
+                pick.edits.push(TextEdit {
+                    rect,
+                    old,
+                    new,
+                    font: FontFace {
+                        path: PathBuf::from(font),
+                        index,
+                    },
+                });
+            }
+            "sign" => {
+                let fields: Vec<&str> = rest.split(' ').collect();
+                let [window, signer, reason, location] = fields[..] else {
+                    return Err(bad(number, "sign needs a window, a signer and two texts"));
+                };
+                let window = window.parse().map_err(|_| bad(number, "bad window"))?;
+                let (Some(reason), Some(location)) =
+                    (parse_hex_text(reason), parse_hex_text(location))
+                else {
+                    return Err(bad(number, "bad signature text"));
+                };
+                let output = job
+                    .outputs
+                    .last_mut()
+                    .ok_or_else(|| bad(number, "sign before output"))?;
+                let base = std::mem::replace(&mut output.content, OutputContent::Pages(Vec::new()));
+                let signable = match &base {
+                    OutputContent::Pages(pages) => !pages.is_empty(),
+                    OutputContent::Signed { .. } => false,
+                    OutputContent::Copy { .. } | OutputContent::Merge(_) => true,
+                };
+                if !signable {
+                    return Err(bad(number, "sign needs content before it, signed once"));
+                }
+                output.content = OutputContent::Signed {
+                    base: Box::new(base),
+                    signature: SignatureSpec {
+                        signer: signer.to_owned(),
+                        window,
+                        reason,
+                        location,
+                        appearance: None,
+                    },
+                };
+            }
+            "sign-stamp" => {
+                let mut fields = rest.splitn(7, ' ');
+                let page = fields
+                    .next()
+                    .and_then(|f| f.parse().ok())
+                    .ok_or_else(|| bad(number, "bad signature page"))?;
+                let mut coordinate = || -> Result<f32, WriteError> {
+                    fields
+                        .next()
+                        .and_then(|f| f.parse::<f32>().ok())
+                        .filter(|v| v.is_finite())
+                        .ok_or_else(|| bad(number, "bad signature rectangle"))
+                };
+                let rect =
+                    PageRect::new(coordinate()?, coordinate()?, coordinate()?, coordinate()?);
+                let rotate = fields
+                    .next()
+                    .and_then(|f| f.parse().ok())
+                    .and_then(Rotation::from_degrees)
+                    .ok_or_else(|| bad(number, "bad signature rotation"))?;
+                let image = fields
+                    .next()
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| bad(number, "signature stamp without an image"))?;
+                match job.outputs.last_mut().map(|o| &mut o.content) {
+                    Some(OutputContent::Signed { signature, .. })
+                        if signature.appearance.is_none() =>
+                    {
+                        signature.appearance = Some(SignatureAppearance {
+                            page: PageIndex::new(page),
+                            stamp: Stamp {
+                                image: PathBuf::from(image),
+                                rect,
+                                rotate,
+                            },
+                        });
+                    }
+                    _ => return Err(bad(number, "sign-stamp without a signature")),
+                }
+            }
+            other => return Err(bad(number, &format!("unknown item {other:?}"))),
+        }
+    }
+    job.check()?;
+    Ok(job)
+}
+
+impl WriteJob {
+    /// Indices in range, at least one output, no output without content.
+    fn content_ok(&self, content: &OutputContent) -> bool {
+        let source_ok = |s: usize| s < self.sources.len();
+        match content {
+            OutputContent::Copy { source } => source_ok(*source),
+            OutputContent::Pages(pages) => {
+                !pages.is_empty() && pages.iter().all(|p| source_ok(p.source))
+            }
+            OutputContent::Merge(sources) => {
+                !sources.is_empty() && sources.iter().all(|&s| source_ok(s))
+            }
+            OutputContent::Signed { base, signature } => {
+                let signer = &signature.signer;
+                let signer_ok = signer == "test"
+                    || (signer.len() == 40 && signer.chars().all(|c| c.is_ascii_hexdigit()));
+                signer_ok
+                    && !matches!(**base, OutputContent::Signed { .. })
+                    && self.content_ok(base)
             }
         }
-        job.check()?;
-        Ok(job)
     }
 
-    /// Indices in range, at least one output, no output without content.
     pub fn check(&self) -> Result<(), WriteError> {
         if self.outputs.is_empty() {
             return Err(WriteError::Job("nothing to write".into()));
         }
-        let source_ok = |s: usize| s < self.sources.len();
         for output in &self.outputs {
-            let ok = match &output.content {
-                OutputContent::Copy { source } => source_ok(*source),
-                OutputContent::Pages(pages) => {
-                    !pages.is_empty() && pages.iter().all(|p| source_ok(p.source))
-                }
-                OutputContent::Merge(sources) => {
-                    !sources.is_empty() && sources.iter().all(|&s| source_ok(s))
-                }
-            };
-            if !ok {
+            if !self.content_ok(&output.content) {
                 return Err(WriteError::Job(format!(
                     "{}: no pages or a bad source",
                     output.path.display()
@@ -623,7 +833,14 @@ pub fn result_to_text(result: &Result<WriteReport, WriteError>) -> String {
         Ok(report) => {
             for o in &report.outputs {
                 let path = o.path.to_string_lossy();
-                let _ = writeln!(out, "ok {} {} {}", o.pages, o.bytes, one_line(&path));
+                let _ = writeln!(
+                    out,
+                    "ok {} {} {} {}",
+                    o.pages,
+                    o.bytes,
+                    o.signatures_removed,
+                    one_line(&path)
+                );
             }
         }
         Err(e) => {
@@ -658,6 +875,16 @@ pub fn result_to_text(result: &Result<WriteReport, WriteError>) -> String {
                     };
                     format!("edit {source} {} {problem}", page.get())
                 }
+                WriteError::Sign(problem) => match problem {
+                    SignProblem::CertificateMissing => "sign certificate-missing".into(),
+                    SignProblem::CardMissing => "sign card-missing".into(),
+                    SignProblem::Cancelled => "sign cancelled".into(),
+                    SignProblem::WrongPin => "sign wrong-pin".into(),
+                    SignProblem::TooLarge => "sign too-large".into(),
+                    SignProblem::Unsignable => "sign unsignable".into(),
+                    SignProblem::Unavailable => "sign unavailable".into(),
+                    SignProblem::Failed(m) => format!("sign failed {}", one_line(m)),
+                },
                 WriteError::Output { path, message } => format!(
                     "output {}\t{}",
                     one_line(&path.to_string_lossy()),
@@ -690,17 +917,21 @@ pub fn result_from_text(text: &str) -> Result<WriteReport, WriteError> {
     let mut report = WriteReport::default();
     for line in lines.into_iter().skip(1) {
         if let Some(rest) = line.strip_prefix("ok ") {
-            let mut fields = rest.splitn(3, ' ');
+            let mut fields = rest.splitn(4, ' ');
             let pages = fields.next().and_then(|f| f.parse().ok());
             let bytes = fields.next().and_then(|f| f.parse().ok());
+            let removed = fields.next().and_then(|f| f.parse().ok());
             let path = fields.next().filter(|p| !p.is_empty());
-            let (Some(pages), Some(bytes), Some(path)) = (pages, bytes, path) else {
+            let (Some(pages), Some(bytes), Some(signatures_removed), Some(path)) =
+                (pages, bytes, removed, path)
+            else {
                 return Err(broken());
             };
             report.outputs.push(WrittenOutput {
                 path: PathBuf::from(path),
                 pages,
                 bytes,
+                signatures_removed,
             });
         } else if let Some(rest) = line.strip_prefix("error ") {
             return Err(parse_error(rest).unwrap_or_else(broken));
@@ -768,6 +999,20 @@ fn parse_error(text: &str) -> Option<WriteError> {
             WriteError::Verify { path, message }
         }
         "process" => WriteError::Process(rest.to_owned()),
+        "sign" => {
+            let (kind, message) = rest.split_once(' ').unwrap_or((rest, ""));
+            WriteError::Sign(match kind {
+                "certificate-missing" => SignProblem::CertificateMissing,
+                "card-missing" => SignProblem::CardMissing,
+                "cancelled" => SignProblem::Cancelled,
+                "wrong-pin" => SignProblem::WrongPin,
+                "too-large" => SignProblem::TooLarge,
+                "unsignable" => SignProblem::Unsignable,
+                "unavailable" => SignProblem::Unavailable,
+                "failed" => SignProblem::Failed(message.to_owned()),
+                _ => return None,
+            })
+        }
         _ => return None,
     })
 }
@@ -827,6 +1072,42 @@ mod tests {
                     path: PathBuf::from(r"D:\out\both.pdf"),
                     content: OutputContent::Merge(vec![1, 0, 1]),
                 },
+                OutputSpec {
+                    path: PathBuf::from(r"D:\out\signed copy.pdf"),
+                    content: OutputContent::Signed {
+                        base: Box::new(OutputContent::Copy { source: 0 }),
+                        signature: SignatureSpec {
+                            signer: "test".into(),
+                            window: 0,
+                            reason: String::new(),
+                            location: String::new(),
+                            appearance: None,
+                        },
+                    },
+                },
+                OutputSpec {
+                    path: PathBuf::from(r"D:\out\signed pages.pdf"),
+                    content: OutputContent::Signed {
+                        base: Box::new(OutputContent::Pages(vec![PagePick::new(
+                            1,
+                            PageIndex::FIRST,
+                        )])),
+                        signature: SignatureSpec {
+                            signer: "AB".repeat(20),
+                            window: 0x0003_02A4,
+                            reason: "同意 approve".into(),
+                            location: "臺北".into(),
+                            appearance: Some(SignatureAppearance {
+                                page: PageIndex::FIRST,
+                                stamp: Stamp {
+                                    image: PathBuf::from(r"C:\seals\大章.png"),
+                                    rect: PageRect::new(400.0, 700.5, 480.0, 780.0),
+                                    rotate: Rotation::R90,
+                                },
+                            }),
+                        },
+                    },
+                },
             ],
         }
     }
@@ -866,6 +1147,25 @@ mod tests {
         assert!(parse(&format!("{page}edit 0 0 1 1 -1 x41 x f.ttf\n")).is_err());
         assert!(parse(&format!("{page}edit 0 0 inf 1 0 x41 x f.ttf\n")).is_err());
         assert!(parse("source a.pdf\noutput b.pdf\nedit 0 0 1 1 0 x41 x f.ttf\n").is_err());
+        let copy = "source a.pdf\noutput b.pdf\ncopy 0\n";
+        assert!(parse(&format!("{copy}sign 0 test x x\n")).is_ok());
+        assert!(parse(&format!("{copy}sign 0 {} x x\n", "0f".repeat(20))).is_ok());
+        assert!(
+            parse(&format!("{copy}sign 0 nobody x x\n")).is_err(),
+            "signer"
+        );
+        assert!(
+            parse(&format!("{copy}sign -1 test x x\n")).is_err(),
+            "window"
+        );
+        assert!(parse(&format!("{copy}sign 0 test x\n")).is_err());
+        assert!(parse(&format!("{copy}sign 0 test x x\nsign 0 test x x\n")).is_err());
+        assert!(parse("source a.pdf\noutput b.pdf\nsign 0 test x x\n").is_err());
+        assert!(parse(&format!("{copy}sign 0 test x x\npage 0 0 0\n")).is_err());
+        assert!(parse(&format!("{copy}sign-stamp 0 1 2 3 4 0 s.png\n")).is_err());
+        let stamped = format!("{copy}sign 0 test x x\nsign-stamp 0 1 2 3 4 90 s s.png\n");
+        assert!(parse(&stamped).is_ok());
+        assert!(parse(&format!("{stamped}sign-stamp 0 1 2 3 4 0 t.png\n")).is_err());
         assert!(
             parse("source a.pdf\noutput A.PDF\ncopy 0\n").is_err(),
             "overwrite"
@@ -930,6 +1230,7 @@ mod tests {
                 path: PathBuf::from(r"D:\out\a b.pdf"),
                 pages: 3,
                 bytes: 12345,
+                signatures_removed: 2,
             }],
         });
         assert_eq!(result_from_text(&result_to_text(&ok)), ok);
@@ -983,6 +1284,14 @@ mod tests {
                 page: PageIndex::FIRST,
                 problem: EditProblem::Unsupported,
             },
+            WriteError::Sign(SignProblem::CertificateMissing),
+            WriteError::Sign(SignProblem::CardMissing),
+            WriteError::Sign(SignProblem::Cancelled),
+            WriteError::Sign(SignProblem::WrongPin),
+            WriteError::Sign(SignProblem::TooLarge),
+            WriteError::Sign(SignProblem::Unsignable),
+            WriteError::Sign(SignProblem::Unavailable),
+            WriteError::Sign(SignProblem::Failed("CryptMsgUpdate (0x5)".into())),
             WriteError::Output {
                 path: PathBuf::from(r"D:\o.pdf"),
                 message: "access denied".into(),

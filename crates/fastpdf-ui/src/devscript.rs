@@ -50,6 +50,11 @@
 //! | `text-edit-begin=PAGE\|FIND` | starts editing the line containing FIND in place (the field over it) |
 //! | `text-edit-font=N` | the font new text is drawn with (0: 標楷體, 1: 新細明體, 2: 微軟正黑體) |
 //! | `text-edit-save=PATH` | saves the document with its changes there, without the dialog |
+//! | `sign-panel` | opens (or closes) the signature panel |
+//! | `sign-test` | signs with a key made for the job (needs the development overlay) |
+//! | `sign-visible=on`, `=off` | whether a placed stamp is the signature's appearance |
+//! | `sign-reason=TEXT` | the signature's reason |
+//! | `sign-save=PATH` | signs the document there, without the dialog |
 //! | `language=system`, `=en`, `=zh-TW` | sets the UI language setting |
 //! | `smooth=on`, `=off` | turns smooth wheel scrolling on or off |
 //! | `wheel=NOTCHES` | a mouse-wheel turn (negative: up), as the wheel sends it |
@@ -120,6 +125,11 @@ pub(crate) enum Step {
     TextEditBegin(u32, String),
     TextEditFont(usize),
     TextEditSave(PathBuf),
+    SignPanel,
+    SignTest,
+    SignVisible(bool),
+    SignReason(String),
+    SignSave(PathBuf),
     Language(LanguageChoice),
     Smooth(bool),
     /// Wheel notches over the document (positive: down).
@@ -224,6 +234,12 @@ fn parse_step(step: &str) -> Option<Step> {
                 .filter(|&n| n < crate::text_edits::EDIT_FONTS.len())?,
         ),
         ("text-edit-save", Some(path)) => Step::TextEditSave(PathBuf::from(path.trim())),
+        ("sign-panel", None) => Step::SignPanel,
+        ("sign-test", None) => Step::SignTest,
+        ("sign-visible", Some("on")) => Step::SignVisible(true),
+        ("sign-visible", Some("off")) => Step::SignVisible(false),
+        ("sign-reason", Some(text)) => Step::SignReason(text.to_owned()),
+        ("sign-save", Some(path)) => Step::SignSave(PathBuf::from(path.trim())),
         ("language", Some(name)) => Step::Language(LanguageChoice::from_name(name)?),
         ("smooth", Some("on")) => Step::Smooth(true),
         ("smooth", Some("off")) => Step::Smooth(false),
@@ -235,7 +251,7 @@ fn parse_step(step: &str) -> Option<Step> {
 /// The command called `name` (the `ReaderCommand` variant name).
 fn command_named(name: &str) -> Option<ReaderCommand> {
     use ReaderCommand as C;
-    const ALL: [ReaderCommand; 40] = [
+    const ALL: [ReaderCommand; 41] = [
         C::OpenFile,
         C::CloseDocument,
         C::Quit,
@@ -273,6 +289,7 @@ fn command_named(name: &str) -> Option<ReaderCommand> {
         C::RemoveStamp,
         C::EditText,
         C::ConfirmEdit,
+        C::Sign,
         C::Copy,
         C::SelectAll,
         C::Cancel,
@@ -635,6 +652,29 @@ impl ReaderView {
                 cx.notify();
                 Done
             }
+            Step::SignPanel => {
+                self.toggle_sign_panel(window, cx);
+                Done
+            }
+            Step::SignTest => {
+                self.signing.test_signer = true;
+                cx.notify();
+                Done
+            }
+            Step::SignVisible(on) => {
+                self.signing.visible = *on;
+                cx.notify();
+                Done
+            }
+            Step::SignReason(text) => {
+                let field = self.signing.reason.clone();
+                field.update(cx, |input, cx| input.set_text(text, cx));
+                Done
+            }
+            Step::SignSave(path) => {
+                self.sign_document(Some(path.clone()), window, cx);
+                Done
+            }
             Step::EditMenu => {
                 use crate::reader::Menu;
                 self.menus.open = (!self.menus.is_open(Menu::Edit)).then_some(Menu::Edit);
@@ -717,6 +757,22 @@ mod tests {
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn sign_steps_parse() {
+        assert_eq!(
+            parse(r"sign-test; sign-panel; sign-visible=on; sign-reason=同意; sign-save=D:\s.pdf")
+                .unwrap(),
+            vec![
+                Step::SignTest,
+                Step::SignPanel,
+                Step::SignVisible(true),
+                Step::SignReason("同意".into()),
+                Step::SignSave(PathBuf::from(r"D:\s.pdf")),
+            ]
+        );
+        assert!(parse("sign-visible=maybe").is_err());
     }
 
     #[test]
