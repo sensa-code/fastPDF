@@ -141,4 +141,14 @@
 - corpus 測試（`cargo test --release -p fastpdf-engine-hayro --test text_edits -- --ignored`）：27 份含文字的文件（繁中公文與檢驗報告的內嵌 TrueType 子集、Type0、未內嵌 MSung，日文，標準 14 字型、Type1、Type3、大量文字），每份最多 3 頁、每頁 6 行，把最後一個字改成「改」。除了直書文字（拒絕，Unsupported）與一行看不見的文字（拒絕，Invisible）之外全部寫入成功，並通過寫入端的重新解讀驗證。
 - GUI 實測（dev script，虛構公文樣本）：修改兩行（日期、承辦人），面板列出修改、頁面預覽新字、在原位編輯的欄位、另存後重新開啟。輸出另以 pypdf 檢查：舊文字不在任何 stream 裡，新文字可以擷取（layout 模式讀成完整的一行）。
 
+結果（2026-10-11，閱讀 KPI；舊版 853c3c7 為寫入功能加入前，新版 c45384c）：
+
+- B-1 成對比較（`tools/bench_paired.py`，語料 84 個檔案，新舊交錯各 3 對）：沒有狀態改變；幾何平均比值（新／舊）open 1.012、first page 1.003、time to first page 1.000、text 0.984、RSS peak 1.000、private peak 0.997，沒有超過門檻的退步。
+- B-8 成對比較（bench-app，3 頁與 300 頁文件各 3 對，每次啟動前等鍵鼠閒置 20 秒）：
+  - 首頁時間（app 自報，中位數）：3 頁 182.8 → 182.7 ms，300 頁 185.1 → 183.1 ms；
+  - 閒置 private working set：24.0 → 24.3 MB、25.9 → 26.2 MB；
+  - 閒置 CPU 兩版都約 0%，閒置時都沒有畫 frame。
+  - 量測期間有其他程式造成的背景負載（啟動前 CPU 負載 25–82%），時間數據有雜訊；記憶體與閒置指標不受影響。負載較輕的第一輪結果方向相同（首頁 180.6 → 168.7 ms、185.1 → 177.9 ms）。
+- `fastpdf.exe` 由 20.6 MB 增為 26.0 MB（重寫器、字型子集化、簽章與各面板），啟動時間沒有可量測的變化。
+
 結果（2026-10-11，數位簽章）：依 `docs/digital-signatures.md` 實作 PAdES B-B 的增量更新簽章，新增 `fastpdf-sign` crate（Windows 憑證存放區與 CMS，只依賴已有的 `windows-sys`）。測試與 pyHanko 的獨立驗證結果記在該文件的「實作結果」。重寫已簽章的文件時，原有簽章的值會被移除並在存檔通知中說明。
