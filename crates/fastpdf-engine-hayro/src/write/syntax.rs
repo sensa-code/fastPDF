@@ -338,6 +338,23 @@ pub(crate) fn array_elements(data: &[u8]) -> Option<Vec<Range<usize>>> {
     }
 }
 
+/// A number in PDF syntax: no exponent, at most 6 decimals.
+pub(crate) fn real(v: f64) -> String {
+    if !v.is_finite() {
+        return "0".into();
+    }
+    if v.fract() == 0.0 && v.abs() < 9.0e15 {
+        return format!("{}", v as i64);
+    }
+    let text = format!("{v:.6}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" {
+        "0".into()
+    } else {
+        text.to_owned()
+    }
+}
+
 /// `data` as a single reference, if that is all it is.
 pub(crate) fn single_reference(data: &[u8]) -> Option<RawRef> {
     let refs = references(data);
@@ -420,6 +437,16 @@ mod tests {
             "<</Type /Page/Annots [109 0 R]/Parent 1 0 R/A#20B 1>>"
         );
         assert_eq!(rebuild_dict(b"[1 2]", &[], &[], |v| v.to_vec()), None);
+    }
+
+    #[test]
+    fn numbers_are_written_without_exponents() {
+        assert_eq!(real(612.0), "612");
+        assert_eq!(real(-0.5), "-0.5");
+        assert_eq!(real(1e-7), "0");
+        assert_eq!(real(0.1 + 0.2), "0.3");
+        assert_eq!(real(f64::NAN), "0");
+        assert_eq!(real(-1e-9), "0");
     }
 
     #[test]

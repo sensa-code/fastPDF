@@ -396,7 +396,9 @@ impl AsRef<[u8]> for MappedFont {
     }
 }
 
-fn open_font(path: &std::path::Path) -> Option<FontData> {
+/// Maps a font file read-only (writers are kept out while it is mapped);
+/// `None` for a missing, empty or oversized file.
+pub(crate) fn open_font(path: &std::path::Path) -> Option<FontData> {
     let file = open_deny_write(path).ok()?;
     let len = file.metadata().ok()?.len();
     if len == 0 || len > MAX_FONT_FILE_BYTES {

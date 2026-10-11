@@ -45,6 +45,11 @@
 //! | `stamp-place=PAGE,X,Y` | places the first stamp image centred on that point (one-based page, points from the top left) |
 //! | `stamp-width=MM` | the width of stamps placed next |
 //! | `stamp-save=PATH` | saves the stamped document there, without the dialog |
+//! | `text-edit-panel` | opens (or closes) the text edit panel |
+//! | `text-edit=PAGE\|FIND\|NEW` | on that page (one-based), the line containing FIND gets NEW in its place |
+//! | `text-edit-begin=PAGE\|FIND` | starts editing the line containing FIND in place (the field over it) |
+//! | `text-edit-font=N` | the font new text is drawn with (0: 標楷體, 1: 新細明體, 2: 微軟正黑體) |
+//! | `text-edit-save=PATH` | saves the document with its changes there, without the dialog |
 //! | `language=system`, `=en`, `=zh-TW` | sets the UI language setting |
 //! | `smooth=on`, `=off` | turns smooth wheel scrolling on or off |
 //! | `wheel=NOTCHES` | a mouse-wheel turn (negative: up), as the wheel sends it |
@@ -110,6 +115,11 @@ pub(crate) enum Step {
     StampPlace(u32, f32, f32),
     StampWidth(f32),
     StampSave(PathBuf),
+    TextEditPanel,
+    TextEdit(u32, String, String),
+    TextEditBegin(u32, String),
+    TextEditFont(usize),
+    TextEditSave(PathBuf),
     Language(LanguageChoice),
     Smooth(bool),
     /// Wheel notches over the document (positive: down).
@@ -192,6 +202,28 @@ fn parse_step(step: &str) -> Option<Step> {
         }
         ("stamp-width", Some(mm)) => Step::StampWidth(mm.trim().parse().ok()?),
         ("stamp-save", Some(path)) => Step::StampSave(PathBuf::from(path.trim())),
+        ("text-edit-panel", None) => Step::TextEditPanel,
+        ("text-edit", Some(spec)) => {
+            let parts: Vec<&str> = spec.splitn(3, '|').collect();
+            let [page, find, new] = parts[..] else {
+                return None;
+            };
+            let page = page.trim().parse().ok().filter(|&p| p >= 1)?;
+            (!find.is_empty()).then_some(())?;
+            Step::TextEdit(page, find.to_owned(), new.to_owned())
+        }
+        ("text-edit-begin", Some(spec)) => {
+            let (page, find) = spec.split_once('|')?;
+            let page = page.trim().parse().ok().filter(|&p| p >= 1)?;
+            (!find.is_empty()).then_some(())?;
+            Step::TextEditBegin(page, find.to_owned())
+        }
+        ("text-edit-font", Some(n)) => Step::TextEditFont(
+            n.parse()
+                .ok()
+                .filter(|&n| n < crate::text_edits::EDIT_FONTS.len())?,
+        ),
+        ("text-edit-save", Some(path)) => Step::TextEditSave(PathBuf::from(path.trim())),
         ("language", Some(name)) => Step::Language(LanguageChoice::from_name(name)?),
         ("smooth", Some("on")) => Step::Smooth(true),
         ("smooth", Some("off")) => Step::Smooth(false),
@@ -203,7 +235,7 @@ fn parse_step(step: &str) -> Option<Step> {
 /// The command called `name` (the `ReaderCommand` variant name).
 fn command_named(name: &str) -> Option<ReaderCommand> {
     use ReaderCommand as C;
-    const ALL: [ReaderCommand; 38] = [
+    const ALL: [ReaderCommand; 40] = [
         C::OpenFile,
         C::CloseDocument,
         C::Quit,
@@ -239,6 +271,8 @@ fn command_named(name: &str) -> Option<ReaderCommand> {
         C::PageTools,
         C::StampTool,
         C::RemoveStamp,
+        C::EditText,
+        C::ConfirmEdit,
         C::Copy,
         C::SelectAll,
         C::Cancel,
@@ -556,8 +590,49 @@ impl ReaderView {
                 self.stamps.width_mm = *mm;
                 Done
             }
-            Step::StampSave(path) => {
-                self.save_stamps(Some(path.clone()), window, cx);
+            Step::StampSave(path) | Step::TextEditSave(path) => {
+                self.save_changes(Some(path.clone()), window, cx);
+                Done
+            }
+            Step::TextEditPanel => {
+                self.toggle_text_edit_panel(window, cx);
+                Done
+            }
+            Step::TextEdit(page, find, new) => match self.dev_text_edit(*page, find, new, cx) {
+                None => Pending,
+                Some(Ok(())) => Done,
+                Some(Err(why)) => Abort(why),
+            },
+            Step::TextEditBegin(page, find) => {
+                let index = PageIndex::new(page.saturating_sub(1));
+                if let Some(session) = self.session_mut() {
+                    session.go_to_page(index);
+                }
+                let span = match self.selection.layer(index) {
+                    Some(layer) => layer
+                        .spans
+                        .iter()
+                        .find(|s| s.text.contains(find.as_str()))
+                        .cloned(),
+                    None => {
+                        let missing: Vec<PageIndex> =
+                            self.selection.want_layer(index).into_iter().collect();
+                        self.fetch_text_layers(missing, cx);
+                        return Pending;
+                    }
+                };
+                let Some(span) = span else {
+                    return Abort(format!("no line with {find:?} on page {page}"));
+                };
+                if !self.text_edits.open {
+                    self.toggle_text_edit_panel(window, cx);
+                }
+                self.begin_line_edit(index, span, window, cx);
+                Done
+            }
+            Step::TextEditFont(n) => {
+                self.text_edits.font = *n;
+                cx.notify();
                 Done
             }
             Step::EditMenu => {
@@ -614,6 +689,34 @@ mod tests {
         assert_eq!(steps[9], Step::PrintPages("1-3, 5".into()));
         assert_eq!(steps[15], Step::Mark(PathBuf::from(r"C:\shots\a")));
         assert_eq!(steps[17], Step::Memory(String::new()));
+    }
+
+    #[test]
+    fn text_edit_steps_parse() {
+        assert_eq!(
+            parse(
+                r"text-edit-panel; text-edit=2|11月3日|12月31日; text-edit=1|a|;
+                  text-edit-begin=3|主旨; text-edit-font=1; text-edit-save=D:\o u.pdf"
+            )
+            .unwrap(),
+            vec![
+                Step::TextEditPanel,
+                Step::TextEdit(2, "11月3日".into(), "12月31日".into()),
+                Step::TextEdit(1, "a".into(), String::new()),
+                Step::TextEditBegin(3, "主旨".into()),
+                Step::TextEditFont(1),
+                Step::TextEditSave(PathBuf::from(r"D:\o u.pdf")),
+            ]
+        );
+        for bad in [
+            "text-edit=0|a|b",
+            "text-edit=1||b",
+            "text-edit=1|a",
+            "text-edit-begin=1",
+            "text-edit-font=3",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

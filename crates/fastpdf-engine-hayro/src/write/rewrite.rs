@@ -21,19 +21,29 @@
 //! single-source output keeps its catalog (outline, forms, names,
 //! metadata, structure tree); a merged one gets the sources' form fields
 //! and layers.
+//!
+//! A page with text edits gets one new content stream (`super::edit`) and
+//! the fonts its new text uses; its old content streams are not copied
+//! (unless another kept page uses them too), so removed text does not stay
+//! in the file. Fonts are written last, as subsets of every glyph the
+//! output uses.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fastpdf_engine_api::Rotation;
-use fastpdf_engine_api::write::{PagePick, Stamp, WriteError};
+use fastpdf_engine_api::write::{EditProblem, FontFace, PagePick, Stamp, WriteError};
+use fastpdf_engine_api::{PageIndex, Rotation};
 use hayro::hayro_syntax::object::{Dict, Number, Object, ObjectIdentifier, Rect, Stream};
 use hayro::hayro_syntax::page::{Page, Rotation as HayroRotation};
 use hayro::hayro_syntax::{Pdf, PdfVersion};
+use hayro::kurbo::{Affine, Point};
 
+use super::content::{self, Mode};
+use super::edit::{self, Expected, NewLine};
+use super::font::EditFont;
 use super::image::{self, ImageObject};
-use super::syntax::{self, RawRef};
+use super::syntax::{self, RawRef, real};
 use crate::geometry::PageGeom;
 
 /// Most objects an output may have: a runaway object graph ends the job.
@@ -176,8 +186,21 @@ fn object_id((number, generation): RawRef) -> ObjectIdentifier {
     )
 }
 
-/// A new document made of `picks`.
-pub(crate) fn pages(sources: &[Source], picks: &[PagePick]) -> Result<Vec<u8>, WriteError> {
+/// What an edited page of an output must draw; checked once the output
+/// is written (`super::verify_edits`).
+pub(crate) struct PageCheck {
+    /// The page's index in the output.
+    pub(crate) page: usize,
+    pub(crate) source: usize,
+    pub(crate) source_page: PageIndex,
+    pub(crate) expected: Vec<Expected>,
+}
+
+/// A new document made of `picks`, and the checks of its edited pages.
+pub(crate) fn pages(
+    sources: &[Source],
+    picks: &[PagePick],
+) -> Result<(Vec<u8>, Vec<PageCheck>), WriteError> {
     for pick in picks {
         let source = sources
             .get(pick.source)
@@ -231,12 +254,28 @@ pub(crate) fn pages(sources: &[Source], picks: &[PagePick]) -> Result<Vec<u8>, W
         )
         .as_bytes(),
     );
-    for (pick, &n) in picks.iter().zip(&numbers) {
-        w.write_page(pick, n)?;
+    for (index, (pick, &n)) in picks.iter().zip(&numbers).enumerate() {
+        w.write_page(pick, n, index)?;
     }
     w.drain()?;
+    w.write_fonts()?;
     let info = w.write_info(single.unwrap_or(first))?;
-    w.finish(info)
+    let checks = std::mem::take(&mut w.checks);
+    Ok((w.finish(info)?, checks))
+}
+
+/// Entries for a resource dictionary: names and values (references in the
+/// output's numbering).
+type Entries = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// A font new text is drawn with, and its Type0 font object once a page
+/// uses it.
+struct FontSlot {
+    face: FontFace,
+    font: EditFont,
+    number: Option<u32>,
+    /// The first page that uses it (source, page), for errors.
+    user: (usize, PageIndex),
 }
 
 struct Writer<'s> {
@@ -260,6 +299,10 @@ struct Writer<'s> {
     field_names: HashMap<(usize, u32), Vec<u8>>,
     /// Structure elements whose content is only on pages left out.
     dropped_elements: HashSet<(usize, u32)>,
+    /// Fonts of text edits.
+    fonts: Vec<FontSlot>,
+    /// Checks of the pages with text edits.
+    checks: Vec<PageCheck>,
     /// A reference could not get a number (too many objects).
     overflow: bool,
 }
@@ -281,6 +324,8 @@ impl<'s> Writer<'s> {
             form_nodes: HashSet::new(),
             field_names: HashMap::new(),
             dropped_elements: HashSet::new(),
+            fonts: Vec::new(),
+            checks: Vec::new(),
             overflow: false,
         }
     }
@@ -765,7 +810,7 @@ impl<'s> Writer<'s> {
         Ok(())
     }
 
-    fn write_page(&mut self, pick: &PagePick, number: u32) -> Result<(), WriteError> {
+    fn write_page(&mut self, pick: &PagePick, number: u32, index: usize) -> Result<(), WriteError> {
         let sources = self.sources;
         let s = pick.source;
         let page = &sources[s].pdf.pages()[pick.page.as_usize()];
@@ -783,11 +828,31 @@ impl<'s> Writer<'s> {
         let resources = own
             .map(<[u8]>::to_vec)
             .or_else(|| inherited(dict, b"Resources"));
-        if !pick.stamps.is_empty() {
-            let contents = syntax::dict_value(data, b"Contents");
-            let (resources, contents) = self.stamp(pick, page, resources.as_deref(), contents)?;
+        if !pick.stamps.is_empty() || !pick.edits.is_empty() {
+            let resources = self.resolve_dict(s, resources.as_deref());
+            let mut fonts = Vec::new();
+            let mut items = if pick.edits.is_empty() {
+                let contents = syntax::dict_value(data, b"Contents");
+                let items = self.content_items(s, contents);
+                items.iter().map(|item| self.remap(s, item)).collect()
+            } else {
+                let (stream, added) = self.edit_text(pick, page, &resources, index)?;
+                fonts = added;
+                vec![format!("{stream} 0 R").into_bytes()]
+            };
+            let mut xobjects = Vec::new();
+            if !pick.stamps.is_empty() {
+                let (wrapped, added) = self.stamp(pick, page, &resources, items)?;
+                items = wrapped;
+                xobjects = added;
+            }
+            let resources =
+                self.add_resources(s, &resources, &[(b"Font", fonts), (b"XObject", xobjects)])?;
+            let mut array = b"[".to_vec();
+            array.extend_from_slice(&items.join(&b' '));
+            array.push(b']');
             add.push((b"Resources", resources));
-            add.push((b"Contents", contents));
+            add.push((b"Contents", array));
         } else if own.is_none()
             && let Some(inherited) = resources
         {
@@ -799,19 +864,47 @@ impl<'s> Writer<'s> {
         Ok(())
     }
 
-    /// The page's resources with the stamp images added, and its contents
-    /// wrapped in `q` / `Q` (so nothing the page leaves in the graphics
-    /// state moves the stamps) followed by the stamps.
+    /// `resources` (a resolved dictionary in the source's numbering) in the
+    /// output's numbering, with entries added to some of its dictionaries
+    /// (`/Font`, `/XObject`); added values are in the output's numbering.
+    fn add_resources(
+        &mut self,
+        s: usize,
+        resources: &[u8],
+        additions: &[(&[u8], Entries)],
+    ) -> Result<Vec<u8>, WriteError> {
+        let mut add: Vec<(&[u8], Vec<u8>)> = Vec::new();
+        for (key, entries) in additions {
+            if entries.is_empty() {
+                continue;
+            }
+            let dict = self.resolve_dict(s, syntax::dict_value(resources, key));
+            let entries: Vec<(&[u8], Vec<u8>)> = entries
+                .iter()
+                .map(|(name, value)| (name.as_slice(), value.clone()))
+                .collect();
+            let dict = syntax::rebuild_dict(&dict, &[], &entries, |v| self.remap(s, v))
+                .ok_or_else(|| unreadable(s, "a resource dictionary"))?;
+            add.push((key, dict));
+        }
+        syntax::rebuild_dict(resources, &[], &add, |v| self.remap(s, v))
+            .ok_or_else(|| unreadable(s, "a resource dictionary"))
+    }
+
+    /// The page's content streams `items` (output references) wrapped in
+    /// `q` / `Q`, so nothing the page leaves in the graphics state moves
+    /// the stamps, and followed by the stamps; and the XObject resources
+    /// the stamps add. `resources` is the page's (resolved, source
+    /// numbering).
     fn stamp(
         &mut self,
         pick: &PagePick,
         page: &Page<'_>,
-        resources: Option<&[u8]>,
-        contents: Option<&[u8]>,
-    ) -> Result<(Vec<u8>, Vec<u8>), WriteError> {
+        resources: &[u8],
+        items: Vec<Vec<u8>>,
+    ) -> Result<(Vec<Vec<u8>>, Entries), WriteError> {
         let s = pick.source;
-        let resources = self.resolve_dict(s, resources);
-        let xobjects = self.resolve_dict(s, syntax::dict_value(&resources, b"XObject"));
+        let xobjects = self.resolve_dict(s, syntax::dict_value(resources, b"XObject"));
         let taken: HashSet<Vec<u8>> = syntax::dict_entries(&xobjects)
             .unwrap_or_default()
             .into_iter()
@@ -835,31 +928,181 @@ impl<'s> Writer<'s> {
             );
             names.push((name.into_bytes(), format!("{image} 0 R").into_bytes()));
         }
-        let add: Vec<(&[u8], Vec<u8>)> = names
-            .iter()
-            .map(|(name, value)| (name.as_slice(), value.clone()))
-            .collect();
-        let xobjects = syntax::rebuild_dict(&xobjects, &[], &add, |v| self.remap(s, v))
-            .ok_or_else(|| unreadable(s, "an XObject dictionary"))?;
-        let resources = syntax::rebuild_dict(&resources, &[], &[(b"XObject", xobjects)], |v| {
-            self.remap(s, v)
-        })
-        .ok_or_else(|| unreadable(s, "a resource dictionary"))?;
-
         let open = self.alloc()?;
         self.stream(open, b"<</Length 2>>", b"q\n");
         let close = self.alloc()?;
         let close_dict = format!("<</Length {}>>", drawing.len());
         self.stream(close, close_dict.as_bytes(), &drawing);
-        let mut items = vec![format!("{open} 0 R").into_bytes()];
-        for item in self.content_items(s, contents) {
-            items.push(self.remap(s, &item));
+        let mut wrapped = vec![format!("{open} 0 R").into_bytes()];
+        wrapped.extend(items);
+        wrapped.push(format!("{close} 0 R").into_bytes());
+        Ok((wrapped, names))
+    }
+
+    /// The page's content with its text edits (`super::edit`) as a new
+    /// stream, and the font resources the new text uses. Records what the
+    /// written page must draw.
+    fn edit_text(
+        &mut self,
+        pick: &PagePick,
+        page: &Page<'_>,
+        resources: &[u8],
+        index: usize,
+    ) -> Result<(u32, Entries), WriteError> {
+        let s = pick.source;
+        let problem = |problem| WriteError::Edit {
+            source: s,
+            page: pick.page,
+            problem,
+        };
+        let analysis = content::analyze(page).ok_or_else(|| problem(EditProblem::Unsupported))?;
+        let plan = edit::plan(page, &analysis, &pick.edits).map_err(problem)?;
+        let fonts = self.resolve_dict(s, syntax::dict_value(resources, b"Font"));
+        let taken: HashSet<Vec<u8>> = syntax::dict_entries(&fonts)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| e.key)
+            .collect();
+        // Font slot and resource name of each font the page uses.
+        let mut names: Vec<(usize, Vec<u8>)> = Vec::new();
+        let mut drawings = Vec::with_capacity(plan.lines.len());
+        let mut new_glyphs = Vec::with_capacity(plan.lines.len());
+        for line in &plan.lines {
+            let face = &pick.edits[line.edit].font;
+            let slot = self
+                .font_slot(face, (s, pick.page))
+                .map_err(|m| problem(EditProblem::Font(m)))?;
+            let encoded = self.fonts[slot]
+                .font
+                .encode(&line.text)
+                .map_err(|chars| problem(EditProblem::MissingGlyphs(chars)))?;
+            let name = match names.iter().find(|(n, _)| *n == slot) {
+                Some((_, name)) => name.clone(),
+                None => {
+                    let name = (0..)
+                        .map(|k| match k {
+                            0 => format!("FastPdfFont{slot}"),
+                            k => format!("FastPdfFont{slot}_{k}"),
+                        })
+                        .find(|name| !taken.contains(name.as_bytes()))
+                        .unwrap_or_default()
+                        .into_bytes();
+                    names.push((slot, name.clone()));
+                    name
+                }
+            };
+            drawings.push(draw_text(&name, line, &encoded.codes));
+            let mut glyphs = Vec::with_capacity(encoded.advances.len());
+            let mut x = 0.0;
+            for (c, advance) in line.text.chars().zip(&encoded.advances) {
+                glyphs.push(Expected {
+                    text: c.to_string(),
+                    origin: line.transform * Point::new(x, 0.0),
+                    new: true,
+                });
+                x += advance;
+            }
+            new_glyphs.push(glyphs);
         }
-        items.push(format!("{close} 0 R").into_bytes());
-        let mut array = b"[".to_vec();
-        array.extend_from_slice(&items.join(&b' '));
-        array.push(b']');
-        Ok((resources, array))
+        let data = edit::compose(&analysis.content, &plan, &drawings);
+        let expected = edit::expected(&analysis, &plan, &new_glyphs);
+        let compressed = image::deflate(&data);
+        let stream = self.alloc()?;
+        let dict = format!("<</Length {}/Filter /FlateDecode>>", compressed.len());
+        self.stream(stream, dict.as_bytes(), &compressed);
+        let mut entries = Vec::with_capacity(names.len());
+        for (slot, name) in names {
+            let number = match self.fonts[slot].number {
+                Some(n) => n,
+                None => {
+                    let n = self.alloc()?;
+                    self.fonts[slot].number = Some(n);
+                    n
+                }
+            };
+            entries.push((name, format!("{number} 0 R").into_bytes()));
+        }
+        self.checks.push(PageCheck {
+            page: index,
+            source: s,
+            source_page: pick.page,
+            expected,
+        });
+        Ok((stream, entries))
+    }
+
+    /// The slot of font `face`, opened on first use by page `user`.
+    fn font_slot(&mut self, face: &FontFace, user: (usize, PageIndex)) -> Result<usize, String> {
+        if let Some(i) = self.fonts.iter().position(|f| f.face == *face) {
+            return Ok(i);
+        }
+        let font = EditFont::open(face)?;
+        self.fonts.push(FontSlot {
+            face: face.clone(),
+            font,
+            number: None,
+            user,
+        });
+        Ok(self.fonts.len() - 1)
+    }
+
+    /// The fonts of text edits, each a Type0 font with its CIDFont,
+    /// descriptor, subset font program and ToUnicode map.
+    fn write_fonts(&mut self) -> Result<(), WriteError> {
+        for i in 0..self.fonts.len() {
+            let slot = &self.fonts[i];
+            let Some(type0) = slot.number.filter(|_| slot.font.is_used()) else {
+                continue;
+            };
+            let (source, page) = slot.user;
+            let embedded = slot.font.embed().map_err(|m| WriteError::Edit {
+                source,
+                page,
+                problem: EditProblem::Font(m),
+            })?;
+            let mut name = Vec::new();
+            syntax::encode_name(&embedded.base_font, &mut name);
+            let program = image::deflate(&embedded.program);
+            let file = self.alloc()?;
+            let dict = format!(
+                "<</Length {}/Length1 {}/Filter /FlateDecode>>",
+                program.len(),
+                embedded.program.len()
+            );
+            self.stream(file, dict.as_bytes(), &program);
+            let descriptor = self.alloc()?;
+            let mut body = b"<</Type /FontDescriptor/FontName ".to_vec();
+            body.extend_from_slice(&name);
+            body.extend_from_slice(embedded.descriptor.as_bytes());
+            body.extend_from_slice(format!("/FontFile2 {file} 0 R>>").as_bytes());
+            self.object(descriptor, &body);
+            let cid = self.alloc()?;
+            let mut body = b"<</Type /Font/Subtype /CIDFontType2/BaseFont ".to_vec();
+            body.extend_from_slice(&name);
+            body.extend_from_slice(
+                format!(
+                    "/CIDSystemInfo <</Registry (Adobe)/Ordering (Identity)/Supplement 0>>\
+                     /FontDescriptor {descriptor} 0 R/DW 1000/W {}/CIDToGIDMap /Identity>>",
+                    embedded.widths
+                )
+                .as_bytes(),
+            );
+            self.object(cid, &body);
+            let cmap = image::deflate(&embedded.to_unicode);
+            let to_unicode = self.alloc()?;
+            let dict = format!("<</Length {}/Filter /FlateDecode>>", cmap.len());
+            self.stream(to_unicode, dict.as_bytes(), &cmap);
+            let mut body = b"<</Type /Font/Subtype /Type0/BaseFont ".to_vec();
+            body.extend_from_slice(&name);
+            body.extend_from_slice(
+                format!(
+                    "/Encoding /Identity-H/DescendantFonts [{cid} 0 R]/ToUnicode {to_unicode} 0 R>>"
+                )
+                .as_bytes(),
+            );
+            self.object(type0, &body);
+        }
+        Ok(())
     }
 
     /// A dictionary value (direct, or a reference to one) as dictionary
@@ -1012,6 +1255,51 @@ fn hayro_degrees(rotation: HayroRotation) -> u32 {
     }
 }
 
+/// Operators drawing `codes` (of the font resource `name`) as `line`
+/// places and paints them, in `q` / `Q`; they run where the line's CTM is
+/// in effect.
+fn draw_text(name: &[u8], line: &NewLine, codes: &[u8]) -> Vec<u8> {
+    let to_user = line.ctm.inverse();
+    let look = &line.look;
+    let black = [0.0; 3];
+    let (mode, fill, stroke) = match look.mode {
+        Mode::Fill | Mode::Invisible => (0, Some(look.fill.unwrap_or(black)), None),
+        Mode::Stroke => (1, None, Some(look.stroke.unwrap_or(black))),
+        Mode::FillStroke => (
+            2,
+            Some(look.fill.unwrap_or(black)),
+            Some(look.stroke.unwrap_or(black)),
+        ),
+    };
+    let rgb = |c: [f32; 3]| c.map(|v| real(f64::from(v))).join(" ");
+    let mut out = String::from("q\n");
+    if let Some(color) = fill {
+        out.push_str(&format!("{} rg\n", rgb(color)));
+    }
+    if let Some(color) = stroke {
+        // Stroke widths are in points; user space may be scaled.
+        let width = look.stroke_width * content::scale_of(to_user);
+        out.push_str(&format!("{} RG {} w\n", rgb(color), real(width)));
+    }
+    out.push_str("BT\n");
+    let mut bytes = out.into_bytes();
+    syntax::encode_name(name, &mut bytes);
+    // Size 1: the matrix carries the size (glyph space is 1000 per em).
+    let matrix = (to_user * line.transform * Affine::scale(1000.0)).as_coeffs();
+    bytes.extend_from_slice(
+        format!(
+            " 1 Tf\n0 Tc 0 Tw 100 Tz 0 Ts {mode} Tr\n{} Tm\n<",
+            matrix.map(real).join(" ")
+        )
+        .as_bytes(),
+    );
+    for b in codes {
+        bytes.extend_from_slice(format!("{b:02X}").as_bytes());
+    }
+    bytes.extend_from_slice(b"> Tj\nET\nQ\n");
+    bytes
+}
+
 /// The `cm` operands that draw a stamp's image (the unit square) into its
 /// rectangle, turned clockwise by its rotation.
 fn placement(geom: &PageGeom, stamp: &Stamp) -> String {
@@ -1043,23 +1331,6 @@ fn rect_array(r: Rect) -> Vec<u8> {
         real(r.y1)
     )
     .into_bytes()
-}
-
-/// A number in PDF syntax: no exponent, at most 6 decimals.
-fn real(v: f64) -> String {
-    if !v.is_finite() {
-        return "0".into();
-    }
-    if v.fract() == 0.0 && v.abs() < 9.0e15 {
-        return format!("{}", v as i64);
-    }
-    let text = format!("{v:.6}");
-    let text = text.trim_end_matches('0').trim_end_matches('.');
-    if text == "-0" {
-        "0".into()
-    } else {
-        text.to_owned()
-    }
 }
 
 fn number(n: &Number) -> Vec<u8> {
@@ -1110,13 +1381,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn numbers_are_written_without_exponents() {
-        assert_eq!(real(612.0), "612");
-        assert_eq!(real(-0.5), "-0.5");
-        assert_eq!(real(1e-7), "0");
-        assert_eq!(real(0.1 + 0.2), "0.3");
-        assert_eq!(real(f64::NAN), "0");
-        assert_eq!(real(-1e-9), "0");
+    fn strings_are_written_in_hex() {
         assert_eq!(hex_string(b"A\x01"), b"<4101>");
     }
 }

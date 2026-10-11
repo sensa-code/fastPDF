@@ -247,6 +247,16 @@ fn edit_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView
                 cx,
             )
             .into_any_element(),
+            menu_item(
+                "edit-text",
+                strings.edit_text_menu,
+                view.text_edits.open,
+                has_doc,
+                ReaderCommand::EditText,
+                tools,
+                cx,
+            )
+            .into_any_element(),
         ]
     })
 }

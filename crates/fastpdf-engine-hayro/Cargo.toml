@@ -49,6 +49,11 @@ flate2 = { workspace = true }
 # so it adds no crate.
 image = { workspace = true, features = ["png", "jpeg"] }
 
+# Text edits for the writer (ADR 0013): reading the system font that new
+# text is drawn with, and embedding a subset of it.
+skrifa = { workspace = true }
+subsetter = { workspace = true }
+
 [dev-dependencies]
 # Tests check that text layers still select and copy correctly.
 fastpdf-core.workspace = true

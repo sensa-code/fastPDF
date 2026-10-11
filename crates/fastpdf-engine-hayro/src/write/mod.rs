@@ -2,7 +2,8 @@
 //!
 //! [`execute`] runs a [`WriteJob`]: it reads the sources, builds every
 //! output in memory (a byte copy, or a rewrite of picked pages with their
-//! stamps, `rewrite`), opens each result again with hayro to check it,
+//! stamps and text edits, `rewrite`), opens each result again with hayro to
+//! check it (and interprets every edited page again, `edit::compare`),
 //! writes it to a temporary file next to its destination and, once every
 //! output is ready, moves them into place. A file an output replaces is set
 //! aside first and only deleted once the job's success is established
@@ -20,6 +21,9 @@
 //! and streams would have to be decrypted and written again, and rewriting
 //! raw bytes would otherwise produce garbage.
 
+mod content;
+mod edit;
+mod font;
 mod image;
 mod rewrite;
 mod syntax;
@@ -29,12 +33,13 @@ use std::sync::Arc;
 
 use fastpdf_engine_api::PageIndex;
 use fastpdf_engine_api::write::{
-    OutputContent, PagePick, WriteError, WriteJob, WriteReport, WrittenOutput, backup_path,
-    discard_backups, temp_path,
+    EditProblem, OutputContent, PagePick, WriteError, WriteJob, WriteReport, WrittenOutput,
+    backup_path, discard_backups, temp_path,
 };
 use hayro::hayro_syntax::Pdf;
 
-use rewrite::Source;
+use edit::Mismatch;
+use rewrite::{PageCheck, Source};
 
 /// Runs `job`; see the module documentation.
 pub fn execute(job: &WriteJob) -> Result<WriteReport, WriteError> {
@@ -68,11 +73,12 @@ pub fn execute_keeping_backups(job: &WriteJob) -> Result<WriteReport, WriteError
                     (Arc::clone(&source.bytes), source.page_count())
                 }
                 OutputContent::Pages(picks) => {
-                    let bytes = rewrite::pages(&sources, picks)?;
+                    let (bytes, checks) = rewrite::pages(&sources, picks)?;
                     verify(&bytes, picks.len()).map_err(|message| WriteError::Verify {
                         path: output.path.clone(),
                         message,
                     })?;
+                    verify_edits(&bytes, &checks, &output.path)?;
                     (Arc::new(bytes), picks.len())
                 }
                 OutputContent::Merge(list) => {
@@ -83,7 +89,7 @@ pub fn execute_keeping_backups(job: &WriteJob) -> Result<WriteReport, WriteError
                                 .map(move |p| PagePick::new(s, PageIndex::new(p as u32)))
                         })
                         .collect();
-                    let bytes = rewrite::pages(&sources, &picks)?;
+                    let (bytes, _) = rewrite::pages(&sources, &picks)?;
                     verify(&bytes, picks.len()).map_err(|message| WriteError::Verify {
                         path: output.path.clone(),
                         message,
@@ -215,6 +221,43 @@ fn verify(bytes: &[u8], pages: usize) -> Result<(), String> {
     let found = pdf.pages().len();
     if found != pages {
         return Err(format!("{found} pages instead of {pages}"));
+    }
+    Ok(())
+}
+
+/// Interprets the edited pages of a written document again: each must draw
+/// what its check expects. Glyphs that should have stayed but did not mean
+/// the text cannot be edited reliably; anything else is a failed
+/// verification.
+fn verify_edits(bytes: &[u8], checks: &[PageCheck], path: &Path) -> Result<(), WriteError> {
+    if checks.is_empty() {
+        return Ok(());
+    }
+    let failed = |message: String| WriteError::Verify {
+        path: path.to_path_buf(),
+        message,
+    };
+    let pdf = Pdf::new(bytes.to_vec()).map_err(|e| failed(format!("does not parse: {e:?}")))?;
+    let pages = pdf.pages();
+    for check in checks {
+        if check.page >= pages.len() {
+            return Err(failed(format!("page {} is missing", check.page + 1)));
+        }
+        let analysis = content::analyze(&pages[check.page])
+            .ok_or_else(|| failed(format!("page {} cannot be read", check.page + 1)))?;
+        match edit::compare(&analysis.glyphs, &check.expected) {
+            Ok(()) => {}
+            Err(Mismatch::Kept(_)) => {
+                return Err(WriteError::Edit {
+                    source: check.source,
+                    page: check.source_page,
+                    problem: EditProblem::Unsupported,
+                });
+            }
+            Err(Mismatch::New(message)) => {
+                return Err(failed(format!("page {}: {message}", check.page + 1)));
+            }
+        }
     }
     Ok(())
 }

@@ -24,7 +24,7 @@ None — every shipped crate has a permissive license option.
 
 License texts: `licenses/`.
 
-## All shipped crates (460)
+## All shipped crates (461)
 
 | Crate | Version | License | Repository |
 |---|---|---|---|
@@ -366,6 +366,7 @@ License texts: `licenses/`.
 | strict-num | 0.1.1 | MIT | https://github.com/RazrFalcon/strict-num |
 | strum | 0.28.0 | MIT | https://github.com/Peternator7/strum |
 | strum_macros | 0.28.0 | MIT | https://github.com/Peternator7/strum |
+| subsetter | 0.2.6 | MIT OR Apache-2.0 | https://github.com/typst/subsetter |
 | subtle | 2.6.1 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle |
 | sum_tree | 0.1.0 | Apache-2.0 |  |
 | sval | 2.22.0 | Apache-2.0 OR MIT | https://github.com/sval-rs/sval |

@@ -163,8 +163,16 @@ pub(crate) struct Strings {
     pub add_stamp_images: &'static str,
     pub stamp_width: &'static str,
     pub clear_stamps: &'static str,
-    pub no_stamps_placed: &'static str,
     pub stamp_suffix: &'static str,
+    pub edit_text_menu: &'static str,
+    pub edit_text_title: &'static str,
+    pub edit_text_hint: &'static str,
+    pub edit_font: &'static str,
+    pub clear_edits: &'static str,
+    pub nothing_changed: &'static str,
+    pub no_edit_font: &'static str,
+    pub edit_suffix: &'static str,
+    pub apply: &'static str,
     pub no_pages_given: &'static str,
     pub cannot_delete_all: &'static str,
     pub nothing_to_merge: &'static str,
@@ -299,8 +307,16 @@ const EN: Strings = Strings {
     add_stamp_images: "Add stamp images…",
     stamp_width: "Width",
     clear_stamps: "Remove all",
-    no_stamps_placed: "Place a stamp on a page first.",
     stamp_suffix: " - stamped",
+    edit_text_menu: "Edit text…",
+    edit_text_title: "Edit text",
+    edit_text_hint: "Click a line on a page to change it; Enter applies, Esc cancels. From its first changed character on, the line is drawn anew in the font chosen below.",
+    edit_font: "Font",
+    clear_edits: "Undo all",
+    nothing_changed: "Nothing has been changed yet.",
+    no_edit_font: "None of the fonts for new text (DFKai-SB, PMingLiU, Microsoft JhengHei) is installed.",
+    edit_suffix: " - edited",
+    apply: "Apply",
     no_pages_given: "Enter the pages first.",
     cannot_delete_all: "Every page would be deleted.",
     nothing_to_merge: "Add the files to merge first.",
@@ -430,8 +446,16 @@ const ZH_TW: Strings = Strings {
     add_stamp_images: "加入印章圖片…",
     stamp_width: "寬度",
     clear_stamps: "全部移除",
-    no_stamps_placed: "請先在頁面上放置印章。",
     stamp_suffix: "-用印",
+    edit_text_menu: "修改文字…",
+    edit_text_title: "修改文字",
+    edit_text_hint: "在頁面上點一行文字即可修改，按 Enter 套用、Esc 取消。從第一個改動的字開始，該行會以下方選擇的字型重新繪製。",
+    edit_font: "字型",
+    clear_edits: "全部還原",
+    nothing_changed: "還沒有任何修改。",
+    no_edit_font: "找不到可用的字型（標楷體、新細明體或微軟正黑體）。",
+    edit_suffix: "-修改",
+    apply: "套用",
     no_pages_given: "請先輸入頁面。",
     cannot_delete_all: "不能刪除所有頁面。",
     nothing_to_merge: "請先加入要合併的檔案。",
@@ -666,6 +690,67 @@ impl Strings {
             format!("沒有第 {page} 頁")
         } else {
             format!("There is no page {page}")
+        }
+    }
+
+    /// The name of `EDIT_FONTS[index]` (`crate::text_edits`).
+    pub(crate) fn edit_font_name(&self, index: usize) -> &'static str {
+        const ZH: [&str; 3] = ["標楷體", "新細明體", "微軟正黑體"];
+        const EN: [&str; 3] = ["DFKai-SB", "PMingLiU", "Microsoft JhengHei"];
+        let names = if self.zh() { ZH } else { EN };
+        names.get(index).copied().unwrap_or("")
+    }
+
+    pub(crate) fn edit_on_page(&self, page: u32, text: &str) -> String {
+        match (self.zh(), text.trim().is_empty()) {
+            (true, true) => format!("第 {page} 頁：（刪除這行）"),
+            (true, false) => format!("第 {page} 頁：{text}"),
+            (false, true) => format!("Page {page}: (line removed)"),
+            (false, false) => format!("Page {page}: {text}"),
+        }
+    }
+
+    /// Why a text edit on `page` cannot be made.
+    pub(crate) fn edit_failed(
+        &self,
+        page: u32,
+        problem: &fastpdf_engine_api::write::EditProblem,
+    ) -> String {
+        use fastpdf_engine_api::write::EditProblem as P;
+        if self.zh() {
+            match problem {
+                P::NotFound => {
+                    format!("第 {page} 頁：找不到要修改的那行文字（文件內容和畫面上的不同）。")
+                }
+                P::InObject => format!("第 {page} 頁：這行文字屬於表單物件或註解，無法修改。"),
+                P::Invisible => {
+                    format!("第 {page} 頁：這行是掃描文件上看不見的辨識文字，無法修改。")
+                }
+                P::Unsupported => format!("第 {page} 頁：這行文字的寫法（例如直書）目前無法修改。"),
+                P::MissingGlyphs(chars) => {
+                    format!("第 {page} 頁：所選字型沒有這些字：{chars}。請換一種字型。")
+                }
+                P::Font(reason) => format!("第 {page} 頁：無法使用所選字型：{reason}"),
+            }
+        } else {
+            match problem {
+                P::NotFound => {
+                    format!("Page {page}: the line to change is not in the document as shown.")
+                }
+                P::InObject => format!(
+                    "Page {page}: this line belongs to a form object or annotation and cannot be changed."
+                ),
+                P::Invisible => format!(
+                    "Page {page}: this line is the invisible recognized text of a scan and cannot be changed."
+                ),
+                P::Unsupported => format!(
+                    "Page {page}: this line is written in a way (such as vertically) that cannot be changed yet."
+                ),
+                P::MissingGlyphs(chars) => format!(
+                    "Page {page}: the chosen font has no glyphs for {chars}. Choose another font."
+                ),
+                P::Font(reason) => format!("Page {page}: cannot use the chosen font: {reason}"),
+            }
         }
     }
 

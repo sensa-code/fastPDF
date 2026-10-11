@@ -98,6 +98,17 @@ impl TextSelection {
         self.request(page).into_iter().collect()
     }
 
+    /// The text layer of `page`, once it is here.
+    pub(crate) fn layer(&self, page: PageIndex) -> Option<&Arc<TextLayer>> {
+        self.layers.get(&page)
+    }
+
+    /// Asks for the text layer of `page` (text editing): the page, when it
+    /// must be fetched.
+    pub(crate) fn want_layer(&mut self, page: PageIndex) -> Option<PageIndex> {
+        self.request(page)
+    }
+
     /// Marks `page` as being fetched; `None` when it is known or loading.
     fn request(&mut self, page: PageIndex) -> Option<PageIndex> {
         if self.layers.contains_key(&page)

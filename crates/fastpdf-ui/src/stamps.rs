@@ -13,7 +13,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use fastpdf_engine_api::write::{OutputContent, OutputSpec, PagePick, Stamp, WriteJob};
 use fastpdf_engine_api::{PageIndex, PageRect, PageSize, Rotation};
 use gpui::{
     BorderStyle, Bounds, ClickEvent, Context, Corners, DispatchPhase, Entity, InteractiveElement,
@@ -23,7 +22,7 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 
-use crate::reader::{DocState, ReaderView, display_name};
+use crate::reader::{ReaderView, display_name};
 use crate::toolbar::styled_button;
 
 /// Stamp images remembered at most. With four previews of at most
@@ -239,6 +238,9 @@ pub(crate) fn keep_on_page(rect: PageRect, size: PageSize) -> PageRect {
 impl ReaderView {
     pub(crate) fn toggle_stamp_panel(&mut self, cx: &mut Context<'_, Self>) {
         self.stamps.open = !self.stamps.open;
+        if self.stamps.open && self.text_edits.open {
+            self.hide_text_edit_panel(cx);
+        }
         if !self.stamps.open {
             self.stamps.armed = None;
             // Nothing shows the previews any more: free their GPU memory
@@ -534,58 +536,6 @@ impl ReaderView {
         false
     }
 
-    /// Saves the open document with its stamps drawn in, as a new file.
-    pub(crate) fn save_stamps(
-        &mut self,
-        preset: Option<PathBuf>,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let DocState::Open(open) = &self.doc else {
-            return;
-        };
-        if self.stamps.placed.is_empty() {
-            self.stamps.problem = Some(self.strings().no_stamps_placed.into());
-            cx.notify();
-            return;
-        }
-        let source = open.path.clone();
-        let count = open.session.page_count();
-        let stem = source
-            .file_stem()
-            .map_or_else(|| "document".into(), |s| s.to_string_lossy().into_owned());
-        let mut picks: Vec<PagePick> = (0..count)
-            .map(|p| PagePick::new(0, PageIndex::new(p)))
-            .collect();
-        for stamp in &self.stamps.placed {
-            if let Some(pick) = picks.get_mut(stamp.page.as_usize()) {
-                pick.stamps.push(Stamp {
-                    image: stamp.image.path.clone(),
-                    rect: stamp.rect,
-                    rotate: stamp.turn,
-                });
-            }
-        }
-        let suggested = format!("{stem}{}.pdf", self.strings().stamp_suffix);
-        self.stamps.problem = None;
-        self.ask_where_for(
-            source,
-            suggested,
-            preset,
-            window,
-            cx,
-            move |source, path| {
-                Ok(WriteJob {
-                    sources: vec![source],
-                    outputs: vec![OutputSpec {
-                        path,
-                        content: OutputContent::Pages(picks),
-                    }],
-                })
-            },
-        );
-    }
-
     /// Paints the placed stamps over the pages (inside the document area's
     /// content mask) and the selected one's frame and handle.
     pub(crate) fn paint_stamps(&mut self, origin: gpui::Point<Pixels>, window: &mut Window) {
@@ -803,7 +753,8 @@ impl ReaderView {
                 .text_color(theme.text_muted)
                 .child(strings.original_untouched),
         );
-        let can_save = has_doc && !panel.placed.is_empty() && !self.tools.writing();
+        let pending = !panel.placed.is_empty() || !self.text_edits.edits.is_empty();
+        let can_save = has_doc && pending && !self.tools.writing();
         body = body.child(
             div()
                 .flex()
@@ -814,7 +765,7 @@ impl ReaderView {
                     styled_button("stamp-save", strings.save_as, can_save, false, &theme)
                         .when(can_save, |b| b.bg(theme.button_active))
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.save_stamps(None, window, cx);
+                            this.save_changes(None, window, cx);
                         })),
                 )
                 .child(

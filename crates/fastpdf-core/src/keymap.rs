@@ -54,6 +54,10 @@ pub enum ReaderCommand {
     StampTool,
     /// Removes the selected stamp.
     RemoveStamp,
+    /// The text edit panel: lines of text changed, saved as a new file.
+    EditText,
+    /// Applies the line being edited (its field's Enter).
+    ConfirmEdit,
     /// Copy the selected text.
     Copy,
     SelectAll,
@@ -72,6 +76,8 @@ pub struct Binding {
 
 /// Key context of the find bar's text field.
 pub const FIND_BAR: &str = "FindBar";
+/// Key context of the field that edits a line of a page's text.
+pub const LINE_EDITOR: &str = "LineEditor";
 
 const fn bind(keystroke: &'static str, command: ReaderCommand) -> Binding {
     Binding {
@@ -135,6 +141,8 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind_in(FIND_BAR, "enter", FindNext),
         bind_in(FIND_BAR, "shift-enter", FindPrevious),
         bind_in(FIND_BAR, "escape", Cancel),
+        bind_in(LINE_EDITOR, "enter", ConfirmEdit),
+        bind_in(LINE_EDITOR, "escape", Cancel),
     ]
 };
 

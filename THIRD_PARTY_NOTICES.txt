@@ -311,107 +311,108 @@ T134 LICENSE-ZLIB.md
 - strict-num 0.1.1, MIT: T157 LICENSE
 - strum 0.28.0, MIT: T158 LICENSE
 - strum_macros 0.28.0, MIT: T158 LICENSE
+- subsetter 0.2.6, MIT OR Apache-2.0: T11 LICENSE-APACHE; T37 LICENSE-MIT; T159 NOTICE
 - sum_tree 0.1.0, Apache-2.0: T35 LICENSE-APACHE
-- sval 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T159 LICENSE-MIT
-- sval_buffer 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T159 LICENSE-MIT
-- sval_dynamic 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T159 LICENSE-MIT
-- sval_fmt 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T159 LICENSE-MIT
-- sval_json 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T159 LICENSE-MIT
+- sval 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
+- sval_buffer 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
+- sval_dynamic 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
+- sval_fmt 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
+- sval_json 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
 - sval_nested 2.22.0, Apache-2.0 OR MIT: T1 (the crate ships no license text; Apache-2.0 is one of
 its options)
-- sval_ref 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T159 LICENSE-MIT
-- sval_serde 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T159 LICENSE-MIT
+- sval_ref 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
+- sval_serde 2.22.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
 - svg_fmt 0.4.5, MIT/Apache-2.0: T1 (the crate ships no license text; Apache-2.0 is one of its
 options)
-- svgtypes 0.16.1, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
+- svgtypes 0.16.1, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T161 LICENSE-MIT
 - syn 2.0.119, MIT OR Apache-2.0: T11 LICENSE-APACHE; T4 LICENSE-MIT
 - syn 3.0.6, MIT OR Apache-2.0: T11 LICENSE-APACHE; T4 LICENSE-MIT
-- synstructure 0.14.0, MIT: T161 LICENSE
-- taffy 0.13.0, MIT: T162 LICENSE
+- synstructure 0.14.0, MIT: T162 LICENSE
+- taffy 0.13.0, MIT: T163 LICENSE
 - thiserror 1.0.69, MIT OR Apache-2.0: T11 LICENSE-APACHE; T4 LICENSE-MIT
 - thiserror 2.0.21, MIT OR Apache-2.0: T11 LICENSE-APACHE; T4 LICENSE-MIT
 - thiserror-impl 1.0.69, MIT OR Apache-2.0: T11 LICENSE-APACHE; T4 LICENSE-MIT
 - thiserror-impl 2.0.21, MIT OR Apache-2.0: T11 LICENSE-APACHE; T4 LICENSE-MIT
 - thread_local 1.1.10, MIT OR Apache-2.0: T1 LICENSE-APACHE; T17 LICENSE-MIT
-- tiff 0.11.3, MIT: T163 LICENSE
-- tiny-skia 0.11.4, BSD-3-Clause: T164 LICENSE
-- tiny-skia-path 0.11.4, BSD-3-Clause: T164 LICENSE
+- tiff 0.11.3, MIT: T164 LICENSE
+- tiny-skia 0.11.4, BSD-3-Clause: T165 LICENSE
+- tiny-skia-path 0.11.4, BSD-3-Clause: T165 LICENSE
 - tinystr 0.8.4, Unicode-3.0: T88 LICENSE
 - tinyvec 1.13.3, Zlib OR Apache-2.0 OR MIT: T91 LICENSE-APACHE.md; T44 LICENSE-MIT.md; T31
 LICENSE-ZLIB.md
-- tracing 0.1.44, MIT: T165 LICENSE
-- tracing-attributes 0.1.31, MIT: T165 LICENSE
-- tracing-core 0.1.36, MIT: T165 LICENSE
-- tracing-log 0.2.0, MIT: T165 LICENSE
-- tracing-subscriber 0.3.23, MIT: T165 LICENSE
-- ttf-parser 0.25.1, MIT OR Apache-2.0: T1 LICENSE-APACHE; T160 LICENSE-MIT
+- tracing 0.1.44, MIT: T166 LICENSE
+- tracing-attributes 0.1.31, MIT: T166 LICENSE
+- tracing-core 0.1.36, MIT: T166 LICENSE
+- tracing-log 0.2.0, MIT: T166 LICENSE
+- tracing-subscriber 0.3.23, MIT: T166 LICENSE
+- ttf-parser 0.25.1, MIT OR Apache-2.0: T1 LICENSE-APACHE; T161 LICENSE-MIT
 - typeid 1.0.3, MIT OR Apache-2.0: T11 LICENSE-APACHE; T4 LICENSE-MIT
-- unicode-bidi 0.3.18, MIT OR Apache-2.0: T166 COPYRIGHT; T1 LICENSE-APACHE; T84 LICENSE-MIT
+- unicode-bidi 0.3.18, MIT OR Apache-2.0: T167 COPYRIGHT; T1 LICENSE-APACHE; T84 LICENSE-MIT
 - unicode-bidi-mirroring 0.4.0, MIT/Apache-2.0: T1 LICENSE-APACHE; T67 LICENSE-MIT
 - unicode-ccc 0.4.0, MIT/Apache-2.0: T1 LICENSE-APACHE; T67 LICENSE-MIT
 - unicode-ident 1.0.26, (MIT OR Apache-2.0) AND Unicode-3.0: T11 LICENSE-APACHE; T4 LICENSE-MIT;
-T167 LICENSE-UNICODE
-- unicode-properties 0.1.3, MIT/Apache-2.0: T168 COPYRIGHT; T1 LICENSE-APACHE; T84 LICENSE-MIT
-- unicode-script 0.5.8, MIT OR Apache-2.0: T169 LICENSE-APACHE; T170 LICENSE-MIT
-- unicode-segmentation 1.13.3, MIT OR Apache-2.0: T168 COPYRIGHT; T1 LICENSE-APACHE; T84 LICENSE-MIT
+T168 LICENSE-UNICODE
+- unicode-properties 0.1.3, MIT/Apache-2.0: T169 COPYRIGHT; T1 LICENSE-APACHE; T84 LICENSE-MIT
+- unicode-script 0.5.8, MIT OR Apache-2.0: T170 LICENSE-APACHE; T171 LICENSE-MIT
+- unicode-segmentation 1.13.3, MIT OR Apache-2.0: T169 COPYRIGHT; T1 LICENSE-APACHE; T84 LICENSE-MIT
 - unicode-vo 0.1.0, MIT/Apache-2.0: T1 LICENSE-APACHE; T148 LICENSE-MIT
-- unicode-xid 0.2.6, MIT OR Apache-2.0: T168 COPYRIGHT; T1 LICENSE-APACHE; T84 LICENSE-MIT
+- unicode-xid 0.2.6, MIT OR Apache-2.0: T169 COPYRIGHT; T1 LICENSE-APACHE; T84 LICENSE-MIT
 - url 2.5.8, MIT OR Apache-2.0: T1 LICENSE-APACHE; T45 LICENSE-MIT
 - usvg 0.46.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T136 LICENSE-MIT
-- utf8_iter 1.0.4, Apache-2.0 OR MIT: T171 COPYRIGHT; T91 LICENSE-APACHE; T172 LICENSE-MIT
+- utf8_iter 1.0.4, Apache-2.0 OR MIT: T172 COPYRIGHT; T91 LICENSE-APACHE; T173 LICENSE-MIT
 - util_macros 0.1.0, Apache-2.0: T35 LICENSE-APACHE
-- uuid 1.27.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T173 LICENSE-MIT
-- v_frame 0.3.9, BSD-2-Clause: T174 LICENSE
-- value-bag 1.14.1, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T159 LICENSE-MIT
-- value-bag-serde1 1.14.1, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T159 LICENSE-MIT
-- value-bag-sval2 1.14.1, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T159 LICENSE-MIT
-- vello_common 0.3.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T175 LICENSE-MIT
-- vello_cpu 0.3.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T175 LICENSE-MIT
+- uuid 1.27.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T174 LICENSE-MIT
+- v_frame 0.3.9, BSD-2-Clause: T175 LICENSE
+- value-bag 1.14.1, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
+- value-bag-serde1 1.14.1, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
+- value-bag-sval2 1.14.1, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T160 LICENSE-MIT
+- vello_common 0.3.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T176 LICENSE-MIT
+- vello_cpu 0.3.0, Apache-2.0 OR MIT: T36 LICENSE-APACHE; T176 LICENSE-MIT
 - waker-fn 1.2.0, Apache-2.0 OR MIT: T1 LICENSE-APACHE; T4 LICENSE-MIT
 - wasm-bindgen 0.2.129, MIT OR Apache-2.0: T1 LICENSE-APACHE; T21 LICENSE-MIT
 - wasm-bindgen-macro 0.2.129, MIT OR Apache-2.0: T1 LICENSE-APACHE; T21 LICENSE-MIT
 - wasm-bindgen-macro-support 0.2.129, MIT OR Apache-2.0: T1 LICENSE-APACHE; T21 LICENSE-MIT
 - wasm-bindgen-shared 0.2.129, MIT OR Apache-2.0: T1 LICENSE-APACHE; T21 LICENSE-MIT
-- web-time 1.1.0, MIT OR Apache-2.0: T176 LICENSE-APACHE; T177 LICENSE-MIT
-- weezl 0.1.12, MIT OR Apache-2.0: T1 LICENSE-APACHE; T178 LICENSE-MIT
-- which 8.0.6, MIT: T179 LICENSE.txt
-- windows 0.62.2, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-collections 0.3.2, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-core 0.62.2, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-future 0.3.2, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-implement 0.60.2, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-interface 0.59.3, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-link 0.2.1, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-numerics 0.3.1, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-registry 0.6.1, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-result 0.4.1, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-strings 0.5.1, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-sys 0.61.2, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
-- windows-threading 0.2.1, MIT OR Apache-2.0: T180 license-apache-2.0; T181 license-mit
+- web-time 1.1.0, MIT OR Apache-2.0: T177 LICENSE-APACHE; T178 LICENSE-MIT
+- weezl 0.1.12, MIT OR Apache-2.0: T1 LICENSE-APACHE; T179 LICENSE-MIT
+- which 8.0.6, MIT: T180 LICENSE.txt
+- windows 0.62.2, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-collections 0.3.2, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-core 0.62.2, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-future 0.3.2, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-implement 0.60.2, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-interface 0.59.3, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-link 0.2.1, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-numerics 0.3.1, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-registry 0.6.1, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-result 0.4.1, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-strings 0.5.1, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-sys 0.61.2, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
+- windows-threading 0.2.1, MIT OR Apache-2.0: T181 license-apache-2.0; T182 license-mit
 - writeable 0.6.4, Unicode-3.0: T88 LICENSE
-- xmlwriter 0.1.0, MIT: T182 LICENSE
-- y4m 0.8.0, MIT: T183 LICENSE
+- xmlwriter 0.1.0, MIT: T183 LICENSE
+- y4m 0.8.0, MIT: T184 LICENSE
 - yoke 0.8.3, Unicode-3.0: T88 LICENSE
 - yoke-derive 0.8.4, Unicode-3.0: T88 LICENSE
-- zerocopy 0.8.59, BSD-2-Clause OR Apache-2.0 OR MIT: T184 LICENSE-APACHE; T185 LICENSE-BSD; T186
+- zerocopy 0.8.59, BSD-2-Clause OR Apache-2.0 OR MIT: T185 LICENSE-APACHE; T186 LICENSE-BSD; T187
 LICENSE-MIT
-- zerocopy-derive 0.8.59, BSD-2-Clause OR Apache-2.0 OR MIT: T184 LICENSE-APACHE; T185 LICENSE-BSD;
-T186 LICENSE-MIT
+- zerocopy-derive 0.8.59, BSD-2-Clause OR Apache-2.0 OR MIT: T185 LICENSE-APACHE; T186 LICENSE-BSD;
+T187 LICENSE-MIT
 - zerofrom 0.1.8, Unicode-3.0: T88 LICENSE
 - zerofrom-derive 0.1.8, Unicode-3.0: T88 LICENSE
 - zerotrie 0.2.5, Unicode-3.0: T88 LICENSE
 - zerovec 0.11.8, Unicode-3.0: T88 LICENSE
 - zerovec-derive 0.11.6, Unicode-3.0: T88 LICENSE
-- zlib-rs 0.6.8, Zlib: T187 LICENSE
+- zlib-rs 0.6.8, Zlib: T188 LICENSE
 - zlog 0.1.0, Apache-2.0: T35 LICENSE-APACHE
 - zmij 1.0.23, MIT: T4 LICENSE-MIT
 - ztracing 0.1.0, Apache-2.0: T35 LICENSE-APACHE
 - ztracing_macro 0.1.0, Apache-2.0: T35 LICENSE-APACHE
-- zune-core 0.5.3, MIT OR Apache-2.0 OR Zlib: T91 LICENSE-APACHE; T188 LICENSE-MIT; T189
+- zune-core 0.5.3, MIT OR Apache-2.0 OR Zlib: T91 LICENSE-APACHE; T189 LICENSE-MIT; T190
 LICENSE-ZLIB
 - zune-inflate 0.2.54, MIT OR Apache-2.0 OR Zlib: T1 (the crate ships no license text; Apache-2.0 is
 one of its options)
-- zune-jpeg 0.5.15, MIT OR Apache-2.0 OR Zlib: T91 LICENSE-APACHE; T188 LICENSE-MIT; T189
+- zune-jpeg 0.5.15, MIT OR Apache-2.0 OR Zlib: T91 LICENSE-APACHE; T189 LICENSE-MIT; T190
 LICENSE-ZLIB
 
 Texts
@@ -1218,7 +1219,7 @@ Redistribution and use in source and binary forms, with or without modification,
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-=== T11: LICENSE-APACHE, 31 crates ===
+=== T11: LICENSE-APACHE, 32 crates ===
 
                               Apache License
                         Version 2.0, January 2004
@@ -2820,7 +2821,7 @@ Apache License
 
    END OF TERMS AND CONDITIONS
 
-=== T37: LICENSE-MIT, 3 crates ===
+=== T37: LICENSE-MIT, 4 crates ===
 
 MIT License
 
@@ -8726,7 +8727,542 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-=== T159: LICENSE-MIT, 10 crates ===
+=== T159: NOTICE, 1 crate ===
+
+# Code
+
+ttf-parser
+Code from ttf-parser was used/adapted for the following parts:
+- Reader, Writer, LazyArray16 and LazyArray16Iter
+- `name` table parsing.
+- `hmtx` table parsing.
+- Most of the `cff` parsing logic as well auxiliary structs and functions
+such as `calc_subroutine_bias`, `SIDMetadata`, `CIDMetadata` `RealNumber`,
+`Index`, `IndexSize`, `OffsetSize`, `FDSelect`, `ArgumentStack`, `Top Dict` and `FONT Dict`,
+`DictionaryParser`.
+
+The MIT license applies:
+
+Copyright (c) 2018 Yevhenii Reizner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+==============================================================================
+
+fonttools
+Code from fonttools was used/adapted for the following parts:
+- The `Decompiler` for charstrings.
+
+The MIT license applies:
+MIT License
+
+Copyright (c) 2017 Just van Rossum
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+# Fonts
+
+The SIL OPEN FONT LICENSE Version 1.1 applies to the following fonts:
+- fonts/ClickerScript-Regular.ttf
+- fonts/MPLUS1p-Regular.ttf
+- fonts/Cantarell-VF.otf
+- fonts/NotoSans-Regular.ttf
+- fonts/NotoSans-Regular_var.ttf
+- fonts/NotoSansCJKsc-Bold-subset1.otf
+- fonts/NotoSansCJKsc-Regular.otf
+- fonts/Syne-Regular_subset.oft (Copyright 2017 The Syne Project Authors (https://gitlab.com/bonjour-monde/fonderie/syne-typeface))
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded,
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.
+
+==============================================================================
+
+The Bitstream Vera Fonts license applies to the following fonts:
+- fonts/DejaVuSansMono.ttf
+
+Bitstream Vera Fonts Copyright
+———————————————
+
+Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved. Bitstream Vera is
+a trademark of Bitstream, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of the fonts accompanying this license (“Fonts”) and associated
+documentation files (the “Font Software”), to reproduce and distribute the
+Font Software, including without limitation the rights to use, copy, merge,
+publish, distribute, and/or sell copies of the Font Software, and to permit
+persons to whom the Font Software is furnished to do so, subject to the
+following conditions:
+
+The above copyright and trademark notices and this permission notice shall
+be included in all copies of one or more of the Font Software typefaces.
+
+The Font Software may be modified, altered, or added to, and in particular
+the designs of glyphs or characters in the Fonts may be modified and
+additional glyphs or characters may be added to the Fonts, only if the fonts
+are renamed to names not containing either the words “Bitstream” or the word
+“Vera”.
+
+This License becomes null and void to the extent applicable to Fonts or Font
+Software that has been modified and is distributed under the “Bitstream
+Vera” names.
+
+The Font Software may be sold as part of a larger software package but no
+copy of one or more of the Font Software typefaces may be sold by itself.
+
+THE FONT SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF COPYRIGHT, PATENT,
+TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL BITSTREAM OR THE GNOME
+FOUNDATION BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, INCLUDING
+ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER DEALINGS IN THE
+FONT SOFTWARE.
+
+Except as contained in this notice, the names of Gnome, the Gnome
+Foundation, and Bitstream Inc., shall not be used in advertising or
+otherwise to promote the sale, use or other dealings in this Font Software
+without prior written authorization from the Gnome Foundation or Bitstream
+Inc., respectively. For further information, contact: fonts at gnome dot
+org.
+
+Arev Fonts Copyright
+———————————————
+
+Copyright (c) 2006 by Tavmjong Bah. All Rights Reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the fonts accompanying this license (“Fonts”) and
+associated documentation files (the “Font Software”), to reproduce
+and distribute the modifications to the Bitstream Vera Font Software,
+including without limitation the rights to use, copy, merge, publish,
+distribute, and/or sell copies of the Font Software, and to permit
+persons to whom the Font Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright and trademark notices and this permission notice
+shall be included in all copies of one or more of the Font Software
+typefaces.
+
+The Font Software may be modified, altered, or added to, and in
+particular the designs of glyphs or characters in the Fonts may be
+modified and additional glyphs or characters may be added to the
+Fonts, only if the fonts are renamed to names not containing either
+the words “Tavmjong Bah” or the word “Arev”.
+
+This License becomes null and void to the extent applicable to Fonts
+or Font Software that has been modified and is distributed under the
+“Tavmjong Bah Arev” names.
+
+The Font Software may be sold as part of a larger software package but
+no copy of one or more of the Font Software typefaces may be sold by
+itself.
+
+THE FONT SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL
+TAVMJONG BAH BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.
+
+Except as contained in this notice, the name of Tavmjong Bah shall not
+be used in advertising or otherwise to promote the sale, use or other
+dealings in this Font Software without prior written authorization
+from Tavmjong Bah. For further information, contact: tavmjong @ free
+. fr.
+
+==============================================================================
+
+The GUST font license applies to the following fonts:
+- fonts/LatinModernRoman-Regular.otf
+- fonts/EndcharInSubroutine_1.otf (derived from LatinModernRoman-Regular.otf)
+- fonts/NewCMMath-Regular.otf
+
+% This is version 1.0, dated 22 June 2009, of the GUST Font License.
+% (GUST is the Polish TeX Users Group, http://www.gust.org.pl)
+%
+% For the most recent version of this license see
+% http://www.gust.org.pl/fonts/licenses/GUST-FONT-LICENSE.txt
+% or
+% http://tug.org/fonts/licenses/GUST-FONT-LICENSE.txt
+%
+% This work may be distributed and/or modified under the conditions
+% of the LaTeX Project Public License, either version 1.3c of this
+% license or (at your option) any later version.
+%
+% Please also observe the following clause:
+% 1) it is requested, but not legally required, that derived works be
+%    distributed only after changing the names of the fonts comprising this
+%    work and given in an accompanying "manifest", and that the
+%    files comprising the Work, as listed in the manifest, also be given
+%    new names. Any exceptions to this request are also given in the
+%    manifest.
+%
+%    We recommend the manifest be given in a separate file named
+%    MANIFEST-<fontid>.txt, where <fontid> is some unique identification
+%    of the font family. If a separate "readme" file accompanies the Work,
+%    we recommend a name of the form README-<fontid>.txt.
+%
+% The latest version of the LaTeX Project Public License is in
+% http://www.latex-project.org/lppl.txt and version 1.3c or later
+% is part of all distributions of LaTeX version 2006/05/20 or later.
+
+==============================================================================
+
+The Apache 2.0 license applies to the following fonts:
+- fonts/Roboto-Regular.ttf
+
+
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+==============================================================================
+
+The MIT license applies to the following fonts:
+- fonts/TestTTC.ttc
+
+MIT License
+
+Copyright (c) 2017 Just van Rossum
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+=== T160: LICENSE-MIT, 10 crates ===
 
 MIT License
 
@@ -8750,7 +9286,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-=== T160: LICENSE-MIT, 2 crates ===
+=== T161: LICENSE-MIT, 2 crates ===
 
 Copyright (c) 2018 Yevhenii Reizner
 
@@ -8772,7 +9308,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-=== T161: LICENSE, 1 crate ===
+=== T162: LICENSE, 1 crate ===
 
 Copyright 2016 Nika Layzell
 
@@ -8782,7 +9318,7 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-=== T162: LICENSE, 1 crate ===
+=== T163: LICENSE, 1 crate ===
 
 MIT License
 
@@ -8807,7 +9343,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-=== T163: LICENSE, 1 crate ===
+=== T164: LICENSE, 1 crate ===
 
 MIT License
 
@@ -8831,7 +9367,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-=== T164: LICENSE, 2 crates ===
+=== T165: LICENSE, 2 crates ===
 
 Copyright (c) 2011 Google Inc. All rights reserved.
 Copyright (c) 2020 Yevhenii Reizner All rights reserved.
@@ -8864,7 +9400,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-=== T165: LICENSE, 5 crates ===
+=== T166: LICENSE, 5 crates ===
 
 Copyright (c) 2019 Tokio Contributors
 
@@ -8892,7 +9428,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-=== T166: COPYRIGHT, 1 crate ===
+=== T167: COPYRIGHT, 1 crate ===
 
 This project is copyright 2015, The Servo Project Developers (given in the
 file AUTHORS).
@@ -8903,7 +9439,7 @@ http://opensource.org/licenses/MIT>, at your option. All files in the project
 carrying such notice may not be copied, modified, or distributed except
 according to those terms.
 
-=== T167: LICENSE-UNICODE, 1 crate ===
+=== T168: LICENSE-UNICODE, 1 crate ===
 
 UNICODE LICENSE V3
 
@@ -8945,7 +9481,7 @@ not be used in advertising or otherwise to promote the sale, use or other
 dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 
-=== T168: COPYRIGHT, 3 crates ===
+=== T169: COPYRIGHT, 3 crates ===
 
 Licensed under the Apache License, Version 2.0
 <LICENSE-APACHE or
@@ -8955,7 +9491,7 @@ at your option. All files in the project carrying such
 notice may not be copied, modified, or distributed except
 according to those terms.
 
-=== T169: LICENSE-APACHE, 1 crate ===
+=== T170: LICENSE-APACHE, 1 crate ===
 
                               Apache License
                         Version 2.0, January 2004
@@ -9159,7 +9695,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-=== T170: LICENSE-MIT, 1 crate ===
+=== T171: LICENSE-MIT, 1 crate ===
 
 MIT License
 
@@ -9189,7 +9725,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-=== T171: COPYRIGHT, 1 crate ===
+=== T172: COPYRIGHT, 1 crate ===
 
 Copyright Mozilla Foundation
 
@@ -9234,7 +9770,7 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 <http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 <LICENSE-MIT> or <http://opensource.org/licenses/MIT>, at your option.
 
-=== T172: LICENSE-MIT, 1 crate ===
+=== T173: LICENSE-MIT, 1 crate ===
 
 Copyright Mozilla Foundation
 
@@ -9262,7 +9798,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-=== T173: LICENSE-MIT, 1 crate ===
+=== T174: LICENSE-MIT, 1 crate ===
 
 Copyright (c) 2014 The Rust Project Developers
 Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon
@@ -9291,7 +9827,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-=== T174: LICENSE, 1 crate ===
+=== T175: LICENSE, 1 crate ===
 
 BSD 2-Clause License
 
@@ -9319,7 +9855,7 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-=== T175: LICENSE-MIT, 2 crates ===
+=== T176: LICENSE-MIT, 2 crates ===
 
 Copyright 2020 the Vello Authors
 
@@ -9347,7 +9883,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-=== T176: LICENSE-APACHE, 1 crate ===
+=== T177: LICENSE-APACHE, 1 crate ===
 
                                  Apache License
                            Version 2.0, January 2004
@@ -9551,7 +10087,7 @@ DEALINGS IN THE SOFTWARE.
    See the License for the specific language governing permissions and
    limitations under the License.
 
-=== T177: LICENSE-MIT, 1 crate ===
+=== T178: LICENSE-MIT, 1 crate ===
 
 MIT License
 
@@ -9575,7 +10111,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-=== T178: LICENSE-MIT, 1 crate ===
+=== T179: LICENSE-MIT, 1 crate ===
 
 The MIT License (MIT)
 
@@ -9599,7 +10135,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-=== T179: LICENSE.txt, 1 crate ===
+=== T180: LICENSE.txt, 1 crate ===
 
 Copyright (c) 2015 fangyuanziti
 
@@ -9621,7 +10157,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-=== T180: license-apache-2.0, 13 crates ===
+=== T181: license-apache-2.0, 13 crates ===
 
                                  Apache License
                            Version 2.0, January 2004
@@ -9825,7 +10361,7 @@ THE SOFTWARE.
    See the License for the specific language governing permissions and
    limitations under the License.
 
-=== T181: license-mit, 13 crates ===
+=== T182: license-mit, 13 crates ===
 
     MIT License
 
@@ -9849,7 +10385,7 @@ THE SOFTWARE.
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE
 
-=== T182: LICENSE, 1 crate ===
+=== T183: LICENSE, 1 crate ===
 
 The MIT License (MIT)
 
@@ -9873,7 +10409,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-=== T183: LICENSE, 1 crate ===
+=== T184: LICENSE, 1 crate ===
 
 The MIT License (MIT)
 
@@ -9898,7 +10434,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-=== T184: LICENSE-APACHE, 2 crates ===
+=== T185: LICENSE-APACHE, 2 crates ===
 
                                  Apache License
                            Version 2.0, January 2004
@@ -10102,7 +10638,7 @@ SOFTWARE.
    See the License for the specific language governing permissions and
    limitations under the License.
 
-=== T185: LICENSE-BSD, 2 crates ===
+=== T186: LICENSE-BSD, 2 crates ===
 
 Copyright 2019 The Fuchsia Authors.
 
@@ -10129,7 +10665,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-=== T186: LICENSE-MIT, 2 crates ===
+=== T187: LICENSE-MIT, 2 crates ===
 
 Copyright 2023 The Fuchsia Authors
 
@@ -10157,7 +10693,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-=== T187: LICENSE, 1 crate ===
+=== T188: LICENSE, 1 crate ===
 
 (C) 2024 Trifecta Tech Foundation
 
@@ -10179,7 +10715,7 @@ freely, subject to the following restrictions:
 
 3. This notice may not be removed or altered from any source distribution.
 
-=== T188: LICENSE-MIT, 2 crates ===
+=== T189: LICENSE-MIT, 2 crates ===
 
 MIT License
 
@@ -10203,7 +10739,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-=== T189: LICENSE-ZLIB, 2 crates ===
+=== T190: LICENSE-ZLIB, 2 crates ===
 
 zlib License
 

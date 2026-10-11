@@ -5,12 +5,12 @@
 //! A job reads `sources` and writes every output as a new file; the reader
 //! never modifies a file in place. An output is a byte copy of a source, a
 //! new document made of picked pages (from any source, in any order,
-//! turned, with images stamped on them), or every page of some sources one
-//! after the other (merging files whose page count the reader does not
-//! know).
+//! turned, with images stamped on them and lines of text replaced), or
+//! every page of some sources one after the other (merging files whose
+//! page count the reader does not know).
 //!
 //! The text form is one item per line, paths last so they may contain
-//! spaces:
+//! spaces; texts are written as `x` and their UTF-8 bytes in hex:
 //!
 //! ```text
 //! fastpdf-write-job 1
@@ -18,6 +18,7 @@
 //! output D:\out\a-pages.pdf
 //! page 0 2 90
 //! stamp 100 120 180 200 0 D:\seals\big.png
+//! edit 72 90 300 104 0 x414243 x414244 C:\Windows\Fonts\kaiu.ttf
 //! output D:\out\a-copy.pdf
 //! copy 0
 //! output D:\out\both.pdf
@@ -66,6 +67,8 @@ pub struct PagePick {
     pub rotate: Rotation,
     /// Images drawn over the page's content (seals, signatures).
     pub stamps: Vec<Stamp>,
+    /// Lines of text replaced on the page.
+    pub edits: Vec<TextEdit>,
 }
 
 impl PagePick {
@@ -75,6 +78,7 @@ impl PagePick {
             page,
             rotate: Rotation::R0,
             stamps: Vec::new(),
+            edits: Vec::new(),
         }
     }
 }
@@ -91,6 +95,98 @@ pub struct Stamp {
     /// a page that is shown rotated (with 90 or 270, the image's width
     /// runs along the rectangle's height).
     pub rotate: Rotation,
+}
+
+/// A line of text replaced on a page.
+///
+/// The line is named the way the text layer shows it: the box of one of
+/// its spans and the span's text. The writer only edits a line it finds
+/// with this text at this place, so an edit made on another version of
+/// the document cannot remove other text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextEdit {
+    /// The span's box in page space.
+    pub rect: PageRect,
+    /// The span's text.
+    pub old: String,
+    /// The line's new text. The line keeps its glyphs up to the first
+    /// character that differs from `old`; from there on it is drawn anew
+    /// with `font`, in the size and color the line had. An empty text
+    /// removes the line.
+    pub new: String,
+    pub font: FontFace,
+}
+
+/// How many non-space characters a line keeps when its text `old`
+/// becomes `new`: those before the first character that differs. The
+/// writer keeps their glyphs and the reader's preview their place.
+pub fn kept_characters(old: &str, new: &str) -> usize {
+    old.chars()
+        .zip(new.chars())
+        .take_while(|(a, b)| a == b)
+        .filter(|(a, _)| !a.is_whitespace())
+        .count()
+}
+
+/// `text` after its first `count` non-space characters (all of it for 0):
+/// what an edited line draws anew after the characters it keeps.
+pub fn text_after(text: &str, count: usize) -> &str {
+    if count == 0 {
+        return text;
+    }
+    let mut seen = 0;
+    for (i, c) in text.char_indices() {
+        if !c.is_whitespace() {
+            seen += 1;
+            if seen == count {
+                return &text[i + c.len_utf8()..];
+            }
+        }
+    }
+    ""
+}
+
+/// A TrueType font file and the face to use from it (0 unless the file is
+/// a collection, `.ttc`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontFace {
+    pub path: PathBuf,
+    pub index: u32,
+}
+
+/// Why a text edit cannot be made; nothing is written then.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EditProblem {
+    /// The page has no such text at the line's place (or another edit of
+    /// the job already took it).
+    NotFound,
+    /// The line is drawn by a form XObject (a reused piece of content) or
+    /// an annotation, which text editing does not change.
+    InObject,
+    /// The line is invisible text, such as the recognized text over a
+    /// scanned page.
+    Invisible,
+    /// The line uses something text editing does not handle: vertical
+    /// writing, Type3 fonts, an unknown encoding, text drawn in pieces it
+    /// cannot tell apart.
+    Unsupported,
+    /// The font has no glyphs for these characters.
+    MissingGlyphs(String),
+    /// The font file cannot be read or used, or does not allow embedding.
+    Font(String),
+}
+
+impl fmt::Display for EditProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "the text is not on the page"),
+            Self::InObject => write!(f, "the text is part of a form object or annotation"),
+            Self::Invisible => write!(f, "the text is invisible (recognized text of a scan)"),
+            Self::Unsupported => write!(f, "the text is drawn in a way editing does not handle"),
+            Self::MissingGlyphs(chars) => write!(f, "the font has no glyphs for {chars:?}"),
+            Self::Font(m) => write!(f, "font: {m}"),
+        }
+    }
 }
 
 /// What a finished job wrote.
@@ -121,6 +217,12 @@ pub enum WriteError {
     NoSuchPage { source: usize, page: PageIndex },
     /// A stamp image cannot be read or decoded.
     Image { path: PathBuf, message: String },
+    /// A text edit on page `page` of source `source` cannot be made.
+    Edit {
+        source: usize,
+        page: PageIndex,
+        problem: EditProblem,
+    },
     /// An output cannot be written or moved into place.
     Output { path: PathBuf, message: String },
     /// A written file did not open again as the expected document.
@@ -140,6 +242,15 @@ impl fmt::Display for WriteError {
                 write!(f, "source {source} has no page {}", page.display_number())
             }
             Self::Image { path, message } => write!(f, "{}: {message}", path.display()),
+            Self::Edit {
+                source,
+                page,
+                problem,
+            } => write!(
+                f,
+                "source {source}, page {}: {problem}",
+                page.display_number()
+            ),
             Self::Output { path, message } => write!(f, "{}: {message}", path.display()),
             Self::Verify { path, message } => {
                 write!(f, "{}: verification failed: {message}", path.display())
@@ -160,6 +271,28 @@ fn path_text(path: &Path) -> Result<&str, WriteError> {
         return Err(WriteError::Job(format!("unusable path {text:?}")));
     }
     Ok(text)
+}
+
+/// A text as one field of the text form: `x` and its UTF-8 bytes in hex.
+fn hex_text(text: &str) -> String {
+    let mut out = String::with_capacity(1 + 2 * text.len());
+    out.push('x');
+    for b in text.bytes() {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+fn parse_hex_text(field: &str) -> Option<String> {
+    let hex = field.strip_prefix('x')?;
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// One line of free text: no line breaks, no surrounding spaces.
@@ -208,6 +341,21 @@ impl WriteJob {
                                 r.y1,
                                 stamp.rotate.degrees(),
                                 path_text(&stamp.image)?
+                            );
+                        }
+                        for edit in &pick.edits {
+                            let r = edit.rect;
+                            let _ = writeln!(
+                                out,
+                                "edit {} {} {} {} {} {} {} {}",
+                                r.x0,
+                                r.y0,
+                                r.x1,
+                                r.y1,
+                                edit.font.index,
+                                hex_text(&edit.old),
+                                hex_text(&edit.new),
+                                path_text(&edit.font.path)?
                             );
                         }
                     }
@@ -282,10 +430,8 @@ impl WriteJob {
                         .ok_or_else(|| bad(number, "bad rotation"))?;
                     match job.outputs.last_mut().map(|o| &mut o.content) {
                         Some(OutputContent::Pages(pages)) => pages.push(PagePick {
-                            source,
-                            page: PageIndex::new(page),
                             rotate,
-                            stamps: Vec::new(),
+                            ..PagePick::new(source, PageIndex::new(page))
                         }),
                         _ => return Err(bad(number, "page outside a page output")),
                     }
@@ -323,6 +469,47 @@ impl WriteJob {
                         image: PathBuf::from(image),
                         rect,
                         rotate,
+                    });
+                }
+                "edit" => {
+                    let fields: Vec<&str> = rest.splitn(8, ' ').collect();
+                    let [x0, y0, x1, y1, index, old, new, font] = fields[..] else {
+                        return Err(bad(number, "edit needs a box, texts and a font"));
+                    };
+                    let coordinate = |f: &str| {
+                        f.parse::<f32>()
+                            .ok()
+                            .filter(|v| v.is_finite())
+                            .ok_or_else(|| bad(number, "bad edit box"))
+                    };
+                    let rect = PageRect::new(
+                        coordinate(x0)?,
+                        coordinate(y0)?,
+                        coordinate(x1)?,
+                        coordinate(y1)?,
+                    );
+                    let index = index
+                        .parse()
+                        .map_err(|_| bad(number, "bad font face index"))?;
+                    let (Some(old), Some(new)) = (parse_hex_text(old), parse_hex_text(new)) else {
+                        return Err(bad(number, "bad edit text"));
+                    };
+                    if font.is_empty() {
+                        return Err(bad(number, "edit without a font"));
+                    }
+                    let pick = match job.outputs.last_mut().map(|o| &mut o.content) {
+                        Some(OutputContent::Pages(pages)) => pages.last_mut(),
+                        _ => None,
+                    }
+                    .ok_or_else(|| bad(number, "edit before a page"))?;
+                    pick.edits.push(TextEdit {
+                        rect,
+                        old,
+                        new,
+                        font: FontFace {
+                            path: PathBuf::from(font),
+                            index,
+                        },
                     });
                 }
                 other => return Err(bad(number, &format!("unknown item {other:?}"))),
@@ -454,6 +641,23 @@ pub fn result_to_text(result: &Result<WriteReport, WriteError>) -> String {
                     one_line(&path.to_string_lossy()),
                     one_line(message)
                 ),
+                WriteError::Edit {
+                    source,
+                    page,
+                    problem,
+                } => {
+                    let problem = match problem {
+                        EditProblem::NotFound => "not-found".to_owned(),
+                        EditProblem::InObject => "in-object".to_owned(),
+                        EditProblem::Invisible => "invisible".to_owned(),
+                        EditProblem::Unsupported => "unsupported".to_owned(),
+                        EditProblem::MissingGlyphs(chars) => {
+                            format!("missing {}", hex_text(chars))
+                        }
+                        EditProblem::Font(m) => format!("font {}", one_line(m)),
+                    };
+                    format!("edit {source} {} {problem}", page.get())
+                }
                 WriteError::Output { path, message } => format!(
                     "output {}\t{}",
                     one_line(&path.to_string_lossy()),
@@ -536,6 +740,25 @@ fn parse_error(text: &str) -> Option<WriteError> {
             let (path, message) = path_and_message(rest)?;
             WriteError::Image { path, message }
         }
+        "edit" => {
+            let mut fields = rest.splitn(4, ' ');
+            let source = fields.next()?.parse().ok()?;
+            let page = PageIndex::new(fields.next()?.parse().ok()?);
+            let problem = match (fields.next()?, fields.next()) {
+                ("not-found", None) => EditProblem::NotFound,
+                ("in-object", None) => EditProblem::InObject,
+                ("invisible", None) => EditProblem::Invisible,
+                ("unsupported", None) => EditProblem::Unsupported,
+                ("missing", Some(chars)) => EditProblem::MissingGlyphs(parse_hex_text(chars)?),
+                ("font", message) => EditProblem::Font(message.unwrap_or("").to_owned()),
+                _ => return None,
+            };
+            WriteError::Edit {
+                source,
+                page,
+                problem,
+            }
+        }
         "output" => {
             let (path, message) = path_and_message(rest)?;
             WriteError::Output { path, message }
@@ -572,6 +795,26 @@ mod tests {
                                 rect: PageRect::new(100.5, 120.0, 180.25, 200.0),
                                 rotate: Rotation::R270,
                             }],
+                            edits: vec![
+                                TextEdit {
+                                    rect: PageRect::new(72.0, 90.5, 300.0, 104.25),
+                                    old: "原告 張三 x".into(),
+                                    new: "原告 李四\n x".into(),
+                                    font: FontFace {
+                                        path: PathBuf::from(r"C:\Windows\Fonts\kai u.ttf"),
+                                        index: 0,
+                                    },
+                                },
+                                TextEdit {
+                                    rect: PageRect::new(1.0, 2.0, 3.0, 4.0),
+                                    old: "abc".into(),
+                                    new: String::new(),
+                                    font: FontFace {
+                                        path: PathBuf::from(r"C:\Windows\Fonts\mingliu.ttc"),
+                                        index: 1,
+                                    },
+                                },
+                            ],
                         },
                         PagePick::new(1, PageIndex::FIRST),
                     ]),
@@ -614,6 +857,15 @@ mod tests {
         assert!(
             parse("source a.pdf\noutput b.pdf\npage 0 0 0\nstamp 0 0 1 1 90 s s.png\n").is_ok()
         );
+        let page = "source a.pdf\noutput b.pdf\npage 0 0 0\n";
+        assert!(parse(&format!("{page}edit 0 0 1 1 0 x41 x f f.ttf\n")).is_ok());
+        assert!(parse(&format!("{page}edit 0 0 1 1 0 x41 x\n")).is_err());
+        assert!(parse(&format!("{page}edit 0 0 1 1 0 x4 x f.ttf\n")).is_err());
+        assert!(parse(&format!("{page}edit 0 0 1 1 0 41 x f.ttf\n")).is_err());
+        assert!(parse(&format!("{page}edit 0 0 1 1 0 xff x f.ttf\n")).is_err());
+        assert!(parse(&format!("{page}edit 0 0 1 1 -1 x41 x f.ttf\n")).is_err());
+        assert!(parse(&format!("{page}edit 0 0 inf 1 0 x41 x f.ttf\n")).is_err());
+        assert!(parse("source a.pdf\noutput b.pdf\nedit 0 0 1 1 0 x41 x f.ttf\n").is_err());
         assert!(
             parse("source a.pdf\noutput A.PDF\ncopy 0\n").is_err(),
             "overwrite"
@@ -635,6 +887,19 @@ mod tests {
             }],
         };
         assert!(unusable.to_text().is_err());
+    }
+
+    #[test]
+    fn edited_lines_keep_their_unchanged_start() {
+        assert_eq!(kept_characters("ab cd", "ab cx"), 3);
+        assert_eq!(kept_characters("ab cd", "ab xd"), 2);
+        assert_eq!(kept_characters("ab", "xy"), 0);
+        assert_eq!(kept_characters("原告 張三", "原告 李四"), 2);
+        assert_eq!(text_after("ab cd", 2), " cd");
+        assert_eq!(text_after("ab cd", 3), "d");
+        assert_eq!(text_after("ab cd", 0), "ab cd");
+        assert_eq!(text_after("ab", 5), "");
+        assert_eq!(text_after("原告 李四", 2), " 李四");
     }
 
     #[test]
@@ -682,6 +947,41 @@ mod tests {
             WriteError::Image {
                 path: PathBuf::from(r"C:\s s.png"),
                 message: "not a PNG".into(),
+            },
+            WriteError::Edit {
+                source: 1,
+                page: PageIndex::new(4),
+                problem: EditProblem::NotFound,
+            },
+            WriteError::Edit {
+                source: 0,
+                page: PageIndex::FIRST,
+                problem: EditProblem::MissingGlyphs("𠀀 a".into()),
+            },
+            WriteError::Edit {
+                source: 0,
+                page: PageIndex::FIRST,
+                problem: EditProblem::Font("embedding is not allowed".into()),
+            },
+            WriteError::Edit {
+                source: 0,
+                page: PageIndex::FIRST,
+                problem: EditProblem::Font(String::new()),
+            },
+            WriteError::Edit {
+                source: 0,
+                page: PageIndex::FIRST,
+                problem: EditProblem::InObject,
+            },
+            WriteError::Edit {
+                source: 0,
+                page: PageIndex::FIRST,
+                problem: EditProblem::Invisible,
+            },
+            WriteError::Edit {
+                source: 0,
+                page: PageIndex::FIRST,
+                problem: EditProblem::Unsupported,
             },
             WriteError::Output {
                 path: PathBuf::from(r"D:\o.pdf"),

@@ -127,10 +127,6 @@ impl<'a> Device<'a> for TextCollector {
             let Some(text) = glyph.as_unicode() else {
                 continue;
             };
-            let advance = match &**glyph {
-                Glyph::Outline(o) => o.advance_width().map(f64::from).unwrap_or(DEFAULT_ADVANCE),
-                Glyph::Type3(_) => DEFAULT_ADVANCE,
-            };
             let text = match text {
                 BfString::Char(c) => c.to_string(),
                 BfString::String(s) => s,
@@ -138,11 +134,7 @@ impl<'a> Device<'a> for TextCollector {
             self.builder.push(PlacedGlyph {
                 text,
                 transform: props.transform * glyph.transform(),
-                advance: if advance > 0.0 {
-                    advance
-                } else {
-                    DEFAULT_ADVANCE
-                },
+                advance: layer_advance(glyph),
             });
         }
     }
@@ -158,6 +150,40 @@ impl<'a> Device<'a> for TextCollector {
     fn pop_transparency_group(&mut self) {
         self.budget.tick(1);
     }
+}
+
+/// The advance a glyph's box is sized with (glyph space units): the
+/// font's, or a default when it has none.
+pub(crate) fn layer_advance(glyph: &Glyph<'_>) -> f64 {
+    let advance = match glyph {
+        Glyph::Outline(o) => o.advance_width().map(f64::from).unwrap_or(DEFAULT_ADVANCE),
+        Glyph::Type3(_) => DEFAULT_ADVANCE,
+    };
+    if advance > 0.0 {
+        advance
+    } else {
+        DEFAULT_ADVANCE
+    }
+}
+
+/// The box of a glyph placed by `transform` (glyph space, 1000 units per
+/// em, to page space): `advance` wide, from the descender to the ascender
+/// line. Text editing selects glyphs by these boxes too, so they must stay
+/// the same.
+pub(crate) fn glyph_bounds(transform: Affine, advance: f64) -> Rect {
+    let corners = [
+        Point::new(0.0, DESCENT),
+        Point::new(advance, DESCENT),
+        Point::new(advance, ASCENT),
+        Point::new(0.0, ASCENT),
+    ]
+    .map(|p| transform * p);
+    corners
+        .iter()
+        .skip(1)
+        .fold(Rect::from_points(corners[0], corners[0]), |r, p| {
+            r.union_pt(*p)
+        })
 }
 
 /// One glyph in page space (points, y down).
@@ -195,19 +221,7 @@ impl PlacedGlyph {
     }
 
     fn bounds(&self) -> Rect {
-        let corners = [
-            Point::new(0.0, DESCENT),
-            Point::new(self.advance, DESCENT),
-            Point::new(self.advance, ASCENT),
-            Point::new(0.0, ASCENT),
-        ]
-        .map(|p| self.transform * p);
-        corners
-            .iter()
-            .skip(1)
-            .fold(Rect::from_points(corners[0], corners[0]), |r, p| {
-                r.union_pt(*p)
-            })
+        glyph_bounds(self.transform, self.advance)
     }
 }
 

@@ -41,6 +41,7 @@ use crate::sidebar::Sidebar;
 use crate::smooth_scroll::{PageTurn, SmoothScroll};
 use crate::stamps::StampPanel;
 use crate::startup::{SessionParts, Startup, default_window_size};
+use crate::text_edits::TextEditPanel;
 use crate::textures::{DEFAULT_UPLOAD_BUDGET, TileImage, TileTextures};
 use crate::theme::{ActiveTheme, Theme};
 use crate::toolbar;
@@ -328,6 +329,8 @@ pub struct ReaderView {
     pub(crate) tools: ToolsPanel,
     /// Stamps placed on the open document and the stamp panel.
     pub(crate) stamps: StampPanel,
+    /// Lines of text changed on the open document and the text edit panel.
+    pub(crate) text_edits: TextEditPanel,
     open_task: Option<Task<()>>,
     pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
@@ -434,6 +437,7 @@ impl ReaderView {
             menus: MenuState::default(),
             tools: ToolsPanel::new(cx),
             stamps: StampPanel::default(),
+            text_edits: TextEditPanel::new(cx),
             open_task: None,
             dev_script: None,
             _wake_task: wake_task,
@@ -640,6 +644,7 @@ impl ReaderView {
         self.page_turn = PageTurn::default();
         self.scrollbars.clear();
         self.stamps.reset_document();
+        self.text_edits.reset_document();
         // A print job keeps the document alive until it stops.
         self.print.cancel_job();
         if let DocState::Open(open) = mem::replace(&mut self.doc, DocState::Empty) {
@@ -796,6 +801,14 @@ impl ReaderView {
             C::RemoveStamp => {
                 self.remove_selected_stamp();
             }
+            C::EditText => {
+                self.menus.open = None;
+                self.toggle_text_edit_panel(window, cx);
+            }
+            C::ConfirmEdit => {
+                self.apply_line_edit(cx);
+                window.focus(&self.focus, cx);
+            }
             C::LayoutSinglePage => self.set_page_layout(PageLayout::SinglePage, cx),
             C::LayoutContinuous => self.set_page_layout(PageLayout::Continuous, cx),
             C::LayoutTwoPage => self.set_page_layout(PageLayout::TwoPage, cx),
@@ -829,17 +842,21 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// Esc: closes a menu, stops printing or closes the print panel, then
-    /// the page tools, the settings panel, the find bar, then clears the
-    /// selection.
+    /// Esc: closes a menu, stops editing a line, unarms or deselects a
+    /// stamp, closes the stamp or text edit panel, stops printing or closes
+    /// the print panel, then the page tools, the settings panel, the find
+    /// bar, then clears the selection.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.menus.open.is_some() {
             self.menus.open = None;
+        } else if self.cancel_line_edit(window, cx) {
         } else if self.stamps.armed.is_some() || self.stamps.selected.is_some() {
             self.stamps.armed = None;
             self.stamps.selected = None;
         } else if self.stamps.open {
             self.toggle_stamp_panel(cx);
+        } else if self.text_edits.open {
+            self.close_text_edit_panel(window, cx);
         } else if self.print.printing() {
             self.print.cancel_job();
         } else if self.print.open {
@@ -1047,6 +1064,10 @@ impl ReaderView {
             self.on_scrollbar_press(hit, cx);
             return;
         }
+        if self.text_edit_mouse_down(event.position, window, cx) {
+            cx.notify();
+            return;
+        }
         if self.stamp_mouse_down(event.position) {
             cx.notify();
             return;
@@ -1155,6 +1176,7 @@ impl ReaderView {
             self.scrollbars.hover = hover;
             cx.notify();
         }
+        self.text_edit_hover(event.position, cx);
     }
 
     fn on_document_hover(
@@ -1169,7 +1191,7 @@ impl ReaderView {
     }
 
     /// The page-space point under a window position.
-    fn page_point(&self, position: gpui::Point<Pixels>) -> Option<PagePoint> {
+    pub(crate) fn page_point(&self, position: gpui::Point<Pixels>) -> Option<PagePoint> {
         let (x, y) = self.local_position(position)?;
         let (page, px, py) = self.session()?.view_to_page(x, y)?;
         Some(PagePoint { page, x: px, y: py })
@@ -1543,7 +1565,17 @@ impl ReaderView {
             .when(self.stamps.open, |area| {
                 area.child(self.render_stamp_panel(cx))
             })
+            .when(self.text_edits.open, |area| {
+                area.child(self.render_text_edit_panel(cx))
+            })
+            .when_some(self.render_line_editor(cx), |area, editor| {
+                area.child(editor)
+            })
             .when(self.stamps.armed.is_some(), |area| area.cursor_crosshair())
+            .when(
+                self.text_edits.open && self.text_edits.hover.is_some(),
+                |area| area.cursor_text(),
+            )
             .when_some(self.render_write_notice(cx), |area, notice| {
                 area.child(notice)
             })

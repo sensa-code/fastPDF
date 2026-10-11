@@ -1032,6 +1032,9 @@ pub(crate) fn write_error_text(strings: &Strings, error: &WriteError) -> String 
         WriteError::Image { path, message } => {
             strings.write_image_failed(&display_name(path), message)
         }
+        WriteError::Edit { page, problem, .. } => {
+            strings.edit_failed(page.display_number(), problem)
+        }
         WriteError::Output { path, message } => {
             strings.write_output_failed(&display_name(path), message)
         }
