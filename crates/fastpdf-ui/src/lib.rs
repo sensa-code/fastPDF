@@ -55,6 +55,7 @@ mod settings;
 mod settings_panel;
 mod sidebar;
 mod smooth_scroll;
+mod stamps;
 mod startup;
 mod text_input;
 mod textures;

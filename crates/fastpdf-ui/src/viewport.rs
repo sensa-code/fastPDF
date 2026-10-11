@@ -195,6 +195,7 @@ impl ReaderView {
                     };
                     window.paint_quad(fill(view_bounds(origin, *rect), color));
                 }
+                self.paint_stamps(origin, window);
                 for page in &frame.pages {
                     if let Some(error) = &page.error {
                         let rect = view_bounds(origin, page.rect);

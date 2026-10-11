@@ -156,6 +156,15 @@ pub(crate) struct Strings {
     pub open_result: &'static str,
     pub cancel: &'static str,
     pub replace: &'static str,
+    pub stamp_menu: &'static str,
+    pub stamps_title: &'static str,
+    pub stamp_hint: &'static str,
+    pub no_stamp_images: &'static str,
+    pub add_stamp_images: &'static str,
+    pub stamp_width: &'static str,
+    pub clear_stamps: &'static str,
+    pub no_stamps_placed: &'static str,
+    pub stamp_suffix: &'static str,
     pub no_pages_given: &'static str,
     pub cannot_delete_all: &'static str,
     pub nothing_to_merge: &'static str,
@@ -283,6 +292,15 @@ const EN: Strings = Strings {
     open_result: "Open",
     cancel: "Cancel",
     replace: "Replace",
+    stamp_menu: "Stamps…",
+    stamps_title: "Stamps",
+    stamp_hint: "Choose a stamp, then click on a page to place it. Drag it to move it, drag its bottom-right corner to resize it; Delete removes the selected stamp.",
+    no_stamp_images: "No stamp images yet. A PNG with a transparent background works best.",
+    add_stamp_images: "Add stamp images…",
+    stamp_width: "Width",
+    clear_stamps: "Remove all",
+    no_stamps_placed: "Place a stamp on a page first.",
+    stamp_suffix: " - stamped",
     no_pages_given: "Enter the pages first.",
     cannot_delete_all: "Every page would be deleted.",
     nothing_to_merge: "Add the files to merge first.",
@@ -405,6 +423,15 @@ const ZH_TW: Strings = Strings {
     open_result: "開啟",
     cancel: "取消",
     replace: "取代",
+    stamp_menu: "蓋章…",
+    stamps_title: "印章",
+    stamp_hint: "選一個印章，再到頁面上按一下放置。拖曳可移動，拖曳右下角可調整大小，按 Delete 可移除選取的印章。",
+    no_stamp_images: "尚未加入印章圖片。建議使用透明背景的 PNG 圖檔。",
+    add_stamp_images: "加入印章圖片…",
+    stamp_width: "寬度",
+    clear_stamps: "全部移除",
+    no_stamps_placed: "請先在頁面上放置印章。",
+    stamp_suffix: "-用印",
     no_pages_given: "請先輸入頁面。",
     cannot_delete_all: "不能刪除所有頁面。",
     nothing_to_merge: "請先加入要合併的檔案。",
@@ -639,6 +666,14 @@ impl Strings {
             format!("沒有第 {page} 頁")
         } else {
             format!("There is no page {page}")
+        }
+    }
+
+    pub(crate) fn stamp_on_page(&self, page: u32, name: &str) -> String {
+        if self.zh() {
+            format!("第 {page} 頁：{name}")
+        } else {
+            format!("Page {page}: {name}")
         }
     }
 

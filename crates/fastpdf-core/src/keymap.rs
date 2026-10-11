@@ -50,6 +50,10 @@ pub enum ReaderCommand {
     /// Extract, delete, rotate, reorder, split or merge pages into a new
     /// file (ADR 0013).
     PageTools,
+    /// The stamp panel: seals placed on pages, saved as a new file.
+    StampTool,
+    /// Removes the selected stamp.
+    RemoveStamp,
     /// Copy the selected text.
     Copy,
     SelectAll,
@@ -127,6 +131,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind("ctrl-c", Copy),
         bind("ctrl-a", SelectAll),
         bind("escape", Cancel),
+        bind("delete", RemoveStamp),
         bind_in(FIND_BAR, "enter", FindNext),
         bind_in(FIND_BAR, "shift-enter", FindPrevious),
         bind_in(FIND_BAR, "escape", Cancel),

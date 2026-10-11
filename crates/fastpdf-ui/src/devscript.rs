@@ -41,6 +41,10 @@
 //! | `tool-save=PATH` | saves the page tools' result there (a folder for a split), without the dialog |
 //! | `save-copy=PATH` | saves a copy there, without the dialog |
 //! | `wait-write` | waits until the write finished |
+//! | `stamp-add=PATH` | adds a stamp image (read right away) and opens the stamp panel |
+//! | `stamp-place=PAGE,X,Y` | places the first stamp image centred on that point (one-based page, points from the top left) |
+//! | `stamp-width=MM` | the width of stamps placed next |
+//! | `stamp-save=PATH` | saves the stamped document there, without the dialog |
 //! | `language=system`, `=en`, `=zh-TW` | sets the UI language setting |
 //! | `smooth=on`, `=off` | turns smooth wheel scrolling on or off |
 //! | `wheel=NOTCHES` | a mouse-wheel turn (negative: up), as the wheel sends it |
@@ -102,6 +106,10 @@ pub(crate) enum Step {
     ToolSave(PathBuf),
     SaveCopy(PathBuf),
     WaitWrite,
+    StampAdd(PathBuf),
+    StampPlace(u32, f32, f32),
+    StampWidth(f32),
+    StampSave(PathBuf),
     Language(LanguageChoice),
     Smooth(bool),
     /// Wheel notches over the document (positive: down).
@@ -174,6 +182,16 @@ fn parse_step(step: &str) -> Option<Step> {
         ("tool-save", Some(path)) => Step::ToolSave(PathBuf::from(path.trim())),
         ("save-copy", Some(path)) => Step::SaveCopy(PathBuf::from(path.trim())),
         ("wait-write", None) => Step::WaitWrite,
+        ("stamp-add", Some(path)) => Step::StampAdd(PathBuf::from(path.trim())),
+        ("stamp-place", Some(spec)) => {
+            let parts: Vec<&str> = spec.split(',').map(str::trim).collect();
+            let [page, x, y] = parts[..] else {
+                return None;
+            };
+            Step::StampPlace(page.parse().ok()?, x.parse().ok()?, y.parse().ok()?)
+        }
+        ("stamp-width", Some(mm)) => Step::StampWidth(mm.trim().parse().ok()?),
+        ("stamp-save", Some(path)) => Step::StampSave(PathBuf::from(path.trim())),
         ("language", Some(name)) => Step::Language(LanguageChoice::from_name(name)?),
         ("smooth", Some("on")) => Step::Smooth(true),
         ("smooth", Some("off")) => Step::Smooth(false),
@@ -185,7 +203,7 @@ fn parse_step(step: &str) -> Option<Step> {
 /// The command called `name` (the `ReaderCommand` variant name).
 fn command_named(name: &str) -> Option<ReaderCommand> {
     use ReaderCommand as C;
-    const ALL: [ReaderCommand; 36] = [
+    const ALL: [ReaderCommand; 38] = [
         C::OpenFile,
         C::CloseDocument,
         C::Quit,
@@ -219,6 +237,8 @@ fn command_named(name: &str) -> Option<ReaderCommand> {
         C::ToggleCoverPage,
         C::SaveCopy,
         C::PageTools,
+        C::StampTool,
+        C::RemoveStamp,
         C::Copy,
         C::SelectAll,
         C::Cancel,
@@ -502,6 +522,43 @@ impl ReaderView {
                 } else {
                     Done
                 }
+            }
+            Step::StampAdd(path) => {
+                if !self.stamps.open {
+                    self.toggle_stamp_panel(cx);
+                }
+                match crate::stamps::load_stamp_image(path) {
+                    Ok(image) => self.dev_add_stamp(image),
+                    Err(e) => return Abort(format!("stamp image {}: {e}", path.display())),
+                }
+                cx.notify();
+                Done
+            }
+            Step::StampPlace(page, x, y) => {
+                // The page must be laid out and known: show it first.
+                let index = PageIndex::new(page.saturating_sub(1));
+                if let Some(session) = self.session_mut() {
+                    session.go_to_page(index);
+                }
+                let point = self.session().and_then(|s| {
+                    let r =
+                        s.page_to_view(index, fastpdf_engine_api::PageRect::new(*x, *y, *x, *y))?;
+                    Some((r[0], r[1]))
+                });
+                let placed = point.is_some_and(|(vx, vy)| self.place_stamp(0, vx, vy));
+                if !placed {
+                    return Abort(format!("cannot place a stamp on page {page}"));
+                }
+                cx.notify();
+                Done
+            }
+            Step::StampWidth(mm) => {
+                self.stamps.width_mm = *mm;
+                Done
+            }
+            Step::StampSave(path) => {
+                self.save_stamps(Some(path.clone()), window, cx);
+                Done
             }
             Step::EditMenu => {
                 use crate::reader::Menu;

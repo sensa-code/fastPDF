@@ -489,6 +489,20 @@ impl ReaderView {
         });
     }
 
+    /// [`Self::ask_where`] for other writers (stamps): `suggested` in the
+    /// save dialog, or `preset` without it.
+    pub(crate) fn ask_where_for(
+        &mut self,
+        source: PathBuf,
+        suggested: String,
+        preset: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+        make: impl FnOnce(PathBuf, PathBuf) -> Result<WriteJob, SpecError> + 'static,
+    ) {
+        self.ask_where(source, Target { suggested, preset }, window, cx, make);
+    }
+
     /// Asks for a file name next to the open file (unless `target` has
     /// one), then writes the job `make` builds for it.
     fn ask_where(

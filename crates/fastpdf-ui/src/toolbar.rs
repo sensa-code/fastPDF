@@ -237,6 +237,16 @@ fn edit_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView
                 cx,
             )
             .into_any_element(),
+            menu_item(
+                "edit-stamps",
+                strings.stamp_menu,
+                view.stamps.open,
+                has_doc,
+                ReaderCommand::StampTool,
+                tools,
+                cx,
+            )
+            .into_any_element(),
         ]
     })
 }

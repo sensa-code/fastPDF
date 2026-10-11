@@ -39,6 +39,7 @@ use crate::settings::{
 };
 use crate::sidebar::Sidebar;
 use crate::smooth_scroll::{PageTurn, SmoothScroll};
+use crate::stamps::StampPanel;
 use crate::startup::{SessionParts, Startup, default_window_size};
 use crate::textures::{DEFAULT_UPLOAD_BUDGET, TileImage, TileTextures};
 use crate::theme::{ActiveTheme, Theme};
@@ -325,6 +326,8 @@ pub struct ReaderView {
     pub(crate) menus: MenuState,
     /// Save a copy, the page tools panel and the write in progress.
     pub(crate) tools: ToolsPanel,
+    /// Stamps placed on the open document and the stamp panel.
+    pub(crate) stamps: StampPanel,
     open_task: Option<Task<()>>,
     pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
@@ -430,6 +433,7 @@ impl ReaderView {
             scrollbars: ScrollBarState::default(),
             menus: MenuState::default(),
             tools: ToolsPanel::new(cx),
+            stamps: StampPanel::default(),
             open_task: None,
             dev_script: None,
             _wake_task: wake_task,
@@ -635,6 +639,7 @@ impl ReaderView {
         self.smooth_scroll.stop();
         self.page_turn = PageTurn::default();
         self.scrollbars.clear();
+        self.stamps.reset_document();
         // A print job keeps the document alive until it stops.
         self.print.cancel_job();
         if let DocState::Open(open) = mem::replace(&mut self.doc, DocState::Empty) {
@@ -784,6 +789,13 @@ impl ReaderView {
                 self.menus.open = None;
                 self.toggle_tools_panel(window, cx);
             }
+            C::StampTool => {
+                self.menus.open = None;
+                self.toggle_stamp_panel(cx);
+            }
+            C::RemoveStamp => {
+                self.remove_selected_stamp();
+            }
             C::LayoutSinglePage => self.set_page_layout(PageLayout::SinglePage, cx),
             C::LayoutContinuous => self.set_page_layout(PageLayout::Continuous, cx),
             C::LayoutTwoPage => self.set_page_layout(PageLayout::TwoPage, cx),
@@ -823,6 +835,11 @@ impl ReaderView {
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.menus.open.is_some() {
             self.menus.open = None;
+        } else if self.stamps.armed.is_some() || self.stamps.selected.is_some() {
+            self.stamps.armed = None;
+            self.stamps.selected = None;
+        } else if self.stamps.open {
+            self.toggle_stamp_panel(cx);
         } else if self.print.printing() {
             self.print.cancel_job();
         } else if self.print.open {
@@ -1028,6 +1045,10 @@ impl ReaderView {
         window.focus(&self.focus, cx);
         if let Some(hit) = self.scrollbars.hit(event.position) {
             self.on_scrollbar_press(hit, cx);
+            return;
+        }
+        if self.stamp_mouse_down(event.position) {
+            cx.notify();
             return;
         }
         match self.page_point(event.position) {
@@ -1473,12 +1494,18 @@ impl ReaderView {
                 prepaint_view.update(cx, |this, _| this.prepare_viewport(bounds, window))
             },
             move |bounds, state, window, cx| {
-                let (selecting, scrolling) = view.update(cx, |this, cx| {
+                let (selecting, scrolling, stamping) = view.update(cx, |this, cx| {
                     this.paint_viewport(bounds, state, window, cx);
-                    (this.selection.dragging, this.scrollbars.drag.is_some())
+                    (
+                        this.selection.dragging,
+                        this.scrollbars.drag.is_some(),
+                        this.stamps.drag.is_some(),
+                    )
                 });
                 if scrolling {
                     crate::viewport::track_scrollbar_drag(view, window);
+                } else if stamping {
+                    crate::stamps::track_stamp_drag(view, window);
                 } else if selecting {
                     crate::viewport::track_selection_drag(view, window);
                 }
@@ -1513,6 +1540,10 @@ impl ReaderView {
             .when(self.tools.open, |area| {
                 area.child(self.render_tools_panel(cx))
             })
+            .when(self.stamps.open, |area| {
+                area.child(self.render_stamp_panel(cx))
+            })
+            .when(self.stamps.armed.is_some(), |area| area.cursor_crosshair())
             .when_some(self.render_write_notice(cx), |area, notice| {
                 area.child(notice)
             })

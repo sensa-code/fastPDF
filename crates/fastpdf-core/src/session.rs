@@ -517,6 +517,30 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         Some((page, px, py))
     }
 
+    /// A view point (logical pixels) in the space of `page`, wherever it is:
+    /// off the page too (dragging something placed on it). `None` when the
+    /// page is not laid out (page mode: another row) or not known yet.
+    pub fn view_to_page_on(&self, page: PageIndex, x: f32, y: f32) -> Option<(f32, f32)> {
+        let ppp = self.viewport.px_per_point();
+        let lx = self.viewport.scroll_x + f64::from(x) / ppp;
+        let ly = self.viewport.scroll_y + f64::from(y) / ppp;
+        let (page_rect, info, rotation) = self.page_frame(page)?;
+        let dx = (lx - page_rect.x) as f32;
+        let dy = (ly - page_rect.y) as f32;
+        Some(unrotate_point(dx, dy, info.size, rotation))
+    }
+
+    /// How `page` is turned on screen: its own `/Rotate`, then the view's
+    /// rotation. `None` until the page is known.
+    pub fn display_rotation(&self, page: PageIndex) -> Option<Rotation> {
+        self.page_frame(page).map(|(_, _, rotation)| rotation)
+    }
+
+    /// The size of `page` in page space (unrotated), once known.
+    pub fn page_size_known(&self, page: PageIndex) -> Option<PageSize> {
+        self.known_page_info(page).map(|info| info.size)
+    }
+
     /// Navigates to a link or bookmark target, scrolled so the destination's
     /// top (when given) is at the top of the view.
     pub fn go_to_destination(&mut self, dest: &Destination) {
