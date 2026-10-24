@@ -125,7 +125,9 @@ pub fn check_external_uri(raw: &str) -> Result<ExternalUri, UriRejection> {
             )
         }
         "mailto" => {
-            if url.path().is_empty() {
+            // RFC 6068: the recipients may be in the path or only in the
+            // query (`mailto:?to=...`); a bare `mailto:` says nothing.
+            if url.path().is_empty() && url.query().is_none_or(str::is_empty) {
                 return Err(UriRejection::Malformed);
             }
             (UriKind::Mail, None)
@@ -225,6 +227,18 @@ mod tests {
                 UriKind::Mail,
                 None,
             ),
+            (
+                "mailto:?to=help@example.invalid&subject=Question",
+                "mailto:?to=help@example.invalid&subject=Question",
+                UriKind::Mail,
+                None,
+            ),
+            (
+                "mailto:?subject=Feedback",
+                "mailto:?subject=Feedback",
+                UriKind::Mail,
+                None,
+            ),
         ];
         for (raw, text, kind, host) in cases {
             let uri = accepted(raw);
@@ -261,6 +275,7 @@ mod tests {
             ("/relative/path", R::Malformed),
             ("https://", R::Malformed),
             ("mailto:", R::Malformed),
+            ("mailto:?", R::Malformed),
             ("java\nscript:alert(1)", R::UnsafeCharacters),
             ("https://example.invalid/\ta", R::UnsafeCharacters),
             ("https://exa\0mple.invalid/", R::UnsafeCharacters),
