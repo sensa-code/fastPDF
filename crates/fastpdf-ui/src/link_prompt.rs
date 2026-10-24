@@ -84,12 +84,18 @@ impl ReaderView {
     }
 
     /// A link that did not open, until closed (its button or Esc).
-    pub(crate) fn render_link_notice(&self, cx: &mut Context<'_, Self>) -> Option<Div> {
+    pub(crate) fn render_link_notice(
+        &self,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<gpui::Stateful<Div>> {
         let LinkNotice::OpenFailed(why) = self.links.notice.as_ref()?;
         let strings = self.strings();
         let theme = self.theme;
         Some(
             self.link_chip()
+                .id("link-notice")
+                // Presses on it (its close button) must not reach the page.
+                .occlude()
                 .p_2()
                 .flex()
                 .flex_row()

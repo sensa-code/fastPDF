@@ -12,7 +12,7 @@
 use fastpdf_core::keymap;
 use gpui::{
     AnyElement, Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, Window, div, prelude::FluentBuilder, px,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 
 use crate::reader::{DocState, ReaderView};
@@ -75,6 +75,7 @@ pub(crate) fn prompt_card(
     buttons: impl IntoElement,
 ) -> impl IntoElement {
     let status_line = div()
+        .flex_none()
         .h(px(STATUS_HEIGHT))
         .when_some(status, |line, status| {
             line.text_color(if status.error {
@@ -90,6 +91,9 @@ pub(crate) fn prompt_card(
         .when_some(focus, |card, focus| card.track_focus(focus))
         .w(px(CARD_WIDTH))
         .max_w_full()
+        // A small window: the card fits the document area, the body
+        // scrolls and the title and buttons stay.
+        .max_h_full()
         .flex()
         .flex_col()
         .gap_2()
@@ -99,10 +103,25 @@ pub(crate) fn prompt_card(
         .border_1()
         .border_color(theme.toolbar_border)
         .text_size(px(13.0))
-        .child(div().text_size(px(20.0)).child(title))
-        .child(body)
+        .child(div().flex_none().text_size(px(20.0)).child(title))
+        .child(
+            div()
+                .id("prompt-body")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(body),
+        )
         .child(status_line)
-        .child(div().flex().flex_row().justify_end().gap_2().child(buttons));
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(buttons),
+        );
     // The scrim occludes the document and the panels below it; clicks on
     // it leave the keyboard focus where it is.
     div()
