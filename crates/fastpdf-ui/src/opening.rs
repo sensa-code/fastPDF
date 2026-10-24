@@ -14,7 +14,8 @@ use gpui::{Context, PathPromptOptions, SharedString, Window};
 
 use crate::bench::BenchEvent;
 use crate::document::{OpenFailure, Opened, open_document_blocking};
-use crate::reader::{DocState, OpenDoc, ReaderView, apply_default_zoom};
+use crate::navigation::apply_default_zoom;
+use crate::reader::{DocState, OpenDoc, ReaderView};
 use crate::smooth_scroll::PageTurn;
 use crate::toolbar;
 

@@ -23,7 +23,8 @@ use fastpdf_engine_api::ColorMode;
 use futures::channel::mpsc;
 
 use crate::document::{OpenedDocument, PendingOpen};
-use crate::reader::{ReaderOptions, Waker, apply_default_zoom};
+use crate::navigation::apply_default_zoom;
+use crate::reader::{ReaderOptions, Waker};
 use crate::settings::{DefaultZoom, Settings, WindowPlacement};
 use crate::textures::{RetireQueue, TileImage, to_render_image};
 

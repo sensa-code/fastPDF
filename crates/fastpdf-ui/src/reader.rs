@@ -1,4 +1,6 @@
-//! The reader window's root view: document state, commands, input.
+//! The reader window's root view: document state and commands; pointer
+//! input is handled in `crate::input`, moving the view in
+//! `crate::navigation`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,18 +10,18 @@ use fastpdf_cache::{BudgetConfig, MemoryBudgetManager};
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_core::memory::MemoryMonitor;
 use fastpdf_core::recent::RecentFiles;
-use fastpdf_core::{DocumentSession, ScrollAxis, SessionConfig};
+use fastpdf_core::{DocumentSession, SessionConfig};
 use fastpdf_engine_api::write::{WriteError, WriteJob, WriteReport};
-use fastpdf_engine_api::{CancelToken, ColorMode, PageIndex, PageRect, PdfEngine};
+use fastpdf_engine_api::{CancelToken, ColorMode, PageIndex, PdfEngine};
 use fastpdf_search::TextCache;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
     App, AppContext, Bounds, ClickEvent, ClipboardItem, Context, Entity, ExternalPaths,
-    FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ParentElement, PinchEvent, Pixels, Render, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, TitlebarOptions, Window, WindowBounds,
-    WindowHandle, WindowOptions, canvas, div, prelude::FluentBuilder, px, size,
+    FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
+    Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
+    TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, canvas, div,
+    prelude::FluentBuilder, px, size,
 };
 
 use crate::actions::{KEY_CONTEXT, all_actions};
@@ -27,12 +29,13 @@ use crate::bench::{BenchEvent, BenchHook};
 use crate::document::OpenFailure;
 use crate::find::{FindBar, SearchTarget};
 use crate::i18n::{Language, Strings};
-use crate::opening::{APP_TITLE, is_pdf};
+use crate::navigation::{navigate, reveal};
+use crate::opening::APP_TITLE;
 use crate::overlay::DevOverlay;
 use crate::print::PrintPanel;
-use crate::scrollbar::{Drag, Hit, ScrollBarState};
-use crate::select::{PagePoint, TextSelection};
-use crate::settings::{DefaultZoom, MIN_WINDOW, PageLayout, Settings, SettingsStore};
+use crate::scrollbar::ScrollBarState;
+use crate::select::TextSelection;
+use crate::settings::{MIN_WINDOW, PageLayout, Settings, SettingsStore};
 use crate::sidebar::Sidebar;
 use crate::signing::SignaturePanel;
 use crate::smooth_scroll::{PageTurn, SmoothScroll};
@@ -44,12 +47,6 @@ use crate::theme::{ActiveTheme, Theme};
 use crate::toolbar;
 use crate::tools::ToolsPanel;
 use crate::window_placement::{apply_window_appearance, initial_window_bounds};
-
-/// Scroll distance of one wheel "line" and of the arrow keys, in logical
-/// pixels (three lines per wheel notch at the Windows default).
-const LINE_SCROLL_PX: f32 = 33.0;
-/// Ctrl + wheel: logical pixels of wheel travel that double the zoom.
-const WHEEL_PX_PER_ZOOM_DOUBLING: f32 = 400.0;
 
 /// Runs a write job (ADR 0013) to its end on the calling thread; the app
 /// runs it in an isolated child process. The reader calls it from a
@@ -753,294 +750,6 @@ impl ReaderView {
             .detach();
         }
     }
-
-    pub(crate) fn on_document_mouse_down(
-        &mut self,
-        event: &MouseDownEvent,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        window.focus(&self.focus, cx);
-        if let Some(hit) = self.scrollbars.hit(event.position) {
-            self.on_scrollbar_press(hit, cx);
-            return;
-        }
-        if self.text_edit_mouse_down(event.position, window, cx) {
-            cx.notify();
-            return;
-        }
-        if self.stamp_mouse_down(event.position) {
-            cx.notify();
-            return;
-        }
-        match self.page_point(event.position) {
-            Some(point) => {
-                let missing = self.selection.begin(point);
-                self.fetch_text_layers(missing, cx);
-            }
-            None => self.selection.clear(),
-        }
-        cx.notify();
-    }
-
-    /// Drag update from the canvas' window-wide listener.
-    pub(crate) fn on_selection_drag(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if let Some(point) = self.page_point(position) {
-            let missing = self.selection.extend(point);
-            self.fetch_text_layers(missing, cx);
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn on_selection_end(&mut self, cx: &mut Context<'_, Self>) {
-        self.selection.end();
-        if self.selection.anchor == self.selection.focus {
-            // A click, not a drag.
-            self.selection.clear();
-        }
-        cx.notify();
-    }
-
-    // ---- scroll bars --------------------------------------------------------------
-
-    fn on_scrollbar_press(&mut self, hit: Hit, cx: &mut Context<'_, Self>) {
-        self.smooth_scroll.stop();
-        let width = self.session().map_or(0.0, |s| s.viewport().width);
-        match hit {
-            Hit::Thumb { axis, grab } => self.scrollbars.drag = Some(Drag { axis, grab }),
-            Hit::Before(ScrollAxis::Vertical) => {
-                if let Some(s) = self.session_mut() {
-                    s.page_up();
-                }
-            }
-            Hit::After(ScrollAxis::Vertical) => {
-                if let Some(s) = self.session_mut() {
-                    s.page_down();
-                }
-            }
-            Hit::Before(ScrollAxis::Horizontal) => {
-                if let Some(s) = self.session_mut() {
-                    s.scroll_by(-width * 0.9, 0.0);
-                }
-            }
-            Hit::After(ScrollAxis::Horizontal) => {
-                if let Some(s) = self.session_mut() {
-                    s.scroll_by(width * 0.9, 0.0);
-                }
-            }
-            Hit::Nothing => {}
-        }
-        cx.notify();
-    }
-
-    /// Drag update from the canvas' window-wide listener.
-    pub(crate) fn on_scrollbar_drag(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(drag) = self.scrollbars.drag else {
-            return;
-        };
-        let Some(bar) = self.scrollbars.bar(drag.axis) else {
-            return;
-        };
-        let start = bar.start_for(bar.coordinate(position) - drag.grab);
-        if let Some(session) = self.session_mut() {
-            session.scroll_to(drag.axis, start);
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn end_scrollbar_drag(&mut self, cx: &mut Context<'_, Self>) {
-        if self.scrollbars.drag.take().is_some() {
-            cx.notify();
-        }
-    }
-
-    /// Highlights the thumb under the mouse.
-    fn on_document_mouse_move(
-        &mut self,
-        event: &MouseMoveEvent,
-        _window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let hover = match self.scrollbars.hit(event.position) {
-            Some(Hit::Thumb { axis, .. }) => Some(axis),
-            _ => None,
-        };
-        if hover != self.scrollbars.hover {
-            self.scrollbars.hover = hover;
-            cx.notify();
-        }
-        self.text_edit_hover(event.position, cx);
-    }
-
-    fn on_document_hover(
-        &mut self,
-        hovered: &bool,
-        _window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        if !*hovered && self.scrollbars.hover.take().is_some() {
-            cx.notify();
-        }
-    }
-
-    /// The page-space point under a window position.
-    pub(crate) fn page_point(&self, position: gpui::Point<Pixels>) -> Option<PagePoint> {
-        let (x, y) = self.local_position(position)?;
-        let (page, px, py) = self.session()?.view_to_page(x, y)?;
-        Some(PagePoint { page, x: px, y: py })
-    }
-
-    // ---- input -------------------------------------------------------------------
-
-    fn local_position(&self, position: gpui::Point<Pixels>) -> Option<(f32, f32)> {
-        let b = self.viewport_bounds?;
-        Some((
-            f32::from(position.x - b.origin.x),
-            f32::from(position.y - b.origin.y),
-        ))
-    }
-
-    pub(crate) fn on_scroll_wheel(
-        &mut self,
-        event: &ScrollWheelEvent,
-        _window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let anchor = self.local_position(event.position);
-        let notch = crate::smooth_scroll::is_wheel_notch(&event.delta);
-        let smooth = self.settings.smooth_scrolling && !event.modifiers.control && notch;
-        let delta = event.delta.pixel_delta(px(LINE_SCROLL_PX));
-        let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
-        let DocState::Open(open) = &mut self.doc else {
-            return;
-        };
-        let session = &mut open.session;
-        // GPUI deltas move the content; the view moves the other way.
-        let down = -dy;
-        let paged = !session.layout_mode().continuous;
-        if event.modifiers.control {
-            // Wheel away from the user zooms in, around the cursor.
-            let factor = 2f32.powf(dy / WHEEL_PX_PER_ZOOM_DOUBLING);
-            session.set_zoom(session.zoom().scaled(factor), anchor);
-        } else if paged && down != 0.0 && !session.can_scroll(down > 0.0) {
-            // Page mode at the edge of the shown row: wheel travel past it
-            // turns the page (`crate::smooth_scroll::PageTurn`).
-            if self.page_turn.push(down, notch, Instant::now()) {
-                self.smooth_scroll.stop();
-                session.turn_page(down > 0.0);
-            }
-        } else if smooth {
-            self.page_turn.reset();
-            // Animated by the viewport's prepaint (`crate::smooth_scroll`).
-            self.smooth_scroll.add((-dx, -dy), Instant::now());
-        } else {
-            self.page_turn.reset();
-            session.scroll_by(-dx, -dy);
-        }
-        cx.stop_propagation();
-        cx.notify();
-    }
-
-    /// A wheel turn of `notches` (positive: down) as a mouse sends it, at
-    /// the Windows default of three lines per notch (dev scripts).
-    pub(crate) fn wheel_notches(
-        &mut self,
-        notches: i32,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let position = self
-            .viewport_bounds
-            .map_or_else(gpui::Point::default, |b| b.center());
-        let event = ScrollWheelEvent {
-            position,
-            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -3.0 * notches as f32)),
-            ..ScrollWheelEvent::default()
-        };
-        self.on_scroll_wheel(&event, window, cx);
-    }
-
-    pub(crate) fn on_pinch(
-        &mut self,
-        event: &PinchEvent,
-        _window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let anchor = self.local_position(event.position);
-        let Some(session) = self.session_mut() else {
-            return;
-        };
-        let factor = (1.0 + event.delta).clamp(0.5, 2.0);
-        session.set_zoom(session.zoom().scaled(factor), anchor);
-        cx.stop_propagation();
-        cx.notify();
-    }
-
-    pub(crate) fn on_drop_paths(
-        &mut self,
-        paths: &ExternalPaths,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let paths = paths.paths();
-        let chosen = paths
-            .iter()
-            .find(|p| is_pdf(p))
-            .or_else(|| paths.first())
-            .cloned();
-        if let Some(path) = chosen {
-            self.open_path(path, window, cx);
-        }
-    }
-}
-
-fn navigate(session: &mut DocumentSession<TileImage>, command: ReaderCommand) {
-    use ReaderCommand as C;
-    match command {
-        C::ZoomIn => session.zoom_in(None),
-        C::ZoomOut => session.zoom_out(None),
-        C::ActualSize => session.actual_size(),
-        C::FitPage => session.fit_page(),
-        C::FitWidth => session.fit_width(),
-        C::RotateClockwise => session.rotate_clockwise(),
-        C::RotateCounterClockwise => session.rotate_counter_clockwise(),
-        C::NextPage => session.next_page(),
-        C::PreviousPage => session.prev_page(),
-        C::FirstPage => session.first_page(),
-        C::LastPage => session.last_page(),
-        C::PageDown => session.page_down(),
-        C::PageUp => session.page_up(),
-        C::ScrollDown => scroll_or_turn(session, LINE_SCROLL_PX * 2.0),
-        C::ScrollUp => scroll_or_turn(session, -LINE_SCROLL_PX * 2.0),
-        _ => {}
-    }
-}
-
-/// Arrow keys: scroll; in page mode, at the edge of the shown row, turn
-/// the page.
-fn scroll_or_turn(session: &mut DocumentSession<TileImage>, dy: f32) {
-    if !session.layout_mode().continuous && !session.can_scroll(dy > 0.0) {
-        session.turn_page(dy > 0.0);
-    } else {
-        session.scroll_by(0.0, dy);
-    }
-}
-
-/// Puts a session in the zoom new documents start with.
-pub(crate) fn apply_default_zoom(session: &mut DocumentSession<TileImage>, zoom: DefaultZoom) {
-    match zoom {
-        DefaultZoom::FitWidth => session.fit_width(),
-        DefaultZoom::FitPage => session.fit_page(),
-        DefaultZoom::ActualSize => session.actual_size(),
-    }
 }
 
 impl ReaderView {
@@ -1101,28 +810,6 @@ impl ReaderView {
 
     pub(crate) fn settings_path(&self) -> Option<&Path> {
         self.settings_store.path()
-    }
-}
-
-/// Scrolls so `rect` on `page` is visible, about a third from the top when
-/// the view has to move.
-fn reveal(session: &mut DocumentSession<TileImage>, page: PageIndex, rect: PageRect) {
-    let vp = *session.viewport();
-    let fits = |r: [f32; 4]| {
-        r[0] >= 0.0 && r[1] >= 0.0 && r[0] + r[2] <= vp.width && r[1] + r[3] <= vp.height
-    };
-    if session.page_to_view(page, rect).is_some_and(fits) {
-        return;
-    }
-    // Makes the page's size known and puts its top at the top.
-    session.go_to_page(page);
-    if let Some(r) = session.page_to_view(page, rect) {
-        let dx = if r[0] < 0.0 || r[0] + r[2] > vp.width {
-            r[0] + r[2] / 2.0 - vp.width / 2.0
-        } else {
-            0.0
-        };
-        session.scroll_by(dx, r[1] - vp.height / 3.0);
     }
 }
 

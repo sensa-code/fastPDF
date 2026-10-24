@@ -47,6 +47,8 @@ mod document;
 mod empty_state;
 mod find;
 mod i18n;
+mod input;
+mod navigation;
 mod opening;
 mod overlay;
 mod print;

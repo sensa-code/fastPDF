@@ -8,7 +8,8 @@ use gpui::{
 };
 
 use crate::i18n::{Language, Strings};
-use crate::reader::{ReaderView, apply_default_zoom};
+use crate::navigation::apply_default_zoom;
+use crate::reader::ReaderView;
 use crate::settings::{Appearance, DefaultZoom, LanguageChoice};
 use crate::theme::Theme;
 use crate::toolbar::styled_button;
