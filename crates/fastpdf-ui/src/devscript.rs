@@ -58,8 +58,11 @@
 //! | `language=system`, `=en`, `=zh-TW` | sets the UI language setting |
 //! | `smooth=on`, `=off` | turns smooth wheel scrolling on or off |
 //! | `wheel=NOTCHES` | a mouse-wheel turn (negative: up), as the wheel sends it |
+//! | `expect-page=N`, `expect-zoom=PERCENT` | stops the script unless on page N (one-based) or at that zoom (`checks.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
+
+mod checks;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -134,6 +137,7 @@ pub(crate) enum Step {
     Smooth(bool),
     /// Wheel notches over the document (positive: down).
     Wheel(i32),
+    Check(checks::Check),
 }
 
 /// What a step reports after one poll.
@@ -244,7 +248,7 @@ fn parse_step(step: &str) -> Option<Step> {
         ("smooth", Some("on")) => Step::Smooth(true),
         ("smooth", Some("off")) => Step::Smooth(false),
         ("wheel", Some(n)) => Step::Wheel(n.parse().ok().filter(|n: &i32| *n != 0)?),
-        _ => return None,
+        _ => Step::Check(checks::Check::parse(name, value)?),
     })
 }
 
@@ -657,6 +661,7 @@ impl ReaderView {
                 self.wheel_notches(*notches, window, cx);
                 Done
             }
+            Step::Check(check) => self.run_check_step(*check),
         }
     }
 }
