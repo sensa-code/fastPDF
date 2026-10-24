@@ -250,51 +250,9 @@ fn parse_step(step: &str) -> Option<Step> {
 
 /// The command called `name` (the `ReaderCommand` variant name).
 fn command_named(name: &str) -> Option<ReaderCommand> {
-    use ReaderCommand as C;
-    const ALL: [ReaderCommand; 41] = [
-        C::OpenFile,
-        C::CloseDocument,
-        C::Quit,
-        C::Find,
-        C::FindNext,
-        C::FindPrevious,
-        C::Print,
-        C::ZoomIn,
-        C::ZoomOut,
-        C::ActualSize,
-        C::FitPage,
-        C::FitWidth,
-        C::RotateClockwise,
-        C::RotateCounterClockwise,
-        C::NextPage,
-        C::PreviousPage,
-        C::FirstPage,
-        C::LastPage,
-        C::PageDown,
-        C::PageUp,
-        C::ScrollDown,
-        C::ScrollUp,
-        C::ToggleFullscreen,
-        C::ToggleSidebar,
-        C::ToggleDevOverlay,
-        C::ToggleNightMode,
-        C::LayoutSinglePage,
-        C::LayoutContinuous,
-        C::LayoutTwoPage,
-        C::LayoutTwoPageContinuous,
-        C::ToggleCoverPage,
-        C::SaveCopy,
-        C::PageTools,
-        C::StampTool,
-        C::RemoveStamp,
-        C::EditText,
-        C::ConfirmEdit,
-        C::Sign,
-        C::Copy,
-        C::SelectAll,
-        C::Cancel,
-    ];
-    ALL.into_iter()
+    ReaderCommand::ALL
+        .iter()
+        .copied()
         .find(|c| format!("{c:?}").eq_ignore_ascii_case(name))
 }
 
@@ -729,6 +687,16 @@ mod tests {
         assert_eq!(steps[9], Step::PrintPages("1-3, 5".into()));
         assert_eq!(steps[15], Step::Mark(PathBuf::from(r"C:\shots\a")));
         assert_eq!(steps[17], Step::Memory(String::new()));
+    }
+
+    #[test]
+    fn every_command_runs_by_name() {
+        for &command in ReaderCommand::ALL {
+            assert_eq!(
+                parse(&format!("cmd={command:?}")).unwrap(),
+                vec![Step::Command(command)]
+            );
+        }
     }
 
     #[test]

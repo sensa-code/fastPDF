@@ -5,66 +5,90 @@
 //! can register this table directly; menus and tooltips look shortcuts up
 //! here too. Ctrl + mouse wheel zoom is handled by the viewport element.
 
-/// Everything a shortcut can trigger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReaderCommand {
-    OpenFile,
-    CloseDocument,
-    Quit,
-    Find,
-    FindNext,
-    FindPrevious,
-    Print,
-    ZoomIn,
-    ZoomOut,
-    ActualSize,
-    FitPage,
-    FitWidth,
-    RotateClockwise,
-    RotateCounterClockwise,
-    NextPage,
-    PreviousPage,
-    FirstPage,
-    LastPage,
-    PageDown,
-    PageUp,
-    ScrollDown,
-    ScrollUp,
-    ToggleFullscreen,
-    ToggleSidebar,
-    ToggleDevOverlay,
-    /// Night mode: invert page colors.
-    ToggleNightMode,
-    /// One page at a time.
-    LayoutSinglePage,
-    /// One page per row, scrolling.
-    LayoutContinuous,
-    /// Two pages side by side, one pair at a time.
-    LayoutTwoPage,
-    /// Two pages side by side, scrolling.
-    LayoutTwoPageContinuous,
-    /// Two-page layouts: show page 1 on its own (a book's cover) or not.
-    ToggleCoverPage,
-    /// Save the open file under a new name, unchanged (ADR 0013).
-    SaveCopy,
-    /// Extract, delete, rotate, reorder, split or merge pages into a new
-    /// file (ADR 0013).
-    PageTools,
-    /// The stamp panel: seals placed on pages, saved as a new file.
-    StampTool,
-    /// Removes the selected stamp.
-    RemoveStamp,
-    /// The text edit panel: lines of text changed, saved as a new file.
-    EditText,
-    /// Applies the line being edited (its field's Enter).
-    ConfirmEdit,
-    /// The signature panel: sign the document with a certificate.
-    Sign,
-    /// Copy the selected text.
-    Copy,
-    SelectAll,
-    /// Close the find bar / clear the selection.
-    Cancel,
+/// Declares [`ReaderCommand`] together with `ReaderCommand::ALL`, so a new
+/// command cannot be left out of the list that dev scripts (`cmd=NAME`)
+/// search.
+macro_rules! reader_commands {
+    (
+        $(#[$meta:meta])*
+        pub enum ReaderCommand {
+            $($(#[$doc:meta])* $command:ident,)*
+        }
+    ) => {
+        $(#[$meta])*
+        pub enum ReaderCommand {
+            $($(#[$doc])* $command,)*
+        }
+
+        impl ReaderCommand {
+            /// Every command, in declaration order.
+            pub const ALL: &'static [ReaderCommand] = &[$(ReaderCommand::$command),*];
+        }
+    };
+}
+
+reader_commands! {
+    /// Everything a shortcut can trigger.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum ReaderCommand {
+        OpenFile,
+        CloseDocument,
+        Quit,
+        Find,
+        FindNext,
+        FindPrevious,
+        Print,
+        ZoomIn,
+        ZoomOut,
+        ActualSize,
+        FitPage,
+        FitWidth,
+        RotateClockwise,
+        RotateCounterClockwise,
+        NextPage,
+        PreviousPage,
+        FirstPage,
+        LastPage,
+        PageDown,
+        PageUp,
+        ScrollDown,
+        ScrollUp,
+        ToggleFullscreen,
+        ToggleSidebar,
+        ToggleDevOverlay,
+        /// Night mode: invert page colors.
+        ToggleNightMode,
+        /// One page at a time.
+        LayoutSinglePage,
+        /// One page per row, scrolling.
+        LayoutContinuous,
+        /// Two pages side by side, one pair at a time.
+        LayoutTwoPage,
+        /// Two pages side by side, scrolling.
+        LayoutTwoPageContinuous,
+        /// Two-page layouts: show page 1 on its own (a book's cover) or not.
+        ToggleCoverPage,
+        /// Save the open file under a new name, unchanged (ADR 0013).
+        SaveCopy,
+        /// Extract, delete, rotate, reorder, split or merge pages into a new
+        /// file (ADR 0013).
+        PageTools,
+        /// The stamp panel: seals placed on pages, saved as a new file.
+        StampTool,
+        /// Removes the selected stamp.
+        RemoveStamp,
+        /// The text edit panel: lines of text changed, saved as a new file.
+        EditText,
+        /// Applies the line being edited (its field's Enter).
+        ConfirmEdit,
+        /// The signature panel: sign the document with a certificate.
+        Sign,
+        /// Copy the selected text.
+        Copy,
+        SelectAll,
+        /// Close the find bar / clear the selection.
+        Cancel,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +214,13 @@ mod tests {
             Some(ReaderCommand::FindNext)
         );
         assert_eq!(command_for("enter"), None);
+    }
+
+    #[test]
+    fn all_lists_every_command_once() {
+        for (index, &command) in ReaderCommand::ALL.iter().enumerate() {
+            assert_eq!(command as usize, index, "{command:?} is out of place");
+        }
     }
 
     #[test]
