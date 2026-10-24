@@ -227,16 +227,19 @@ fn hostile_number_trees_are_bounded() {
     for i in 0..50_000u32 {
         nums.push_str(&format!("{} 102 0 R ", i % 3 + 1));
     }
-    nums.push_str("4 << /S /D /P 104 0 R >>");
+    nums.push_str("4 << /S 105 0 R /St 106 0 R /P 104 0 R >>");
     objects.extend([
         (100, format!("<< /Kids [{kids}] /Nums [{nums}] >>")),
         (101, huge_dict),
         (102, huge_array),
         (103, "7".to_owned()),
         (104, "(Part-)".to_owned()),
+        (105, "/r".to_owned()),
+        (106, "3".to_owned()),
     ]);
     let (_, all) = labels_of(document(6, "/PageLabels 100 0 R", &objects));
-    // Indirect /S and /St are not followed; an indirect /P is.
+    // Indirect /S, /St and /P are read (102, a 1 MB array where a style
+    // belongs, is rejected: prefix only).
     assert_eq!(
         all,
         vec![
@@ -244,8 +247,8 @@ fn hostile_number_trees_are_bounded() {
             Some("Part-".into()),
             Some("Part-".into()),
             Some("Part-".into()),
-            Some("Part-1".into()),
-            Some("Part-2".into()),
+            Some("Part-iii".into()),
+            Some("Part-iv".into()),
         ]
     );
 
@@ -278,6 +281,25 @@ fn rejected_objects_count_against_the_byte_budget() {
     let (_, all) = labels_of(document(2, "/PageLabels 100 0 R", &objects));
     assert_eq!(all, some(&["i", "ii"]));
     assert!(started.elapsed() < Duration::from_secs(10));
+
+    // A rejected style or start is remembered: forty label dictionaries
+    // that share them cost two rejections, and the walk goes on.
+    let mut nums = String::new();
+    for i in 0..40 {
+        nums.push_str(&format!("{i} << /S 101 0 R /St 102 0 R /P (p) >> "));
+    }
+    nums.push_str("40 << /S /D /St 7 >>");
+    let (_, all) = labels_of(document(
+        41,
+        "/PageLabels 100 0 R",
+        &[
+            (100, format!("<< /Nums [{nums}] >>")),
+            (101, "[1 2 3]".into()),
+            (102, "(not a number)".into()),
+        ],
+    ));
+    assert_eq!(all[0].as_deref(), Some("p"));
+    assert_eq!(all[40].as_deref(), Some("7"));
 
     // Streams answer with their dictionary: their data and /Length are
     // never read, so a broken stream (an indirect /Length to a missing

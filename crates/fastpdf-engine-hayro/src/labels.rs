@@ -11,24 +11,21 @@
 //! no, at a cost that cannot be measured from here, so every rejected
 //! reference is charged a fixed share of the budget: at most
 //! [`MAX_REJECTED`] per walk. The walk never resolves the same object
-//! twice: kids, arrays and prefix strings are resolved once by identity,
-//! label dictionaries are remembered, and `/S` and `/St` are only read when
-//! they are direct. Kids are resolved one at a time when the walk reaches
+//! twice: kids, arrays and the values of label dictionaries are resolved
+//! once by identity, label dictionaries are remembered (`entry.rs` reads
+//! them). Kids are resolved one at a time when the walk reaches
 //! them, after the budgets are checked. Nodes, depth, key/value pairs and
 //! the bytes of everything looked at have budgets. Whatever is malformed is
 //! skipped; the answer is always a normalized [`PageLabels`].
 
+mod entry;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use fastpdf_engine_api::display::clean_display;
 use fastpdf_engine_api::{PageIndex, PageLabelRange, PageLabelStyle, PageLabels};
 use hayro::hayro_syntax::Pdf;
-use hayro::hayro_syntax::object::{
-    Array, Dict, MaybeRef, Name, Object, ObjectIdentifier, String as PdfString,
-};
+use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, Object, ObjectIdentifier};
 use hayro::hayro_syntax::xref::XRef;
-
-use crate::nav::decode_text_string;
 
 /// Tree nodes visited at most (the same budget as name trees, nav.rs).
 const MAX_NODES: usize = 10_000;
@@ -42,13 +39,10 @@ const MAX_SCANNED_BYTES: usize = 32 << 20;
 /// References that resolve to no object of the needed type (or to nothing),
 /// at most; each costs `MAX_SCANNED_BYTES / MAX_REJECTED` of the budget.
 const MAX_REJECTED: usize = 16;
-/// Distinct indirect label dictionaries (and indirect prefixes) read at
-/// most; real documents have a handful. References to further objects are
-/// skipped.
+/// Distinct indirect label dictionaries (and, each on their own, indirect
+/// prefixes, styles and starts) read at most; real documents have a
+/// handful. References to further objects are not followed.
 const MAX_INDIRECT_VALUES: usize = 2 * PageLabels::MAX_RANGES;
-/// Bytes of one `/P` string decoded at most: enough for
-/// [`PageLabels::MAX_PREFIX_BYTES`] of text in any text-string encoding.
-const MAX_PREFIX_SOURCE_BYTES: usize = 4 * PageLabels::MAX_PREFIX_BYTES;
 
 /// The page labels of `pdf`, normalized for `page_count` pages. Empty when
 /// the document has none.
@@ -63,6 +57,8 @@ pub(crate) fn page_labels(pdf: &Pdf, page_count: u32) -> PageLabels {
         ranges: BTreeMap::new(),
         values: HashMap::new(),
         prefixes: HashMap::new(),
+        styles: HashMap::new(),
+        starts: HashMap::new(),
         resolved: HashSet::new(),
         nodes: 0,
         pairs: 0,
@@ -103,6 +99,9 @@ struct Walk<'p> {
     values: HashMap<ObjectIdentifier, Option<Entry>>,
     /// Indirect `/P` strings already read, cleaned.
     prefixes: HashMap<ObjectIdentifier, String>,
+    /// Indirect `/S` names and `/St` numbers already read.
+    styles: HashMap<ObjectIdentifier, PageLabelStyle>,
+    starts: HashMap<ObjectIdentifier, u32>,
     /// Indirect nodes and arrays already resolved (or queued).
     resolved: HashSet<ObjectIdentifier>,
     nodes: usize,
@@ -266,66 +265,6 @@ impl<'p> Walk<'p> {
             }
         }
     }
-
-    fn entry(&mut self, dict: &Dict<'p>) -> Option<Entry> {
-        // A style or start behind a reference is not followed: real files
-        // write them directly, and following one could scan a huge object.
-        let style = match dict.get_raw::<Name<'p>>(b"S") {
-            Some(MaybeRef::NotRef(name)) => match name.as_str() {
-                "D" => PageLabelStyle::Decimal,
-                "R" => PageLabelStyle::UpperRoman,
-                "r" => PageLabelStyle::LowerRoman,
-                "A" => PageLabelStyle::UpperLetters,
-                "a" => PageLabelStyle::LowerLetters,
-                // Unknown styles keep the prefix and drop the number.
-                _ => PageLabelStyle::None,
-            },
-            _ => PageLabelStyle::None,
-        };
-        let start = match dict.get_raw::<i64>(b"St") {
-            Some(MaybeRef::NotRef(st)) => st.clamp(1, i64::from(u32::MAX)) as u32,
-            _ => 1,
-        };
-        let prefix = match dict.get_raw::<PdfString<'p>>(b"P") {
-            // Part of the dictionary's bytes, already charged.
-            Some(MaybeRef::NotRef(text)) => prefix_text(&text),
-            Some(MaybeRef::Ref(r)) => self.indirect_prefix(r.into())?,
-            None => String::new(),
-        };
-        Some(Entry {
-            style,
-            prefix,
-            start,
-        })
-    }
-
-    /// An indirect `/P`, read once per object; `None` once the byte budget
-    /// is spent.
-    fn indirect_prefix(&mut self, id: ObjectIdentifier) -> Option<String> {
-        if let Some(known) = self.prefixes.get(&id) {
-            return Some(known.clone());
-        }
-        if self.prefixes.len() >= MAX_INDIRECT_VALUES {
-            return Some(String::new());
-        }
-        let text = match self.xref().get::<PdfString<'p>>(id) {
-            Some(text) if self.charge(text.as_bytes().len()) => prefix_text(&text),
-            Some(_) => return None,
-            None => {
-                self.reject();
-                String::new()
-            }
-        };
-        self.prefixes.insert(id, text.clone());
-        Some(text)
-    }
-}
-
-/// A `/P` string decoded (at most its first bytes) and made safe to show.
-fn prefix_text(text: &PdfString<'_>) -> String {
-    let raw = text.as_bytes();
-    let raw = raw.get(..MAX_PREFIX_SOURCE_BYTES).unwrap_or(raw);
-    clean_display(&decode_text_string(raw), PageLabels::MAX_PREFIX_BYTES)
 }
 
 /// A number-tree key as a page index: a direct, finite, integral number
