@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use fastpdf_core::keymap::ReaderCommand;
 use gpui::{
-    App, AppContext, ClickEvent, Context, Entity, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder,
-    px,
+    App, AppContext, ClickEvent, Context, Entity, EntityInputHandler, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div,
+    prelude::FluentBuilder, px,
 };
 
 use crate::document::{LockedSource, OpenFailure, OpenedDocument, open_loaded};
@@ -100,7 +100,7 @@ impl ReaderView {
         let DocState::Locked(locked) = &mut self.doc else {
             return;
         };
-        if locked.checking || locked.field.read(cx).is_empty() {
+        if locked.checking || !ready_to_try(locked.field.read(cx)) {
             return;
         }
         let Some(source) = locked.source.take() else {
@@ -189,7 +189,7 @@ impl ReaderView {
         };
         let theme = self.theme;
         let strings = self.strings();
-        let can_open = !locked.checking && !locked.field.read(cx).is_empty();
+        let can_open = !locked.checking && ready_to_try(locked.field.read(cx));
         let status = if locked.checking {
             Some(PromptStatus {
                 text: strings.password_checking().into(),
@@ -311,13 +311,12 @@ impl ReaderView {
         self.signing.open = false;
     }
 
-    /// Development scripts: types `password` into the prompt's field and,
-    /// with `confirm`, tries it. False when no password prompt waits for
-    /// input.
+    /// Development scripts: puts `password` into the prompt's field as
+    /// `entry` says. False when no password prompt waits for input.
     pub(crate) fn enter_password(
         &mut self,
         password: &fastpdf_engine_api::Password,
-        confirm: bool,
+        entry: PasswordEntry,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
@@ -325,12 +324,34 @@ impl ReaderView {
             DocState::Locked(locked) if !locked.checking => locked.field.clone(),
             _ => return false,
         };
-        field.update(cx, |field, cx| field.set_text(password.as_str(), cx));
-        if confirm {
+        field.update(cx, |field, cx| match entry {
+            PasswordEntry::Compose => {
+                field.replace_and_mark_text_in_range(None, password.as_str(), None, window, cx);
+            }
+            PasswordEntry::Confirm | PasswordEntry::Type => field.set_text(password.as_str(), cx),
+        });
+        if entry == PasswordEntry::Confirm {
             self.unlock_document(window, cx);
         }
         true
     }
+}
+
+/// How a development script enters a password.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasswordEntry {
+    /// Typed and confirmed (`password=`).
+    Confirm,
+    /// Typed only (`password-text=`).
+    Type,
+    /// Left as an unfinished IME composition (`password-compose=`).
+    Compose,
+}
+
+/// The field holds a password to try: something typed, and no IME
+/// composition in progress (its text is not what the user means yet).
+fn ready_to_try(field: &TextInput) -> bool {
+    !field.is_empty() && !field.composing()
 }
 
 #[cfg(test)]

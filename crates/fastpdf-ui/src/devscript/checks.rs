@@ -8,6 +8,7 @@ use fastpdf_engine_api::Password;
 use gpui::{Context, Window};
 
 use super::StepState;
+use crate::password::PasswordEntry;
 use crate::prompt::PromptKind;
 use crate::reader::{DocState, ReaderView};
 use crate::sidebar::OutlineState;
@@ -35,9 +36,13 @@ pub(crate) enum Check {
     /// `prompt-cancel`: cancels the prompt, like Esc.
     PromptCancel,
     /// `password=TEXT`: types TEXT into the password prompt and confirms it;
-    /// `password-text=TEXT` only types it (to see the masked field). For
-    /// fixture passwords only; `Debug` (the step log) never shows them.
-    Password { text: Password, confirm: bool },
+    /// `password-text=TEXT` only types it (to see the masked field);
+    /// `password-compose=TEXT` leaves it as an unfinished IME composition.
+    /// For fixture passwords only; `Debug` (the step log) never shows them.
+    Password {
+        text: Password,
+        entry: PasswordEntry,
+    },
 }
 
 /// What `expect-focus` names.
@@ -68,10 +73,16 @@ impl Check {
             ("expect-focus", "prompt") => Self::ExpectFocus(FocusTarget::Prompt),
             ("focus", "document") => Self::FocusDocument,
             ("wait-prompt", kind) => Self::WaitPrompt(PromptKind::from_name(kind)?),
-            ("password" | "password-text", text) if !text.is_empty() => Self::Password {
-                text: Password::from(text),
-                confirm: name == "password",
-            },
+            ("password" | "password-text" | "password-compose", text) if !text.is_empty() => {
+                Self::Password {
+                    text: Password::from(text),
+                    entry: match name {
+                        "password" => PasswordEntry::Confirm,
+                        "password-text" => PasswordEntry::Type,
+                        _ => PasswordEntry::Compose,
+                    },
+                }
+            }
             _ => return None,
         })
     }
@@ -111,12 +122,12 @@ impl ReaderView {
                     StepState::Abort("no prompt to cancel".into())
                 };
             }
-            Check::Password { text, confirm } => {
+            Check::Password { text, entry } => {
                 return match &self.doc {
                     // An earlier attempt is still being checked.
                     DocState::Locked(locked) if locked.checking => StepState::Pending,
                     DocState::Locked(_) => {
-                        self.enter_password(text, *confirm, window, cx);
+                        self.enter_password(text, *entry, window, cx);
                         StepState::Done
                     }
                     _ => StepState::Abort("no password prompt".into()),
@@ -192,6 +203,7 @@ mod tests {
 
     use super::Check;
     use crate::devscript::{Step, parse};
+    use crate::password::PasswordEntry;
     use crate::prompt::PromptKind;
 
     #[test]
@@ -240,6 +252,7 @@ mod tests {
             "password",
             "password=",
             "password-text=",
+            "password-compose=",
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
@@ -247,21 +260,26 @@ mod tests {
 
     #[test]
     fn prompt_steps_parse_and_hide_the_password() {
-        let steps =
-            parse("wait-prompt=password; password=zq9; prompt-cancel; password-text=測試密碼2026")
-                .unwrap();
+        let steps = parse(
+            "wait-prompt=password; password=zq9; prompt-cancel; password-text=測試密碼2026;              password-compose=ab",
+        )
+        .unwrap();
         assert_eq!(
             steps,
             vec![
                 Step::Check(Check::WaitPrompt(PromptKind::Password)),
                 Step::Check(Check::Password {
                     text: Password::from("zq9"),
-                    confirm: true
+                    entry: PasswordEntry::Confirm
                 }),
                 Step::Check(Check::PromptCancel),
                 Step::Check(Check::Password {
                     text: Password::from("測試密碼2026"),
-                    confirm: false
+                    entry: PasswordEntry::Type
+                }),
+                Step::Check(Check::Password {
+                    text: Password::from("ab"),
+                    entry: PasswordEntry::Compose
                 }),
             ]
         );

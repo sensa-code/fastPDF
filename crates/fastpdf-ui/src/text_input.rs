@@ -151,6 +151,11 @@ impl TextInput {
         self.text.is_empty()
     }
 
+    /// An IME composition is in progress (its text is not final yet).
+    pub(crate) fn composing(&self) -> bool {
+        self.marked.is_some()
+    }
+
     pub(crate) fn focus_handle(&self) -> &FocusHandle {
         &self.focus
     }

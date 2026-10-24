@@ -66,6 +66,7 @@
 //! | `wait-prompt=password` | waits until the password prompt waits for input (`checks.rs`) |
 //! | `password=TEXT` | types TEXT into the password prompt and confirms it; fixture passwords only, never logged (`checks.rs`) |
 //! | `password-text=TEXT` | only types TEXT into the password prompt (to see the masked field) (`checks.rs`) |
+//! | `password-compose=TEXT` | puts TEXT into the password prompt as an unfinished IME composition (`checks.rs`) |
 //! | `prompt-cancel` | cancels the prompt, like Esc (`checks.rs`) |
 //! | `wait-labels` | asks for the page labels and waits for the answer (`labels.rs`) |
 //! | `expect-label=TEXT` | stops the script unless the current page is labeled TEXT (`labels.rs`) |
