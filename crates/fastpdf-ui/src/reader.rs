@@ -1,7 +1,5 @@
 //! The reader window's root view: document state, commands, input.
 
-use std::future::Future;
-use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -12,50 +10,46 @@ use fastpdf_core::memory::MemoryMonitor;
 use fastpdf_core::recent::RecentFiles;
 use fastpdf_core::{DocumentSession, ScrollAxis, SessionConfig};
 use fastpdf_engine_api::write::{WriteError, WriteJob, WriteReport};
-use fastpdf_engine_api::{CancelToken, ColorMode, EngineDocument, PageIndex, PageRect, PdfEngine};
+use fastpdf_engine_api::{CancelToken, ColorMode, PageIndex, PageRect, PdfEngine};
 use fastpdf_search::TextCache;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{
     App, AppContext, Bounds, ClickEvent, ClipboardItem, Context, Entity, ExternalPaths,
     FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ParentElement, PathPromptOptions, PinchEvent, Pixels, Render, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, TitlebarOptions, Window,
-    WindowAppearance, WindowBounds, WindowHandle, WindowOptions, canvas, div,
-    prelude::FluentBuilder, px, size,
+    ParentElement, PinchEvent, Pixels, Render, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, TitlebarOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, canvas, div, prelude::FluentBuilder, px, size,
 };
 
 use crate::actions::{KEY_CONTEXT, all_actions};
 use crate::bench::{BenchEvent, BenchHook};
-use crate::document::{OpenFailure, Opened, open_document_blocking};
+use crate::document::OpenFailure;
 use crate::find::{FindBar, SearchTarget};
 use crate::i18n::{Language, Strings};
+use crate::opening::{APP_TITLE, is_pdf};
 use crate::overlay::DevOverlay;
 use crate::print::PrintPanel;
 use crate::scrollbar::{Drag, Hit, ScrollBarState};
 use crate::select::{PagePoint, TextSelection};
-use crate::settings::{
-    Appearance, DefaultZoom, MIN_WINDOW, PageLayout, Settings, SettingsStore, WindowPlacement,
-};
+use crate::settings::{DefaultZoom, MIN_WINDOW, PageLayout, Settings, SettingsStore};
 use crate::sidebar::Sidebar;
 use crate::signing::SignaturePanel;
 use crate::smooth_scroll::{PageTurn, SmoothScroll};
 use crate::stamps::StampPanel;
-use crate::startup::{SessionParts, Startup, default_window_size};
+use crate::startup::{SessionParts, Startup};
 use crate::text_edits::TextEditPanel;
 use crate::textures::{DEFAULT_UPLOAD_BUDGET, TileImage, TileTextures};
 use crate::theme::{ActiveTheme, Theme};
 use crate::toolbar;
 use crate::tools::ToolsPanel;
+use crate::window_placement::{apply_window_appearance, initial_window_bounds};
 
 /// Scroll distance of one wheel "line" and of the arrow keys, in logical
 /// pixels (three lines per wheel notch at the Windows default).
 const LINE_SCROLL_PX: f32 = 33.0;
 /// Ctrl + wheel: logical pixels of wheel travel that double the zoom.
 const WHEEL_PX_PER_ZOOM_DOUBLING: f32 = 400.0;
-/// Recent files listed in the empty window.
-const RECENT_SHOWN: usize = 10;
-const APP_TITLE: &str = "FastPDF";
 
 /// Runs a write job (ADR 0013) to its end on the calling thread; the app
 /// runs it in an isolated child process. The reader calls it from a
@@ -157,78 +151,6 @@ pub fn open_reader_window(
     Ok(handle)
 }
 
-/// How long the window must stay put before its placement is saved.
-const PLACEMENT_SETTLE: std::time::Duration = std::time::Duration::from_millis(600);
-/// Part of a restored window's top edge that must lie on a display, so the
-/// title bar can still be grabbed (a monitor may have been unplugged).
-const GRIP: (f32, f32) = (120.0, 24.0);
-
-/// Asks the platform to draw native window chrome in the chosen appearance.
-/// GPUI implements this on macOS only; on Windows (this GPUI revision) the
-/// title bar keeps following the system, while everything FastPDF paints
-/// follows the setting.
-pub(crate) fn apply_window_appearance(appearance: Appearance, cx: &mut App) {
-    cx.set_window_appearance(match appearance {
-        Appearance::System => None,
-        Appearance::Light => Some(WindowAppearance::Light),
-        Appearance::Dark => Some(WindowAppearance::Dark),
-    });
-}
-
-/// The saved placement when it is still on a display, else a default
-/// window centered on the primary display.
-fn initial_window_bounds(saved: Option<WindowPlacement>, cx: &App) -> WindowBounds {
-    if let Some(p) = saved.filter(WindowPlacement::is_plausible) {
-        let bounds = Bounds::new(
-            gpui::point(px(p.x), px(p.y)),
-            size(px(p.width), px(p.height)),
-        );
-        let displays: Vec<Bounds<Pixels>> = cx.displays().iter().map(|d| d.bounds()).collect();
-        if grip_visible(bounds, &displays) {
-            return if p.maximized {
-                WindowBounds::Maximized(bounds)
-            } else {
-                WindowBounds::Windowed(bounds)
-            };
-        }
-        log::info!("the saved window placement is off screen; using the default");
-    }
-    WindowBounds::Windowed(Bounds::centered(None, default_window_size_on(cx), cx))
-}
-
-/// Whether enough of the window's top edge is on one of `displays`.
-fn grip_visible(window: Bounds<Pixels>, displays: &[Bounds<Pixels>]) -> bool {
-    let top = Bounds::new(window.origin, size(window.size.width, px(GRIP.1)));
-    displays.iter().any(|d| {
-        let seen = d.intersect(&top);
-        seen.size.width >= px(GRIP.0) && seen.size.height >= px(GRIP.1)
-    })
-}
-
-/// What to save for the window's current bounds (the restore bounds when
-/// maximized; full screen is saved as its windowed bounds).
-fn placement_of(bounds: WindowBounds) -> WindowPlacement {
-    let b = bounds.get_bounds();
-    WindowPlacement {
-        x: f32::from(b.origin.x),
-        y: f32::from(b.origin.y),
-        width: f32::from(b.size.width),
-        height: f32::from(b.size.height),
-        maximized: matches!(bounds, WindowBounds::Maximized(_)),
-    }
-}
-
-/// A portrait window that fits the primary display (the same size
-/// `crate::startup` predicts).
-fn default_window_size_on(cx: &App) -> gpui::Size<Pixels> {
-    let Some(display) = cx.primary_display() else {
-        return size(px(1024.0), px(768.0));
-    };
-    let screen = display.bounds().size;
-    let (width, height) = default_window_size(f32::from(screen.width), f32::from(screen.height));
-    size(px(width), px(height))
-}
-
 /// Wakes the UI thread from any thread; see the crate docs.
 #[derive(Clone, Debug)]
 pub(crate) struct Waker(pub(crate) mpsc::UnboundedSender<()>);
@@ -312,9 +234,9 @@ pub struct ReaderView {
     pub(crate) settings_open: bool,
     /// Window bounds when the window opened: a window the user never moved
     /// or resized does not overwrite the saved placement.
-    initial_bounds: WindowBounds,
+    pub(crate) initial_bounds: WindowBounds,
     /// Saves the placement once the window stops moving (debounce).
-    bounds_task: Option<Task<()>>,
+    pub(crate) bounds_task: Option<Task<()>>,
     /// The Windows UI language (the settings may override it).
     system_language: Language,
     /// Language the text fields' placeholders were last set in.
@@ -322,7 +244,7 @@ pub struct ReaderView {
     /// Mouse-wheel notches in flight (`crate::smooth_scroll`).
     pub(crate) smooth_scroll: SmoothScroll,
     /// Page mode: wheel travel past the edge of the shown row.
-    page_turn: PageTurn,
+    pub(crate) page_turn: PageTurn,
     /// The document area's scroll bars (`crate::scrollbar`).
     pub(crate) scrollbars: ScrollBarState,
     pub(crate) menus: MenuState,
@@ -334,7 +256,7 @@ pub struct ReaderView {
     pub(crate) text_edits: TextEditPanel,
     /// The signature panel.
     pub(crate) signing: SignaturePanel,
-    open_task: Option<Task<()>>,
+    pub(crate) open_task: Option<Task<()>>,
     pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
     _appearance: Subscription,
@@ -528,237 +450,6 @@ impl ReaderView {
         self.print.drain();
         self.tools.drain();
         cx.notify();
-    }
-
-    // ---- opening and closing ---------------------------------------------
-
-    /// Opens `path`, replacing the current document.
-    pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let path = std::path::absolute(&path).unwrap_or(path);
-        let engine = Arc::clone(&self.options.engine);
-        let open_path = path.clone();
-        let task = cx.background_executor().spawn(async move {
-            open_document_blocking(engine.as_ref(), &open_path).map(Opened::from)
-        });
-        self.begin_open(path, task, window, cx);
-    }
-
-    fn begin_open(
-        &mut self,
-        path: PathBuf,
-        result: impl Future<Output = Result<Opened, OpenFailure>> + 'static,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.close_document(window, cx);
-        self.doc = DocState::Loading { path: path.clone() };
-        // Replacing the task drops (cancels) any open still in progress; its
-        // background work finishes and the result is discarded.
-        self.open_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = result.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.finish_open(path, result, window, cx);
-            });
-        }));
-        cx.notify();
-    }
-
-    fn finish_open(
-        &mut self,
-        path: PathBuf,
-        result: Result<Opened, OpenFailure>,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        // A newer open replaced this one.
-        if !matches!(&self.doc, DocState::Loading { path: p } if *p == path) {
-            return;
-        }
-        let Opened {
-            doc: opened,
-            session,
-        } = match result {
-            Ok(opened) => opened,
-            Err(failure) => {
-                log::warn!("cannot open {}: {failure}", path.display());
-                self.doc = DocState::Failed { failure, path };
-                window.set_window_title(APP_TITLE);
-                cx.notify();
-                return;
-            }
-        };
-
-        let session = match session {
-            // Started while GPUI was starting; the first frame resizes it to
-            // the real document area if the guess was off. Night mode or the
-            // default zoom may have changed while the document was opening:
-            // nothing of it has been shown yet, so apply the current ones.
-            Some(mut session) => {
-                session.set_color_mode(self.color_mode());
-                session.set_layout_mode(self.settings.layout_mode());
-                apply_default_zoom(&mut session, self.settings.default_zoom);
-                session
-            }
-            None => {
-                let (view_size, scale) = self.viewport_estimate(window);
-                self.session_parts().session(&opened, view_size, scale)
-            }
-        };
-        self.memory
-            .manager()
-            .register(session.tile_cache().budgeted());
-        self.memory.watch(&opened.doc);
-
-        let name: SharedString = display_name(&opened.path).into();
-        window.set_window_title(&format!("{name} - {APP_TITLE}"));
-        log::info!(
-            "session for {} ({} pages, engine {})",
-            opened.path.display(),
-            opened.doc.page_count(),
-            opened.doc.engine().name
-        );
-        self.remember_recent(opened.path.clone(), cx);
-        self.doc = DocState::Open(Box::new(OpenDoc {
-            session,
-            path: opened.path,
-            name,
-            opened_at: Instant::now(),
-            exact_reported: false,
-        }));
-        self.report(BenchEvent::DocumentOpened);
-        // Panels that were open carry over to the new document.
-        if self.sidebar.open {
-            self.ensure_outline(cx);
-            self.sync_thumbnails(window);
-        }
-        if self.find.open {
-            let query = self.find.input.read(cx).text().to_string();
-            self.on_find_query(query, cx);
-        }
-        cx.notify();
-    }
-
-    /// Closes the current document and frees its GPU textures, its cached
-    /// text and (once a running print job has stopped) the engine document.
-    fn close_document(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        self.find.reset(cx);
-        self.selection.reset();
-        self.sidebar.reset_document();
-        self.smooth_scroll.stop();
-        self.page_turn = PageTurn::default();
-        self.scrollbars.clear();
-        self.stamps.reset_document();
-        self.text_edits.reset_document();
-        // A print job keeps the document alive until it stops.
-        self.print.cancel_job();
-        if let DocState::Open(open) = mem::replace(&mut self.doc, DocState::Empty) {
-            let OpenDoc {
-                mut session, path, ..
-            } = *open;
-            log::info!("closing {}", path.display());
-            // The text cache is shared by all documents (spec §15).
-            self.texts.remove_document(session.id());
-            // Cancel rendering and evict every tile and thumbnail (they
-            // reach the retire queue), then release every texture.
-            session.close();
-            self.textures.release_all(window);
-            // Dropping the session joins its render workers, which may wait
-            // for a page that is still rasterizing: keep that off the UI thread.
-            // A text extraction that was running when the document closed
-            // (search thread, selection) may still have added its page;
-            // sweep once more after the workers are gone.
-            let document = session.id();
-            let texts = Arc::clone(&self.texts);
-            cx.background_executor()
-                .spawn(async move {
-                    drop(session);
-                    texts.remove_document(document);
-                })
-                .detach();
-            window.set_window_title(APP_TITLE);
-            self.load_recent(cx);
-        } else if !matches!(self.doc, DocState::Empty) {
-            self.doc = DocState::Empty;
-        }
-        cx.notify();
-    }
-
-    fn remember_recent(&mut self, path: PathBuf, cx: &mut Context<'_, Self>) {
-        let Some(storage) = self.options.recent_files.clone() else {
-            return;
-        };
-        self.recent.retain(|p| !same_file(p, &path));
-        self.recent.insert(0, path.clone());
-        self.recent.truncate(RECENT_SHOWN);
-        cx.background_executor()
-            .spawn(async move {
-                let mut recent = RecentFiles::load(storage, RecentFiles::DEFAULT_MAX);
-                recent.add(&path);
-                if let Err(e) = recent.save() {
-                    log::warn!("cannot save the recent files list: {e}");
-                }
-            })
-            .detach();
-    }
-
-    /// Reads the recent-files list in the background (empty window).
-    fn load_recent(&mut self, cx: &mut Context<'_, Self>) {
-        let Some(storage) = self.options.recent_files.clone() else {
-            return;
-        };
-        let read = cx.background_executor().spawn(async move {
-            RecentFiles::load(storage, RecentFiles::DEFAULT_MAX)
-                .entries()
-                .iter()
-                .take(RECENT_SHOWN)
-                .cloned()
-                .collect::<Vec<_>>()
-        });
-        cx.spawn(async move |this, cx| {
-            let recent = read.await;
-            let _ = this.update(cx, |this, cx| {
-                this.recent = recent;
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn prompt_open(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let paths = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = paths.await else {
-                return;
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-            let _ = this.update_in(cx, |this, window, cx| this.open_path(path, window, cx));
-        })
-        .detach();
-    }
-
-    /// Size and scale for a new session before its first layout.
-    fn viewport_estimate(&self, window: &Window) -> ((f32, f32), f32) {
-        let scale = window.scale_factor();
-        match self.viewport_bounds {
-            Some(b) => ((f32::from(b.size.width), f32::from(b.size.height)), scale),
-            None => {
-                let s = window.viewport_size();
-                (
-                    (
-                        f32::from(s.width),
-                        (f32::from(s.height) - toolbar::HEIGHT).max(1.0),
-                    ),
-                    scale,
-                )
-            }
-        }
     }
 
     // ---- commands -----------------------------------------------------------
@@ -1380,7 +1071,7 @@ impl ReaderView {
     }
 
     /// Everything a new session needs besides the document.
-    fn session_parts(&self) -> SessionParts {
+    pub(crate) fn session_parts(&self) -> SessionParts {
         SessionParts {
             config: SessionConfig {
                 layout: self.settings.layout_mode(),
@@ -1408,24 +1099,6 @@ impl ReaderView {
         self.settings_store.save(&self.settings, &executor);
     }
 
-    /// The window moved, was resized, maximized or restored: remember the
-    /// placement once it has been still for a moment. A window that never
-    /// left its initial (default) placement writes nothing.
-    fn window_moved(&mut self, bounds: WindowBounds, cx: &mut Context<'_, Self>) {
-        if bounds == self.initial_bounds && self.settings.window.is_none() {
-            self.bounds_task = None;
-            return;
-        }
-        // Replacing the task cancels the previous wait.
-        self.bounds_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(PLACEMENT_SETTLE).await;
-            let _ = this.update(cx, |this, cx| {
-                this.settings.window = Some(placement_of(bounds));
-                this.save_settings(cx);
-            });
-        }));
-    }
-
     pub(crate) fn settings_path(&self) -> Option<&Path> {
         self.settings_store.path()
     }
@@ -1451,23 +1124,6 @@ fn reveal(session: &mut DocumentSession<TileImage>, page: PageIndex, rect: PageR
         };
         session.scroll_by(dx, r[1] - vp.height / 3.0);
     }
-}
-
-fn is_pdf(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
-}
-
-/// Windows paths are case-insensitive.
-fn same_file(a: &Path, b: &Path) -> bool {
-    a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-}
-
-pub(crate) fn display_name(path: &Path) -> String {
-    path.file_name().map_or_else(
-        || path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    )
 }
 
 impl Render for ReaderView {
@@ -1595,144 +1251,6 @@ impl ReaderView {
             .when(self.settings_open, |area| {
                 area.child(self.render_settings_panel(cx))
             })
-    }
-
-    /// Shown over the document once its render host stopped restarting
-    /// after a crash storm (ADR 0008 §2): every page fails from then on,
-    /// and the pages alone would not say why.
-    fn render_host_notice(&self) -> Option<gpui::Div> {
-        let DocState::Open(doc) = &self.doc else {
-            return None;
-        };
-        let status = doc.session.document().host_status()?;
-        if !status.restarts_disabled {
-            return None;
-        }
-        let theme = self.theme;
-        Some(
-            div()
-                .absolute()
-                .bottom(px(8.0))
-                .left(px(8.0))
-                .max_w(px(520.0))
-                .p_2()
-                .rounded(px(6.0))
-                .bg(theme.toolbar_bg)
-                .border_1()
-                .border_color(theme.toolbar_border)
-                .text_size(px(13.0))
-                .text_color(theme.error_text)
-                .child(self.strings().rendering_stopped(status.crashes)),
-        )
-    }
-
-    /// Text shown instead of a document: the empty state with recent files,
-    /// progress, errors.
-    fn placeholder(&self, cx: &mut Context<'_, Self>) -> Option<impl IntoElement + use<>> {
-        let theme = self.theme;
-        let strings = self.strings();
-        let (title, detail, is_error): (String, String, bool) = match &self.doc {
-            DocState::Open(_) => return None,
-            DocState::Empty => (APP_TITLE.into(), strings.empty_hint.into(), false),
-            DocState::Loading { path } => {
-                (strings.opening(&display_name(path)), String::new(), false)
-            }
-            DocState::Failed { path, failure } => (
-                strings.cannot_open(&display_name(path)),
-                strings.open_failure(failure),
-                true,
-            ),
-        };
-        let recent = if matches!(self.doc, DocState::Empty) {
-            self.render_recent(cx)
-        } else {
-            None
-        };
-        Some(
-            div()
-                .absolute()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .p_4()
-                .child(div().text_size(px(22.0)).child(title))
-                .when(!detail.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .max_w(px(640.0))
-                            .text_size(px(14.0))
-                            .text_color(if is_error {
-                                theme.error_text
-                            } else {
-                                theme.text_muted
-                            })
-                            .child(detail),
-                    )
-                })
-                .when_some(recent, |d, recent| d.child(recent)),
-        )
-    }
-
-    /// Clickable recent files (spec §8 "Open Recent").
-    fn render_recent(&self, cx: &mut Context<'_, Self>) -> Option<gpui::Div> {
-        if self.recent.is_empty() {
-            return None;
-        }
-        let theme = self.theme;
-        let rows: Vec<_> = self
-            .recent
-            .iter()
-            .enumerate()
-            .map(|(i, path)| {
-                let name = display_name(path);
-                let dir = path
-                    .parent()
-                    .map(|d| d.display().to_string())
-                    .unwrap_or_default();
-                let open = path.clone();
-                div()
-                    .id(("recent", i))
-                    .flex()
-                    .flex_col()
-                    .px_3()
-                    .py_1()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(theme.button_hover))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.open_path(open.clone(), window, cx);
-                    }))
-                    .child(div().text_size(px(14.0)).child(name))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.text_muted)
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(dir),
-                    )
-            })
-            .collect();
-        Some(
-            div()
-                .mt_4()
-                .w(px(480.0))
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .px_3()
-                        .text_size(px(13.0))
-                        .text_color(theme.text_muted)
-                        .child(self.strings().recent),
-                )
-                .children(rows),
-        )
     }
 
     /// Page `page` as shown in the toolbar ("12 / 345").

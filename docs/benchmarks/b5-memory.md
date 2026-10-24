@@ -26,7 +26,7 @@ fastpdf-bench scroll <file.pdf> [--viewport WxH] [--zoom PCT] [--step PX] [--til
 - 用 `fastpdf_core::DocumentSession<Arc<Pixmap>>` 開檔（與 app 相同的 `loader::load` → `open_guarded`；800 MiB 檔是 mmap），viewport 1920×1080、device scale 1.0、zoom 100%，tile 512 px、4 個 scheduler worker（機器預設）。
 - 腳本：第 1 頁開始，每步 `scroll_by(0, 972)`（Page Down 的 90%）直到最後一頁；目前頁到達 25%、50%、75% 時各做一次縮放：以畫面中心 `zoom_in` 8 次（110%…400%）再 `zoom_out` 8 次回 100%；最後 `first_page()` 跳回開頭。
 - 每一步呼叫 `frame()`，直到可見 tile 全部是精確解析度（`pending == 0`），用 session 的 wake hook 等待，逾時（預設 30 s）記為 unsettled。
-- 記憶體管理照 app 接線（`fastpdf-ui/src/reader.rs`）：`MemoryBudgetManager::new(BudgetConfig)`、`register(session.tile_cache().budgeted())`、`MemoryMonitor::new` + `watch(&doc)`，每次 frame 都 `poll()`（monitor 自己限制每秒最多取樣一次）。
+- 記憶體管理照 app 接線（`fastpdf-ui/src/reader.rs`、`opening.rs`）：`MemoryBudgetManager::new(BudgetConfig)`、`register(session.tile_cache().budgeted())`、`MemoryMonitor::new` + `watch(&doc)`，每次 frame 都 `poll()`（monitor 自己限制每秒最多取樣一次）。
 - 每 N 步（`--sample-every`，2000 頁檔用 20）加上每個縮放步、跳回、逾時步都記一筆時間序列：private bytes、working set、external（private − 已登錄 cache）、`EngineDocument::memory_usage()`、tile cache bytes／entries／evictions、scheduler 統計、pressure、Hayro 內部計數（block cache、content stream、render context 估計、decode budget、執行緒、trim 次數）。
 - 結束時另外量三個點：**after idle**（停止操作 6 s，tile 還在）、**after close**（`session.close()` 釋放所有 tile，文件仍開著）、**after drop**（session 與文件都釋放）。
 - 輸出 JSON（`--out`），stderr 印一行摘要。

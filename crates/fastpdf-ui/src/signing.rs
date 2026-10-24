@@ -22,7 +22,8 @@ use gpui::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::reader::{DocState, ReaderView, display_name};
+use crate::opening::display_name;
+use crate::reader::{DocState, ReaderView};
 use crate::text_input::TextInput;
 use crate::toolbar::styled_button;
 

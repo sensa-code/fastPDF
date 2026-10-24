@@ -26,7 +26,7 @@ impl ReaderView {
     /// Chrome colors: follow Windows, or always light / dark.
     pub(crate) fn set_appearance(&mut self, appearance: Appearance, cx: &mut Context<'_, Self>) {
         self.settings.appearance = appearance;
-        crate::reader::apply_window_appearance(appearance, cx);
+        crate::window_placement::apply_window_appearance(appearance, cx);
         self.save_settings(cx);
         cx.notify();
     }

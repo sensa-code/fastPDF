@@ -629,7 +629,8 @@ impl<'c> Script<'c> {
             // Evicted tiles only need dropping (no GPU textures here).
             |_: Vec<(TileKey, Arc<Pixmap>)>| {},
         );
-        // Wired exactly like the reader window (fastpdf-ui `reader.rs`).
+        // Wired exactly like the reader window (fastpdf-ui `reader.rs`,
+        // `opening.rs`).
         let manager = Arc::new(MemoryBudgetManager::new(config.budget()));
         manager.register(session.tile_cache().budgeted());
         let mut monitor = MemoryMonitor::new(manager);

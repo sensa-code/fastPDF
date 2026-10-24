@@ -22,7 +22,8 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 
-use crate::reader::{ReaderView, display_name};
+use crate::opening::display_name;
+use crate::reader::ReaderView;
 use crate::toolbar::styled_button;
 
 /// Stamp images remembered at most. With four previews of at most

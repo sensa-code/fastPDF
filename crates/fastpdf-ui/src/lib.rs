@@ -44,8 +44,10 @@ mod actions;
 mod bench;
 mod devscript;
 mod document;
+mod empty_state;
 mod find;
 mod i18n;
+mod opening;
 mod overlay;
 mod print;
 mod reader;
@@ -65,6 +67,7 @@ mod theme;
 mod toolbar;
 mod tools;
 mod viewport;
+mod window_placement;
 
 pub use actions::{KEY_CONTEXT, bind_keys};
 pub use bench::{BenchEvent, BenchHook};
