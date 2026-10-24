@@ -8,7 +8,7 @@
 use fastpdf_core::FramePage;
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_core::links::LinkAction;
-use fastpdf_shell::{ExternalUri, UriKind, check_external_uri};
+use fastpdf_shell::{UriKind, check_external_uri};
 use gpui::{
     AnyElement, BorderStyle, Bounds, ClickEvent, Context, Div, FontWeight, InteractiveElement,
     IntoElement, ParentElement, Pixels, Point, StatefulInteractiveElement, Styled, Window, div,
@@ -16,6 +16,7 @@ use gpui::{
 };
 
 use crate::link_open::LinkNotice;
+use crate::link_target::{Keep, external_target, label_and_value};
 use crate::links::HoverTarget;
 use crate::prompt::prompt_card;
 use crate::reader::ReaderView;
@@ -45,19 +46,19 @@ impl ReaderView {
                 strings.link_go_to_page(destination.page.display_number()),
                 theme.text,
             ),
-            // Where it goes, with the end kept: a host is read from its end
-            // (`login.example.com.evil.example` belongs to evil.example).
+            // Where it goes, with the part that says whose it is in view.
             HoverTarget::External(uri) => {
                 let label = match uri.kind() {
                     UriKind::Web => strings.link_open_web(),
                     UriKind::Mail => strings.link_send_mail(),
                 };
+                let (value, keep) = external_target(uri);
                 return Some(
                     chip.flex()
                         .flex_row()
                         .gap_1()
                         .text_color(theme.text)
-                        .child(label_and_value(label, external_target(uri).to_owned())),
+                        .child(label_and_value(label, value, keep)),
                 );
             }
             HoverTarget::Blocked(why) => (
@@ -162,7 +163,11 @@ impl ReaderView {
                         .flex_row()
                         .gap_1()
                         .font_weight(FontWeight::BOLD)
-                        .child(label_and_value(strings.link_prompt_site(), host.to_owned())),
+                        .child(label_and_value(
+                            strings.link_prompt_site(),
+                            host.to_owned(),
+                            Keep::End,
+                        )),
                 )
             })
             .child(
@@ -264,80 +269,5 @@ impl ReaderView {
                 window.paint_quad(outline(bounds, color, BorderStyle::Solid));
             }
         }
-    }
-}
-
-/// What a chip names for an external link: the host of a web address, the
-/// recipients of a mail link, or its whole address when the query names
-/// recipients too (`mailto:a@x?bcc=b@y` must not read as mail to a@x only).
-fn external_target(uri: &ExternalUri) -> &str {
-    match uri.kind() {
-        UriKind::Web => uri.host().unwrap_or(uri.as_str()),
-        UriKind::Mail => uri.mail_recipients().unwrap_or(uri.as_str()),
-    }
-}
-
-/// A label and a value on one line; a value too long for it loses its
-/// start, never its end (where a host says whose it is).
-fn label_and_value(label: &'static str, value: String) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_row()
-        .gap_1()
-        .min_w_0()
-        .child(div().flex_none().whitespace_nowrap().child(label))
-        .child(
-            div()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis_start()
-                .child(value),
-        )
-}
-
-#[cfg(test)]
-mod tests {
-    use fastpdf_shell::check_external_uri;
-
-    use super::*;
-
-    fn target(raw: &str) -> String {
-        match check_external_uri(raw) {
-            Ok(uri) => external_target(&uri).to_owned(),
-            Err(why) => panic!("{raw}: {why:?}"),
-        }
-    }
-
-    #[test]
-    fn chips_name_the_host_or_the_recipients() {
-        assert_eq!(
-            target("https://login.microsoftonline.com.oauth2-authorize-session.evil.example/a?b"),
-            "login.microsoftonline.com.oauth2-authorize-session.evil.example"
-        );
-        assert_eq!(
-            target("https://b\u{fc}cher.example/"),
-            "xn--bcher-kva.example"
-        );
-        assert_eq!(
-            target("mailto:a@example.invalid,b@example.invalid?subject=x"),
-            "a@example.invalid,b@example.invalid"
-        );
-        assert_eq!(
-            target("mailto:?to=a@example.invalid"),
-            "mailto:?to=a@example.invalid"
-        );
-        for whole in [
-            "mailto:a@example.invalid?bcc=b@example.invalid",
-            "mailto:a@example.invalid?subject=x&CC=b@example.invalid",
-            "mailto:a@example.invalid?%74o=b@example.invalid",
-            "mailto:a@example.invalid?=b@example.invalid",
-        ] {
-            assert_eq!(target(whole), whole);
-        }
-        assert_eq!(
-            target("mailto:a@example.invalid?Subject=x&body=y"),
-            "a@example.invalid"
-        );
     }
 }

@@ -65,14 +65,20 @@ impl ExternalUri {
         self.text.split(':').next().unwrap_or_default()
     }
 
-    /// The recipients of a mail link when it names them all before `?`
-    /// (its query only writes the subject, text or reply reference); `None`
-    /// otherwise and for a web address: then only the whole address says
-    /// who gets the mail.
-    pub fn mail_recipients(&self) -> Option<&str> {
+    /// Who a mail link writes to, as the address spells it (percent
+    /// encoding kept, so nothing decoded can hide or reorder text): the
+    /// recipients before `?`, then the value of each query field that does
+    /// more than write the text (`to`, `cc`, `bcc`, one without a name).
+    /// Empty when it names nobody; `None` for a web address.
+    pub fn mail_recipients(&self) -> Option<Vec<&str>> {
         let rest = self.text.strip_prefix("mailto:")?;
-        let (recipients, query) = rest.split_once('?').unwrap_or((rest, ""));
-        (!recipients.is_empty() && mailto::only_writes_text(query)).then_some(recipients)
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let path = Some(path).filter(|path| !path.is_empty());
+        Some(
+            path.into_iter()
+                .chain(mailto::recipient_values(query))
+                .collect(),
+        )
     }
 }
 

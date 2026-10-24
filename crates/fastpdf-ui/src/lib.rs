@@ -58,6 +58,7 @@ mod i18n;
 mod input;
 mod link_open;
 mod link_prompt;
+mod link_target;
 mod links;
 mod navigation;
 mod opening;

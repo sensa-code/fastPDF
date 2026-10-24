@@ -34,37 +34,49 @@ pub(super) fn refused_field(query: &str) -> Option<String> {
         })
 }
 
-/// Whether every field of `query` only writes the mail's text, so the
-/// recipients before `?` are all of them. A field without a name counts as
-/// one that does not.
-pub(super) fn only_writes_text(query: &str) -> bool {
-    form_urlencoded::parse(query.as_bytes())
-        .all(|(name, _)| TEXT_FIELDS.iter().any(|ok| name.eq_ignore_ascii_case(ok)))
+/// The values of the fields of `query` that do more than write the mail's
+/// text (`to`, `cc`, `bcc`, or a field without a name, whatever a mail app
+/// makes of it), as the address writes them (still percent-encoded), in
+/// order. Fields are split and names decoded as [`refused_field`] does.
+pub(super) fn recipient_values(query: &str) -> impl Iterator<Item = &str> {
+    query.split('&').filter_map(|field| {
+        let (name, value) = field.split_once('=').unwrap_or((field, ""));
+        let name = form_urlencoded::parse(name.as_bytes())
+            .next()
+            .map(|(name, _)| name)
+            .unwrap_or_default();
+        let text = TEXT_FIELDS.iter().any(|ok| name.eq_ignore_ascii_case(ok));
+        (!text && !value.is_empty()).then_some(value)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn values(query: &str) -> Vec<&str> {
+        recipient_values(query).collect()
+    }
+
     #[test]
-    fn only_text_fields_leave_the_recipients_alone() {
+    fn recipients_are_every_field_that_does_more_than_write_text() {
         for text in [
             "",
             "subject=x",
             "Subject=x&BODY=y&in-reply-to=z",
             "&&subject=x",
+            "to=&cc",
         ] {
-            assert!(only_writes_text(text), "{text}");
+            assert!(values(text).is_empty(), "{text}");
         }
-        for adds in [
-            "to=b@example.invalid",
-            "subject=x&bcc=b@example.invalid",
-            "%62cc=b@example.invalid",
-            "CC=b@example.invalid",
-            "=b@example.invalid",
-        ] {
-            assert!(!only_writes_text(adds), "{adds}");
-        }
+        assert_eq!(
+            values("subject=x&bcc=b@example.invalid&body=y&CC=c%40example.invalid"),
+            ["b@example.invalid", "c%40example.invalid"]
+        );
+        assert_eq!(
+            values("%62cc=b@example.invalid&=c@example.invalid&to=d=e"),
+            ["b@example.invalid", "c@example.invalid", "d=e"]
+        );
     }
 
     #[test]
