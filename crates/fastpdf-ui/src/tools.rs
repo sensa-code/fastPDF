@@ -918,6 +918,9 @@ impl ReaderView {
         let saving = matches!(notice, WriteNotice::Saving);
         Some(
             div()
+                // Presses on it (its buttons) must not reach the page below:
+                // a press there would also click a link of the page.
+                .occlude()
                 .absolute()
                 .bottom(px(8.0 + crate::scrollbar::THICKNESS))
                 .left(px(8.0))

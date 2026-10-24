@@ -26,6 +26,8 @@ impl ReaderView {
         let theme = self.theme;
         Some(
             div()
+                // Presses on it do not reach the page (or a link) below.
+                .occlude()
                 .absolute()
                 .bottom(px(8.0))
                 .left(px(8.0))
