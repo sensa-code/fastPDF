@@ -104,13 +104,8 @@ pub(crate) struct TextInput {
 
 impl std::fmt::Debug for TextInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let text: &dyn std::fmt::Debug = if self.secret {
-            &"<redacted>"
-        } else {
-            &self.text
-        };
         f.debug_struct("TextInput")
-            .field("text", text)
+            .field("text", &secret::Shown::new(&self.text, self.secret))
             .field("selected", &self.selected)
             .field("marked", &self.marked)
             .finish_non_exhaustive()
@@ -315,8 +310,7 @@ impl TextInput {
             return;
         };
         if let Some(text) = item.text() {
-            // Single line: line breaks become spaces (a password drops them).
-            let line = text.replace(['\r', '\n'], if self.secret { "" } else { " " });
+            let line = secret::pasted_line(&text, self.secret);
             self.replace_text_in_range(None, &line, window, cx);
             self.discard(line);
             self.discard(text);
@@ -386,14 +380,10 @@ impl TextInput {
     }
 
     /// Replaces `range` with `new_text`, returning where the inserted text
-    /// is (a secret field keeps what fits). Pure text bookkeeping shared by
-    /// the IME entry points.
+    /// is (a secret field keeps what fits). Shared by the IME entry points.
     fn splice(&mut self, range: Range<usize>, new_text: &str) -> Range<usize> {
-        let start = range.start.min(self.text.len());
-        let end = range.end.clamp(start, self.text.len());
-        let new_text = self.fitting(new_text, self.text.len() - (end - start));
-        self.text.replace_range(start..end, new_text);
-        start..start + new_text.len()
+        let cap = self.byte_cap();
+        secret::splice_text(&mut self.text, range, new_text, cap)
     }
 }
 
@@ -435,12 +425,9 @@ impl EntityInputHandler for TextInput {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
-        let text = self.text.get(range)?;
-        Some(if self.secret {
-            text_mask::mask(text).to_string()
-        } else {
-            text.to_owned()
-        })
+        self.text
+            .get(range)
+            .map(|text| secret::platform_text(text, self.secret))
     }
 
     fn selected_text_range(
