@@ -160,6 +160,13 @@ impl HitList {
         self.get(next)
     }
 
+    /// Makes hit `index` (clamped to the list) the active one.
+    pub(crate) fn select(&mut self, index: usize) -> Option<&SearchHit> {
+        let index = index.min(self.len.checked_sub(1)?);
+        self.active = Some(index);
+        self.get(index)
+    }
+
     /// Highlight rectangles on `page`; the bool marks the active hit.
     pub(crate) fn on_page(&self, page: PageIndex) -> impl Iterator<Item = (PageRect, bool)> + '_ {
         let bucket = self
@@ -379,6 +386,16 @@ mod tests {
         assert_eq!(list.len(), MAX_HITS);
         assert_eq!(list.insert(vec![hit(1, 0)]), None);
         assert_eq!(list.len(), MAX_HITS);
+    }
+
+    #[test]
+    fn select_clamps() {
+        let mut list = HitList::default();
+        assert!(list.select(3).is_none());
+        list.insert(vec![hit(1, 0), hit(1, 4)]);
+        assert_eq!(list.select(9).map(|h| h.start), Some(4));
+        assert_eq!(list.active_index(), Some(1));
+        assert_eq!(list.select(0).map(|h| h.start), Some(0));
     }
 
     #[test]

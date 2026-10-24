@@ -1,4 +1,4 @@
-//! The sidebar (F4; spec §20: closed by default). Two tabs:
+//! The sidebar (F4; spec §20: closed by default). Three tabs:
 //!
 //! * **Outline** — bookmarks, loaded on a background thread the first time
 //!   the sidebar opens for a document; rows are virtualized.
@@ -7,6 +7,8 @@
 //!   only the visible rows plus a margin are ever requested (spec §23).
 //!   Thumbnails are painted on a canvas through the same texture tracking
 //!   as tiles, so evicted ones leave the GPU atlas too.
+//! * **Results** — the find bar's search results (`crate::search_results`).
+//!   Never saved as the tab the sidebar opens with.
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -50,6 +52,8 @@ pub(crate) enum SidebarTab {
     #[default]
     Outline,
     Pages,
+    /// The search result list; never saved in the settings.
+    Results,
 }
 
 /// One visible outline line.
@@ -244,8 +248,12 @@ impl ReaderView {
         // Show the current page when the list appears.
         self.sidebar.thumbs.followed = None;
         self.sync_thumbnails(window);
-        self.settings.sidebar_tab = tab;
-        self.save_settings(cx);
+        // The result list belongs to one search: the sidebar opens with the
+        // tab shown before it.
+        if tab != SidebarTab::Results {
+            self.settings.sidebar_tab = tab;
+            self.save_settings(cx);
+        }
         cx.notify();
     }
 
@@ -371,10 +379,25 @@ impl ReaderView {
                         this.set_sidebar_tab(SidebarTab::Pages, window, cx);
                     }))
                 }),
+            )
+            .child(
+                styled_button(
+                    "tab-results",
+                    strings.results_tab(),
+                    free,
+                    tab == SidebarTab::Results,
+                    &theme,
+                )
+                .when(free, |tab| {
+                    tab.on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.set_sidebar_tab(SidebarTab::Results, window, cx);
+                    }))
+                }),
             );
         let body = match tab {
             SidebarTab::Outline => self.render_outline(view).into_any_element(),
             SidebarTab::Pages => self.render_thumbnails(view, cx).into_any_element(),
+            SidebarTab::Results => self.render_search_results(cx),
         };
         div()
             .id("sidebar")

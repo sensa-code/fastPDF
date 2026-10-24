@@ -29,7 +29,7 @@
 //! | `memory=LABEL` | logs the memory breakdown (info level) |
 //! | `appearance=system`, `=light`, `=dark` | sets the appearance setting |
 //! | `night=on`, `=off`, `=toggle` | sets night mode (inverted pages) |
-//! | `sidebar=off`, `=outline`, `=pages` | closes the sidebar or shows a tab |
+//! | `sidebar=off`, `=outline`, `=pages`, `=results` | closes the sidebar or shows a tab |
 //! | `default-zoom=fit-width`, `=fit-page`, `=actual-size` | sets the default zoom |
 //! | `settings` | shows (or hides) the settings panel |
 //! | `layout-menu` | opens (or closes) the toolbar's page layout menu |
@@ -60,7 +60,7 @@
 //! | `wheel=NOTCHES` | a mouse-wheel turn (negative: up), as the wheel sends it |
 //! | `expect-page=N`, `expect-zoom=PERCENT` | stops the script unless on page N (one-based) or at that zoom (`checks.rs`) |
 //! | `expect-history=B,F` | stops the script unless Back and Forward hold B and F views (`checks.rs`) |
-//! | `expect-focus=find`, `=document`, `=prompt` | stops the script unless the find field (or the reader itself, or the password prompt's field) has the keyboard focus (`checks.rs`) |
+//! | `expect-focus=find`, `=document`, `=prompt`, `=results` | stops the script unless the find field (or the reader itself, the password prompt's field, the search result list) has the keyboard focus (`checks.rs`) |
 //! | `focus=document` | gives the keyboard focus to the reader itself, as a mouse press on the toolbar does (`checks.rs`) |
 //! | `outline=N` | activates outline row N (one-based), once the outline has loaded (`checks.rs`) |
 //! | `wait-prompt=password` | waits until the password prompt waits for input (`checks.rs`) |
@@ -72,6 +72,7 @@
 //! | `expect-label=TEXT` | stops the script unless the current page is labeled TEXT (`labels.rs`) |
 //! | `goto=TEXT` | types TEXT into the page field (a label, a number, `#N`) and presses Enter (`labels.rs`) |
 //! | `find-case=on`, `=off`, `find-word=on`, `=off` | sets the find options match case and whole word, like their toggles (`search.rs`) |
+//! | `find-result=N` | shows search result N (one-based) as a click on its row does; waits while the search runs, stops if it found fewer (`search.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
@@ -206,6 +207,7 @@ fn parse_step(step: &str) -> Option<Step> {
         ("night", Some("off")) => Step::Night(Some(false)),
         ("night", Some("toggle")) => Step::Night(None),
         ("sidebar", Some("off")) => Step::Sidebar(None),
+        ("sidebar", Some("results")) => Step::Sidebar(Some(SidebarTab::Results)),
         ("sidebar", Some(tab)) => Step::Sidebar(Some(tab_from_name(tab)?)),
         ("default-zoom", Some(name)) => Step::DefaultZoom(DefaultZoom::from_name(name)?),
         ("settings", None) => Step::SettingsPanel,

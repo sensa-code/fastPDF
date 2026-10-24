@@ -107,6 +107,15 @@ reader_commands! {
         /// Find: only whole words match (while the find bar is open;
         /// otherwise nothing).
         ToggleWholeWord,
+        /// Lists every search result in the sidebar and puts the keyboard
+        /// in the list (opens the find bar first when it is closed).
+        ShowSearchResults,
+        /// The search result list: the next result becomes the active one.
+        NextResult,
+        /// The search result list: the previous result becomes the active one.
+        PreviousResult,
+        /// The search result list: shows the active result in the document.
+        OpenResult,
     }
 }
 
@@ -154,6 +163,8 @@ pub const LINE_EDITOR: &str = "LineEditor";
 pub const PROMPT: &str = "Prompt";
 /// Key context of the toolbar's page field (go to a page).
 pub const PAGE_FIELD: &str = "PageField";
+/// Key context of the search result list in the sidebar.
+pub const SEARCH_RESULTS: &str = "SearchResults";
 
 const fn bind(keystroke: &'static str, command: ReaderCommand) -> Binding {
     Binding {
@@ -219,6 +230,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind("ctrl-g", GoToPage),
         bind("alt-c", ToggleMatchCase),
         bind("alt-w", ToggleWholeWord),
+        bind("ctrl-shift-f", ShowSearchResults),
         bind_in(FIND_BAR, "enter", FindNext),
         bind_in(FIND_BAR, "shift-enter", FindPrevious),
         bind_in(FIND_BAR, "escape", Cancel),
@@ -228,6 +240,9 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind_in(PROMPT, "escape", Cancel),
         bind_in(PAGE_FIELD, "enter", ConfirmGoToPage),
         bind_in(PAGE_FIELD, "escape", Cancel),
+        bind_in(SEARCH_RESULTS, "down", NextResult),
+        bind_in(SEARCH_RESULTS, "up", PreviousResult),
+        bind_in(SEARCH_RESULTS, "enter", OpenResult),
     ]
 };
 
@@ -289,6 +304,18 @@ mod tests {
         assert_eq!(
             command_in(Some(PAGE_FIELD), "escape"),
             Some(ReaderCommand::Cancel)
+        );
+        assert_eq!(
+            command_in(Some(SEARCH_RESULTS), "enter"),
+            Some(ReaderCommand::OpenResult)
+        );
+        assert_eq!(
+            command_in(Some(SEARCH_RESULTS), "down"),
+            Some(ReaderCommand::NextResult)
+        );
+        assert_eq!(
+            keystrokes_for(ReaderCommand::ShowSearchResults).next(),
+            Some("ctrl-shift-f")
         );
     }
 

@@ -158,6 +158,7 @@ fn tab_name(tab: SidebarTab) -> &'static str {
     match tab {
         SidebarTab::Outline => "outline",
         SidebarTab::Pages => "pages",
+        SidebarTab::Results => "results",
     }
 }
 
@@ -805,6 +806,9 @@ mod tests {
             assert_eq!(PageLayout::from_name(l.name()), Some(l));
         }
         assert_eq!(tab_from_name(" Pages "), Some(SidebarTab::Pages));
+        // The result list is never the tab a sidebar opens with.
+        assert_eq!(tab_from_name("results"), None);
+        assert_eq!(tab_name(SidebarTab::Results), "results");
         assert_eq!(Appearance::from_name("auto"), None);
     }
 }

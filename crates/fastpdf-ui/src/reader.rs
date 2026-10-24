@@ -503,6 +503,10 @@ impl ReaderView {
             }
             C::ToggleMatchCase => self.toggle_find_option(FindOption::MatchCase, cx),
             C::ToggleWholeWord => self.toggle_find_option(FindOption::WholeWord, cx),
+            C::ShowSearchResults => self.show_search_results(window, cx),
+            C::NextResult => self.select_result(true, cx),
+            C::PreviousResult => self.select_result(false, cx),
+            C::OpenResult => self.open_active_result(cx),
             C::Print => self.toggle_print_panel(window, cx),
             C::SaveCopy => {
                 self.menus.open = None;
@@ -569,7 +573,8 @@ impl ReaderView {
     /// Esc: cancels a prompt, closes the page field or a menu, stops editing
     /// a line, unarms or deselects a stamp, closes the stamp or text edit
     /// panel, stops printing or closes the print panel, then the page tools,
-    /// the settings panel, the find bar, then clears the selection.
+    /// the settings panel, leaves the result list, closes the find bar, then
+    /// clears the selection.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.cancel_prompt(window, cx) || self.end_go_to(true, window, cx) {
         } else if self.menus.open.is_some() {
@@ -592,6 +597,8 @@ impl ReaderView {
             self.close_tools_panel(window, cx);
         } else if self.settings_open {
             self.settings_open = false;
+        } else if self.find.results.is_focused(window) {
+            window.focus(&self.focus, cx);
         } else if self.find.open {
             self.close_find(window, cx);
         } else {
@@ -660,7 +667,7 @@ impl ReaderView {
 
     // ---- find (spec §22) -----------------------------------------------------
 
-    fn open_find(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+    pub(crate) fn open_find(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.find.open = true;
         let input = self.find.input.clone();
         input.update(cx, |input, cx| {
@@ -718,13 +725,13 @@ impl ReaderView {
             self.open_find(window, cx);
             return;
         }
-        if self.find.hits.step(forward).is_some() {
+        if self.find.step(forward) {
             self.reveal_active_hit();
         }
         cx.notify();
     }
 
-    fn reveal_active_hit(&mut self) {
+    pub(crate) fn reveal_active_hit(&mut self) {
         let Some((page, rect)) = self
             .find
             .hits

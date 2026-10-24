@@ -61,6 +61,7 @@ mod print;
 mod prompt;
 mod reader;
 mod scrollbar;
+mod search_results;
 mod select;
 mod settings;
 mod settings_panel;

@@ -22,8 +22,9 @@ pub(crate) enum Check {
     ExpectZoom(u32),
     /// `expect-history=B,F`: Back and Forward hold B and F views.
     ExpectHistory(usize, usize),
-    /// `expect-focus=find`, `=document` or `=prompt`: the find field, the
-    /// reader itself or the password prompt's field has the keyboard focus.
+    /// `expect-focus=find`, `=document`, `=prompt` or `=results`: the find
+    /// field, the reader itself, the password prompt's field or the search
+    /// result list has the keyboard focus.
     ExpectFocus(FocusTarget),
     /// `focus=document`: gives the keyboard focus to the reader itself, as
     /// GPUI does on a mouse press on the toolbar or the sidebar.
@@ -51,6 +52,7 @@ pub(crate) enum FocusTarget {
     Find,
     Document,
     Prompt,
+    Results,
 }
 
 impl Check {
@@ -71,6 +73,7 @@ impl Check {
             ("expect-focus", "find") => Self::ExpectFocus(FocusTarget::Find),
             ("expect-focus", "document") => Self::ExpectFocus(FocusTarget::Document),
             ("expect-focus", "prompt") => Self::ExpectFocus(FocusTarget::Prompt),
+            ("expect-focus", "results") => Self::ExpectFocus(FocusTarget::Results),
             ("focus", "document") => Self::FocusDocument,
             ("wait-prompt", kind) => Self::WaitPrompt(PromptKind::from_name(kind)?),
             ("password" | "password-text" | "password-compose", text) if !text.is_empty() => {
@@ -103,6 +106,7 @@ impl ReaderView {
                     FocusTarget::Find => self.find.input.read(cx).focus_handle().is_focused(window),
                     FocusTarget::Document => self.focus.is_focused(window),
                     FocusTarget::Prompt => self.password_field_focused(window, cx),
+                    FocusTarget::Results => self.find.results.is_focused(window),
                 };
                 return if focused {
                     StepState::Done
@@ -213,7 +217,7 @@ mod tests {
                 "expect-page=3; expect-zoom=250%; expect-zoom=80; cmd=NavigateBack; \
                  expect-history=2,0; expect-history= 0 , 12 ; outline=5; \
                  expect-focus=find; expect-focus=document; expect-focus=prompt; \
-                 focus=document"
+                 expect-focus=results; focus=document"
             )
             .unwrap(),
             vec![
@@ -227,6 +231,7 @@ mod tests {
                 Step::Check(Check::ExpectFocus(super::FocusTarget::Find)),
                 Step::Check(Check::ExpectFocus(super::FocusTarget::Document)),
                 Step::Check(Check::ExpectFocus(super::FocusTarget::Prompt)),
+                Step::Check(Check::ExpectFocus(super::FocusTarget::Results)),
                 Step::Check(Check::FocusDocument),
             ]
         );

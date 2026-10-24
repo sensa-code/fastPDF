@@ -2,7 +2,8 @@
 //! hits streamed from `fastpdf_search` while the search runs from the
 //! current page outward, F3 / Shift+F3 / Enter navigation, highlights drawn
 //! by the viewport canvas. The hits are kept by `crate::hit_list`, the
-//! options (match case, whole words) by `crate::find_options`.
+//! options (match case, whole words) by `crate::find_options`, and listed
+//! by `crate::search_results`.
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -10,7 +11,7 @@ use std::time::Instant;
 
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_engine_api::{DocumentId, EngineDocument, EngineError, GuardedDocument, PageIndex};
-use fastpdf_search::{SearchEvent, SearchSession, TextCache};
+use fastpdf_search::{SearchEvent, SearchSession, TextCache, search_order};
 use gpui::{
     AppContext, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, Subscription, div, prelude::FluentBuilder, px,
@@ -20,6 +21,8 @@ use crate::find_options::FindOptions;
 use crate::hit_list::HitList;
 use crate::i18n::Strings;
 use crate::reader::ReaderView;
+use crate::search_results::ResultsList;
+use crate::sidebar::SidebarTab;
 use crate::text_input::{TextChanged, TextInput};
 use crate::toolbar::{styled_button, tooltip};
 
@@ -58,6 +61,13 @@ pub(crate) struct FindBar {
     pub query: String,
     pub hits: HitList,
     pub progress: Progress,
+    /// The list of the hits in the sidebar (`crate::search_results`).
+    pub results: ResultsList,
+    /// Where the current search started.
+    start_page: PageIndex,
+    /// A search stopped at its cap looked at these pages (one-based, first
+    /// and last; the pages searched around the start page are contiguous).
+    pub searched: Option<(u32, u32)>,
     generation: u64,
     search: Option<SearchSession>,
     /// When the current search started (logged with its result).
@@ -94,6 +104,9 @@ impl FindBar {
             query: String::new(),
             hits: HitList::default(),
             progress: Progress::default(),
+            results: ResultsList::new(cx.focus_handle()),
+            start_page: PageIndex::FIRST,
+            searched: None,
             generation: 0,
             search: None,
             started: None,
@@ -115,6 +128,8 @@ impl FindBar {
         }
         self.hits = HitList::default();
         self.progress = Progress::default();
+        self.results.reset();
+        self.searched = None;
     }
 
     /// Starts searching `query` with `options` (cancels the old search).
@@ -133,6 +148,7 @@ impl FindBar {
             return;
         }
         self.progress.page_count = target.doc.page_count();
+        self.start_page = target.start;
         self.started = Some(Instant::now());
         let generation = self.generation;
         let tx = self.tx.clone();
@@ -160,7 +176,10 @@ impl FindBar {
             }
             match event {
                 SearchEvent::Hits(hits) => {
-                    self.hits.insert(hits);
+                    let before = self.hits.len();
+                    if let Some(inserted) = self.hits.insert(hits) {
+                        self.results.rows_inserted(inserted, before);
+                    }
                     got_hits = true;
                 }
                 SearchEvent::Progress {
@@ -185,6 +204,13 @@ impl FindBar {
                 } => {
                     self.progress.finished = true;
                     self.progress.limit_reached = limit_reached;
+                    if limit_reached {
+                        self.searched = searched_range(
+                            self.start_page,
+                            self.progress.page_count,
+                            self.progress.pages_done,
+                        );
+                    }
                     if !cancelled {
                         log::info!(
                             "search finished: {hits} hits{}, {} KiB of results, in {:.1} ms",
@@ -204,6 +230,26 @@ impl FindBar {
     pub(crate) fn status(&self, strings: &Strings) -> String {
         status_text(&self.query, &self.hits, self.progress, strings)
     }
+
+    /// F3 / Shift+F3: the next (or previous) hit becomes the active one,
+    /// and its row shows in the result list. False without hits.
+    pub(crate) fn step(&mut self, forward: bool) -> bool {
+        let moved = self.hits.step(forward).is_some();
+        if let Some(active) = self.hits.active_index() {
+            self.results.reveal(active);
+        }
+        moved
+    }
+}
+
+/// The pages (one-based, first and last) of the first `pages_done` pages
+/// searched from `start`: contiguous, as the search goes outward.
+fn searched_range(start: PageIndex, page_count: u32, pages_done: u32) -> Option<(u32, u32)> {
+    let pages = search_order(start, page_count).take(pages_done as usize);
+    let (first, last) = pages.fold((u32::MAX, 0), |(first, last), page| {
+        (first.min(page.get()), last.max(page.get()))
+    });
+    (first <= last).then(|| (first + 1, last + 1))
 }
 
 impl ReaderView {
@@ -304,6 +350,29 @@ impl ReaderView {
                     })),
             )
             .child(
+                styled_button(
+                    "find-list",
+                    "\u{2630}",
+                    true,
+                    self.sidebar.open && self.sidebar.tab == SidebarTab::Results,
+                    &theme,
+                )
+                .tooltip(tooltip(
+                    strings
+                        .with_shortcut(
+                            strings.tip_show_results(),
+                            fastpdf_core::keymap::keystrokes_for(ReaderCommand::ShowSearchResults)
+                                .next(),
+                        )
+                        .into(),
+                    theme,
+                    font,
+                ))
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.run_command(ReaderCommand::ShowSearchResults, window, cx);
+                })),
+            )
+            .child(
                 styled_button("find-close", "\u{2715}", true, false, &theme)
                     .tooltip(tooltip(
                         strings.with_shortcut(strings.close, Some("escape")).into(),
@@ -365,6 +434,19 @@ mod tests {
         };
         let en = crate::i18n::Language::English.strings();
         assert_eq!(status_text("x", &list, done, en), "2 of 3");
+    }
+
+    #[test]
+    fn searched_pages_are_the_ones_around_the_start() {
+        let at =
+            |start: u32, count: u32, done: u32| searched_range(PageIndex::new(start), count, done);
+        // From page 20 (index 19): 20, 21, 19, 22, 18.
+        assert_eq!(at(19, 40, 5), Some((18, 22)));
+        // Past the last page the search goes on before the start only.
+        assert_eq!(at(38, 40, 6), Some((35, 40)));
+        assert_eq!(at(0, 300, 12), Some((1, 12)));
+        assert_eq!(at(0, 300, 0), None);
+        assert_eq!(at(0, 0, 3), None);
     }
 
     #[test]

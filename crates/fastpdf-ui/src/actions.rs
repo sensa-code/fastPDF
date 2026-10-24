@@ -63,6 +63,10 @@ actions!(
         ConfirmGoToPage,
         ToggleMatchCase,
         ToggleWholeWord,
+        ShowSearchResults,
+        NextResult,
+        PreviousResult,
+        OpenResult,
     ]
 );
 
@@ -119,6 +123,10 @@ fn action_for(command: ReaderCommand) -> Box<dyn Action> {
         C::ConfirmGoToPage => Box::new(ConfirmGoToPage),
         C::ToggleMatchCase => Box::new(ToggleMatchCase),
         C::ToggleWholeWord => Box::new(ToggleWholeWord),
+        C::ShowSearchResults => Box::new(ShowSearchResults),
+        C::NextResult => Box::new(NextResult),
+        C::PreviousResult => Box::new(PreviousResult),
+        C::OpenResult => Box::new(OpenResult),
     }
 }
 
@@ -229,6 +237,10 @@ macro_rules! all_actions {
                 ConfirmGoToPage,
                 ToggleMatchCase,
                 ToggleWholeWord,
+                ShowSearchResults,
+                NextResult,
+                PreviousResult,
+                OpenResult,
             ]
         )
     };

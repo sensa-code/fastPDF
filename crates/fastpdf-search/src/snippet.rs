@@ -1,9 +1,10 @@
 //! A line of context around a hit, for a list of results: the page's own
 //! characters (case and width as printed), a few words before the hit and
-//! the text after it, at most [`MAX_CHARS`] characters. Snippets are made
-//! of hostile document text, so they are made safe to show
-//! (`fastpdf_engine_api::display`) and bounded in length, which also bounds
-//! the cost of shaping them.
+//! the text after it: at most [`MAX_CHARS`] characters of the page, and a
+//! space where the page has one or a line ends next to Latin text (matching
+//! drops those next to CJK). Snippets are made of hostile document text, so
+//! they are made safe to show (`fastpdf_engine_api::display`) and bounded
+//! in length, which also bounds the cost of shaping them.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -11,9 +12,9 @@ use std::sync::Arc;
 use fastpdf_engine_api::display::display_char;
 use fastpdf_engine_api::{TextLayer, is_cjk};
 
-use crate::fold::fold;
+use crate::fold::{fold, is_word_char};
 use crate::matcher::SPACE;
-use crate::page_text::PageText;
+use crate::page_text::{PageText, Source};
 
 /// Context before a hit, in ems: a CJK character counts 1, any other 0.55
 /// (about eleven Latin letters or six Chinese characters).
@@ -135,31 +136,37 @@ pub(crate) fn snippet(
         out.push(ELLIPSIS);
     }
     let (mut hit_start, mut hit_end) = (None, None);
+    // The last character shown, and where it came from.
+    let mut last: Option<(Source, char)> = None;
     for source in text.sources(start..end) {
-        if hit_start.is_none() && source.at >= hit.start {
-            hit_start = Some(out.len());
-        }
         if hit_end.is_none() && source.at >= hit.end {
             hit_end = Some(out.len());
         }
         let shown = if source.token == SPACE {
             ' '
         } else {
-            originals
+            let original = originals
                 .get(source.span, source.ch)
                 // The character the token was made of; anything else (a
                 // layer that changed shape) shows the token.
                 .filter(|&c| fold(c, false) == fold(source.token, false))
-                .unwrap_or(source.token)
+                .unwrap_or(source.token);
+            if let Some((before, shown_before)) = last
+                && spaced(originals, (before, shown_before), (source, original))
+            {
+                push_space(&mut out);
+            }
+            last = Some((source, original));
+            original
         };
-        let Some(shown) = display_char(shown) else {
-            continue;
-        };
-        // One space, even where a control character became one.
-        if shown == ' ' && (out.is_empty() || out.ends_with(' ')) {
-            continue;
+        if hit_start.is_none() && source.at >= hit.start {
+            hit_start = Some(out.len());
         }
-        out.push(shown);
+        match display_char(shown) {
+            Some(' ') => push_space(&mut out),
+            Some(c) => out.push(c),
+            None => {}
+        }
     }
     let hit_end = hit_end.unwrap_or(out.len());
     let hit_start = hit_start.unwrap_or(hit_end);
@@ -173,30 +180,62 @@ pub(crate) fn snippet(
     }
 }
 
+/// One space, never two, never first.
+fn push_space(out: &mut String) {
+    if !out.is_empty() && !out.ends_with(' ') {
+        out.push(' ');
+    }
+}
+
+/// Whether the page separates the characters `before` and `next` (shown as
+/// `a` and `b`) where matching sees nothing between them: a line ends
+/// between them and one is not CJK, or the page has whitespace between
+/// them in their span (「SEARCH 搜尋」). Two CJK characters a line break
+/// apart stay together (「公」 / 「文」).
+fn spaced(originals: &mut Originals<'_>, before: (Source, char), next: (Source, char)) -> bool {
+    let ((before, a), (next, b)) = (before, next);
+    if before.line != next.line {
+        return !(is_cjk(a) && is_cjk(b));
+    }
+    before.span == next.span
+        && next.ch > before.ch.saturating_add(1)
+        && originals
+            .get(before.span, before.ch.saturating_add(1))
+            .is_some_and(char::is_whitespace)
+}
+
 /// Where the context before the hit at byte `hit` starts, and whether text
-/// before it is left out: up to [`BEFORE_EMS`] back, then forward to the
-/// start of a word when the context begins inside one.
+/// before it is left out: up to [`BEFORE_EMS`] back, then, when that cuts
+/// a word, forward to the start of the next one.
 fn context_start(tokens: &str, hit: usize) -> (usize, bool) {
     let Some(before) = tokens.get(..hit) else {
         return (hit, false);
     };
     let mut start = hit;
+    let mut first = None;
     let mut ems = 0.0;
-    // Just after the first space of the context.
+    // Just after the earliest token of the context that is not part of a
+    // word.
     let mut word_start = None;
     for (at, c) in before.char_indices().rev() {
         ems += if is_cjk(c) { 1.0 } else { 0.55 };
         if ems > BEFORE_EMS {
-            // Cut at a space: the context already starts with a word.
-            let start = if c == SPACE {
-                start
-            } else {
+            let inside_word = is_word_char(c) && first.is_some_and(is_word_char);
+            let start = if inside_word {
                 word_start.unwrap_or(start)
+            } else {
+                start
             };
+            // Nor does it start with the punctuation after the cut.
+            let start = before
+                .get(start..)
+                .and_then(|rest| rest.char_indices().find(|(_, c)| c.is_alphanumeric()))
+                .map_or(hit, |(offset, _)| start + offset);
             return (start, true);
         }
         start = at;
-        if c == SPACE {
+        first = Some(c);
+        if !is_word_char(c) {
             word_start = Some(at + c.len_utf8());
         }
     }
@@ -258,6 +297,31 @@ mod tests {
     }
 
     #[test]
+    fn snippets_keep_the_spaces_of_mixed_text() {
+        // Matching drops the space next to CJK; the snippet shows it, and a
+        // line break between CJK and Latin text as a space.
+        let l = layer(vec![
+            line("search SEARCH 搜尋結果列表測試", 0.0),
+            line("search Search", 14.0),
+        ]);
+        assert_eq!(
+            snippets(&l, "search")[1],
+            (
+                "search SEARCH 搜尋結果列表測試 search Search".into(),
+                "SEARCH".into()
+            )
+        );
+        assert_eq!(
+            snippets(&l, "SEARCH搜尋")[0].1,
+            "SEARCH 搜尋",
+            "the space is shown inside the hit"
+        );
+        // Spaced-out titles show as printed.
+        let l = layer(vec![line("申 請 書", 0.0)]);
+        assert_eq!(snippets(&l, "申請書")[0].0, "申 請 書");
+    }
+
+    #[test]
     fn snippets_collapse_breaks_and_spaces() {
         let l = layer(vec![
             line("the quick brown", 0.0),
@@ -287,6 +351,13 @@ mod tests {
         // Chinese: six characters before.
         let l = layer(vec![line("一二三四五六七八九十目標之後", 0.0)]);
         assert_eq!(snippets(&l, "目標")[0].0, "\u{2026}五六七八九十目標之後");
+        // Punctuation ends a word too; a cut between words stays, without
+        // the punctuation after it.
+        let l = layer(vec![line(
+            "research, searching, search-engine, (search)",
+            0.0,
+        )]);
+        assert_eq!(snippets(&l, "search")[3].0, "\u{2026}engine, (search)");
     }
 
     #[test]
@@ -295,7 +366,7 @@ mod tests {
         let l = layer(vec![line(&long, 0.0)]);
         let found = snippets(&l, "needle");
         let (text, hit) = &found[0];
-        assert!(text.chars().count() <= MAX_CHARS + 2, "{}", text.len());
+        assert!(text.chars().count() <= 2 * MAX_CHARS + 2, "{}", text.len());
         assert!(text.starts_with('\u{2026}') && text.ends_with('\u{2026}'));
         assert_eq!(hit, "needle");
         // A hit longer than a snippet is cut, and still marked.
