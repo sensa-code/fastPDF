@@ -356,10 +356,12 @@ impl ReaderView {
 
     /// Ctrl+Shift+F and the find bar's list button: the sidebar on the
     /// Results tab, the keyboard in the list at the active result (in the
-    /// find field, the find bar open, while there is nothing to list).
+    /// find field, the find bar open, while there is nothing to list). A
+    /// closed sidebar opens for this window only: someone who keeps it
+    /// closed does not find it open at the next launch.
     pub(crate) fn show_search_results(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if !self.sidebar.open {
-            self.set_sidebar_open(true, window, cx);
+            self.show_sidebar(true, window, cx);
         }
         if self.sidebar.tab != SidebarTab::Results {
             self.set_sidebar_tab(SidebarTab::Results, window, cx);

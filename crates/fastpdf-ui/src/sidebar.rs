@@ -222,7 +222,21 @@ impl ReaderView {
         self.set_sidebar_open(!self.sidebar.open, window, cx);
     }
 
+    /// Opens or closes the sidebar, and the next launch starts that way.
     pub(crate) fn set_sidebar_open(
+        &mut self,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.show_sidebar(open, window, cx);
+        self.settings.sidebar_open = open;
+        self.save_settings(cx);
+    }
+
+    /// Opens or closes the sidebar for now; the next launch starts as the
+    /// settings say (the search result list opens it this way).
+    pub(crate) fn show_sidebar(
         &mut self,
         open: bool,
         window: &mut Window,
@@ -233,8 +247,6 @@ impl ReaderView {
             self.ensure_outline(cx);
         }
         self.sync_thumbnails(window);
-        self.settings.sidebar_open = open;
-        self.save_settings(cx);
         cx.notify();
     }
 
