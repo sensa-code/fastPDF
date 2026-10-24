@@ -32,6 +32,7 @@ use crate::i18n::{Language, Strings};
 use crate::navigation::{navigate, reveal};
 use crate::opening::APP_TITLE;
 use crate::overlay::DevOverlay;
+use crate::password::LockedDoc;
 use crate::print::PrintPanel;
 use crate::scrollbar::ScrollBarState;
 use crate::select::TextSelection;
@@ -165,6 +166,8 @@ pub(crate) struct OpenDoc {
     pub name: SharedString,
     pub opened_at: Instant,
     pub exact_reported: bool,
+    /// Opened with a password: never written (ADR 0014).
+    pub protected: bool,
 }
 
 /// A toolbar drop-down menu.
@@ -196,6 +199,8 @@ pub(crate) enum DocState {
     Empty,
     Loading { path: PathBuf },
     Failed { path: PathBuf, failure: OpenFailure },
+    // Encrypted: the prompt asks for the password (`crate::password`).
+    Locked(Box<LockedDoc>),
     Open(Box<OpenDoc>),
 }
 
@@ -458,6 +463,13 @@ impl ReaderView {
         cx: &mut Context<'_, Self>,
     ) {
         use ReaderCommand as C;
+        // A prompt blocks everything but answering or leaving it.
+        if self.active_prompt().is_some() && !command.allowed_during_prompt() {
+            return;
+        }
+        if command.writes_document() && self.refuse_protected_write(cx) {
+            return;
+        }
         // Toolbar clicks must not leave the keymap without a focused target;
         // a focused find field keeps its focus.
         if !self.focus.contains_focused(window, cx) {
@@ -477,6 +489,7 @@ impl ReaderView {
             C::Copy => self.copy_selection(cx),
             C::SelectAll => self.select_current_page(cx),
             C::Cancel => self.cancel(window, cx),
+            C::ConfirmPrompt => self.confirm_prompt(window, cx),
             C::Print => self.toggle_print_panel(window, cx),
             C::SaveCopy => {
                 self.menus.open = None;
@@ -540,12 +553,13 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// Esc: closes a menu, stops editing a line, unarms or deselects a
-    /// stamp, closes the stamp or text edit panel, stops printing or closes
-    /// the print panel, then the page tools, the settings panel, the find
-    /// bar, then clears the selection.
+    /// Esc: cancels a prompt, closes a menu, stops editing a line, unarms or
+    /// deselects a stamp, closes the stamp or text edit panel, stops
+    /// printing or closes the print panel, then the page tools, the settings
+    /// panel, the find bar, then clears the selection.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if self.menus.open.is_some() {
+        if self.cancel_prompt(window, cx) {
+        } else if self.menus.open.is_some() {
             self.menus.open = None;
         } else if self.cancel_line_edit(window, cx) {
         } else if self.stamps.armed.is_some() || self.stamps.selected.is_some() {
@@ -777,6 +791,7 @@ impl ReaderView {
         self.print.range.update(cx, |input, cx| {
             input.set_placeholder(strings.range_placeholder, cx)
         });
+        self.relabel_password_field(cx);
     }
 
     /// Everything a new session needs besides the document.
@@ -939,6 +954,7 @@ impl ReaderView {
             .when(self.settings_open, |area| {
                 area.child(self.render_settings_panel(cx))
             })
+            .when_some(self.render_prompt(cx), |area, prompt| area.child(prompt))
     }
 
     /// Page `page` as shown in the toolbar ("12 / 345").

@@ -232,13 +232,14 @@ fn edit_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView
     let strings = tools.strings;
     let label = format!("{} \u{25be}", strings.edit);
     menu_control(Menu::Edit, label, strings.tip_edit, view, tools, cx, |cx| {
-        let has_doc = view.session().is_some();
+        // A document opened with a password is never written (ADR 0014).
+        let writable = view.session().is_some() && !view.document_protected();
         vec![
             menu_item(
                 "edit-copy",
                 strings.save_copy,
                 false,
-                has_doc,
+                writable,
                 ReaderCommand::SaveCopy,
                 tools,
                 cx,
@@ -248,7 +249,7 @@ fn edit_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView
                 "edit-pages",
                 strings.page_tools,
                 view.tools.open,
-                has_doc,
+                writable,
                 ReaderCommand::PageTools,
                 tools,
                 cx,
@@ -258,7 +259,7 @@ fn edit_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView
                 "edit-stamps",
                 strings.stamp_menu,
                 view.stamps.open,
-                has_doc,
+                writable,
                 ReaderCommand::StampTool,
                 tools,
                 cx,
@@ -268,7 +269,7 @@ fn edit_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView
                 "edit-text",
                 strings.edit_text_menu,
                 view.text_edits.open,
-                has_doc,
+                writable,
                 ReaderCommand::EditText,
                 tools,
                 cx,
@@ -278,7 +279,7 @@ fn edit_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView
                 "edit-sign",
                 strings.sign_menu,
                 view.signing.open,
-                has_doc,
+                writable,
                 ReaderCommand::Sign,
                 tools,
                 cx,

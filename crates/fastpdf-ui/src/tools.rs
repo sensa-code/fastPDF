@@ -619,7 +619,8 @@ impl ReaderView {
 
     /// Runs `job` with the app's writer on a background thread.
     fn start_write(&mut self, job: WriteJob, cx: &mut Context<'_, Self>) {
-        if self.tools.writing() {
+        // Also covers panels left open from another document.
+        if self.tools.writing() || self.refuse_protected_write(cx) {
             return;
         }
         let Some(writer) = self.options.writer.clone() else {

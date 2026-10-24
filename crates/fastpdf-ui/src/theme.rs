@@ -42,6 +42,8 @@ pub(crate) struct Theme {
     pub scrollbar_thumb: Rgba,
     /// Thumb under the mouse or being dragged.
     pub scrollbar_thumb_active: Rgba,
+    /// Dims the document area behind a prompt card (`crate::prompt`).
+    pub modal_scrim: Rgba,
 }
 
 impl Theme {
@@ -77,6 +79,7 @@ impl Theme {
         scrollbar_track: rgb_const(0xdedede),
         scrollbar_thumb: rgb_const(0xa3a3a3),
         scrollbar_thumb_active: rgb_const(0x7a7a7a),
+        modal_scrim: rgba_const(0x00000040),
     };
 
     pub(crate) const DARK: Self = Self {
@@ -98,6 +101,7 @@ impl Theme {
         scrollbar_track: rgb_const(0x242424),
         scrollbar_thumb: rgb_const(0x5c5c5c),
         scrollbar_thumb_active: rgb_const(0x8a8a8a),
+        modal_scrim: rgba_const(0x00000073),
     };
 }
 

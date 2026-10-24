@@ -2,16 +2,18 @@
 //! use. Assertions pass when the reader is in the expected state and
 //! otherwise stop the script with a message saying what they found, so a
 //! GUI check's log proves where the view went; the others drive shared
-//! parts of the reader (the outline).
+//! parts of the reader (the outline, the prompt card).
 
-use gpui::Context;
+use fastpdf_engine_api::Password;
+use gpui::{Context, Window};
 
 use super::StepState;
-use crate::reader::ReaderView;
+use crate::prompt::PromptKind;
+use crate::reader::{DocState, ReaderView};
 use crate::sidebar::OutlineState;
 
 /// A condition on the reader's state, or a shared action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Check {
     /// `expect-page=N`: the current page (one-based) is N.
     ExpectPage(u32),
@@ -22,11 +24,22 @@ pub(crate) enum Check {
     /// `outline=N`: activates outline row N (one-based, as listed), waiting
     /// while the outline loads.
     Outline(usize),
+    /// `wait-prompt=password`: waits until that prompt waits for input.
+    WaitPrompt(PromptKind),
+    /// `prompt-cancel`: cancels the prompt, like Esc.
+    PromptCancel,
+    /// `password=TEXT`: types TEXT into the password prompt and confirms it;
+    /// `password-text=TEXT` only types it (to see the masked field). For
+    /// fixture passwords only; `Debug` (the step log) never shows them.
+    Password { text: Password, confirm: bool },
 }
 
 impl Check {
     /// The check written `name=value`; `None` for another step or a bad value.
     pub(super) fn parse(name: &str, value: Option<&str>) -> Option<Self> {
+        if (name, value) == ("prompt-cancel", None) {
+            return Some(Self::PromptCancel);
+        }
         let positive = |text: &str| text.parse().ok().filter(|&n: &u32| n >= 1);
         Some(match (name, value?) {
             ("expect-page", n) => Self::ExpectPage(positive(n)?),
@@ -36,6 +49,11 @@ impl Check {
                 Self::ExpectHistory(back.trim().parse().ok()?, forward.trim().parse().ok()?)
             }
             ("outline", n) => Self::Outline(n.parse().ok().filter(|&n: &usize| n >= 1)?),
+            ("wait-prompt", kind) => Self::WaitPrompt(PromptKind::from_name(kind)?),
+            ("password" | "password-text", text) if !text.is_empty() => Self::Password {
+                text: Password::from(text),
+                confirm: name == "password",
+            },
             _ => return None,
         })
     }
@@ -43,14 +61,39 @@ impl Check {
 
 impl ReaderView {
     /// Done when `check` holds; otherwise the script stops.
-    pub(super) fn run_check_step(&mut self, check: Check, cx: &mut Context<'_, Self>) -> StepState {
-        if let Check::Outline(row) = check {
-            return self.run_outline_step(row - 1, cx);
+    pub(super) fn run_check_step(
+        &mut self,
+        check: &Check,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> StepState {
+        match check {
+            Check::Outline(row) => return self.run_outline_step(row - 1, cx),
+            Check::WaitPrompt(kind) => return self.prompt_waiting(*kind),
+            Check::PromptCancel => {
+                return if self.cancel_prompt(window, cx) {
+                    StepState::Done
+                } else {
+                    StepState::Abort("no prompt to cancel".into())
+                };
+            }
+            Check::Password { text, confirm } => {
+                return match &self.doc {
+                    // An earlier attempt is still being checked.
+                    DocState::Locked(locked) if locked.checking => StepState::Pending,
+                    DocState::Locked(_) => {
+                        self.enter_password(text, *confirm, window, cx);
+                        StepState::Done
+                    }
+                    _ => StepState::Abort("no password prompt".into()),
+                };
+            }
+            _ => {}
         }
         let Some(session) = self.session() else {
             return StepState::Abort("no document".into());
         };
-        let failure = match check {
+        let failure = match *check {
             Check::ExpectPage(expected) => {
                 let page = session.current_page().display_number();
                 (page != expected).then(|| format!("on page {page}, expected {expected}"))
@@ -64,9 +107,24 @@ impl ReaderView {
                 (depth != (back, forward))
                     .then(|| format!("history {},{}, expected {back},{forward}", depth.0, depth.1))
             }
-            Check::Outline(_) => None,
+            Check::Outline(_)
+            | Check::WaitPrompt(_)
+            | Check::PromptCancel
+            | Check::Password { .. } => None,
         };
         failure.map_or(StepState::Done, StepState::Abort)
+    }
+
+    /// Done once the prompt `kind` waits for input; stops if the document
+    /// opened or failed instead.
+    fn prompt_waiting(&self, kind: PromptKind) -> StepState {
+        match (&self.doc, kind) {
+            (DocState::Locked(locked), PromptKind::Password) if !locked.checking => StepState::Done,
+            (DocState::Locked(_) | DocState::Loading { .. }, _) => StepState::Pending,
+            (DocState::Open(_), _) => StepState::Abort("the document opened, no prompt".into()),
+            (DocState::Failed { failure, .. }, _) => StepState::Abort(failure.to_string()),
+            (DocState::Empty, _) => StepState::Abort("no document".into()),
+        }
     }
 
     /// Activates outline row `index` (zero-based) like a click on it.
@@ -94,8 +152,11 @@ impl ReaderView {
 
 #[cfg(test)]
 mod tests {
+    use fastpdf_engine_api::Password;
+
     use super::Check;
     use crate::devscript::{Step, parse};
+    use crate::prompt::PromptKind;
 
     #[test]
     fn checks_parse() {
@@ -127,8 +188,43 @@ mod tests {
             "expect-history=-1,0",
             "outline=0",
             "outline",
+            "wait-prompt",
+            "wait-prompt=nothing",
+            "prompt-cancel=1",
+            "password",
+            "password=",
+            "password-text=",
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn prompt_steps_parse_and_hide_the_password() {
+        let steps =
+            parse("wait-prompt=password; password=zq9; prompt-cancel; password-text=測試密碼2026")
+                .unwrap();
+        assert_eq!(
+            steps,
+            vec![
+                Step::Check(Check::WaitPrompt(PromptKind::Password)),
+                Step::Check(Check::Password {
+                    text: Password::from("zq9"),
+                    confirm: true
+                }),
+                Step::Check(Check::PromptCancel),
+                Step::Check(Check::Password {
+                    text: Password::from("測試密碼2026"),
+                    confirm: false
+                }),
+            ]
+        );
+        // The runner logs every step with Debug.
+        let logged = format!("{steps:?} {steps:#?}");
+        assert!(
+            !logged.contains("zq9") && !logged.contains("測試"),
+            "{logged}"
+        );
+        assert!(logged.contains("<redacted>"));
     }
 }

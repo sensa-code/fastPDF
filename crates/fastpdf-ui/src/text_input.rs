@@ -10,7 +10,11 @@
 //! keyboard and mouse, clipboard. Offsets are byte offsets into UTF-8; the
 //! platform input API speaks UTF-16, converted at the trait boundary.
 //! Movement is per `char` (no grapheme segmentation dependency), which is
-//! exact for CJK and Latin text.
+//! exact for CJK and Latin text. A secret field (passwords, `secret.rs`)
+//! shows bullets, never copies or reports its text and wipes it when
+//! dropped.
+
+mod secret;
 
 use std::ops::Range;
 
@@ -23,6 +27,7 @@ use gpui::{
     actions, div, fill, point, px, relative, size,
 };
 
+use crate::text_mask;
 use crate::theme::ActiveTheme;
 
 /// Key context shared by every text field; the editing keys below are bound
@@ -93,12 +98,19 @@ pub(crate) struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     selecting: bool,
+    /// A password field: masked, not copied, wiped on drop.
+    secret: bool,
 }
 
 impl std::fmt::Debug for TextInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text: &dyn std::fmt::Debug = if self.secret {
+            &"<redacted>"
+        } else {
+            &self.text
+        };
         f.debug_struct("TextInput")
-            .field("text", &self.text)
+            .field("text", text)
             .field("selected", &self.selected)
             .field("marked", &self.marked)
             .finish_non_exhaustive()
@@ -131,7 +143,12 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             selecting: false,
+            secret: false,
         }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.text.is_empty()
     }
 
     pub(crate) fn focus_handle(&self) -> &FocusHandle {
@@ -156,11 +173,12 @@ impl TextInput {
     /// restored value) and reports it like typing would.
     pub(crate) fn set_text(&mut self, text: &str, cx: &mut Context<'_, Self>) {
         let line = text.replace(['\r', '\n'], " ");
-        self.text = line;
-        self.selected = self.text.len()..self.text.len();
+        let end = self.splice(0..self.text.len(), &line).end;
+        self.discard(line);
+        self.selected = end..end;
         self.reversed = false;
         self.marked = None;
-        cx.emit(TextChanged(self.text.clone()));
+        cx.emit(self.changed());
         cx.notify();
     }
 
@@ -273,7 +291,7 @@ impl TextInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<'_, Self>) {
-        if !self.selected.is_empty() {
+        if !self.secret && !self.selected.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.text[self.selected.clone()].to_string(),
             ));
@@ -281,7 +299,7 @@ impl TextInput {
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if !self.selected.is_empty() {
+        if !self.secret && !self.selected.is_empty() {
             self.copy(&Copy, window, cx);
             self.replace_text_in_range(None, "", window, cx);
         }
@@ -289,9 +307,10 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<'_, Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            // Single line: line breaks become spaces.
-            let line = text.replace(['\r', '\n'], " ");
+            // Single line: line breaks become spaces (a password drops them).
+            let line = text.replace(['\r', '\n'], if self.secret { "" } else { " " });
             self.replace_text_in_range(None, &line, window, cx);
+            self.discard(line);
         }
     }
 
@@ -336,7 +355,7 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.text.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        self.text_offset(line.closest_index_for_x(position.x - bounds.left()))
             .min(self.text.len())
     }
 
@@ -356,13 +375,15 @@ impl TextInput {
         self.offset_from_utf16(range.start)..self.offset_from_utf16(range.end)
     }
 
-    /// Replaces `range` with `new_text`, returning the start of the inserted
-    /// text. Pure text bookkeeping shared by the IME entry points.
-    fn splice(&mut self, range: Range<usize>, new_text: &str) -> usize {
+    /// Replaces `range` with `new_text`, returning where the inserted text
+    /// is (a secret field keeps what fits). Pure text bookkeeping shared by
+    /// the IME entry points.
+    fn splice(&mut self, range: Range<usize>, new_text: &str) -> Range<usize> {
         let start = range.start.min(self.text.len());
         let end = range.end.clamp(start, self.text.len());
+        let new_text = self.fitting(new_text, self.text.len() - (end - start));
         self.text.replace_range(start..end, new_text);
-        start
+        start..start + new_text.len()
     }
 }
 
@@ -404,7 +425,12 @@ impl EntityInputHandler for TextInput {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
-        self.text.get(range).map(str::to_owned)
+        let text = self.text.get(range)?;
+        Some(if self.secret {
+            text_mask::mask(text).to_string()
+        } else {
+            text.to_owned()
+        })
     }
 
     fn selected_text_range(
@@ -425,7 +451,7 @@ impl EntityInputHandler for TextInput {
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) {
         if self.marked.take().is_some() {
-            cx.emit(TextChanged(self.text.clone()));
+            cx.emit(self.changed());
         }
     }
 
@@ -441,12 +467,11 @@ impl EntityInputHandler for TextInput {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked.clone())
             .unwrap_or(self.selected.clone());
-        let start = self.splice(range, new_text);
-        let caret = start + new_text.len();
+        let caret = self.splice(range, new_text).end;
         self.selected = caret..caret;
         self.reversed = false;
         self.marked = None;
-        cx.emit(TextChanged(self.text.clone()));
+        cx.emit(self.changed());
         cx.notify();
     }
 
@@ -463,15 +488,16 @@ impl EntityInputHandler for TextInput {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked.clone())
             .unwrap_or(self.selected.clone());
-        let start = self.splice(range, new_text);
-        self.marked = (!new_text.is_empty()).then(|| start..start + new_text.len());
+        let inserted = self.splice(range, new_text);
+        let (start, end) = (inserted.start, inserted.end);
+        self.marked = (!inserted.is_empty()).then_some(inserted);
         // The IME's selection is relative to the composition.
         self.selected = new_selected_range_utf16
             .map(|r| {
                 let r = offset_from_utf16(new_text, r.start)..offset_from_utf16(new_text, r.end);
-                start + r.start..start + r.end
+                (start + r.start).min(end)..(start + r.end).min(end)
             })
-            .unwrap_or(start + new_text.len()..start + new_text.len());
+            .unwrap_or(end..end);
         self.reversed = false;
         cx.notify();
     }
@@ -488,11 +514,11 @@ impl EntityInputHandler for TextInput {
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
             point(
-                bounds.left() + layout.x_for_index(range.start),
+                bounds.left() + layout.x_for_index(self.display_offset(range.start)),
                 bounds.top(),
             ),
             point(
-                bounds.left() + layout.x_for_index(range.end),
+                bounds.left() + layout.x_for_index(self.display_offset(range.end)),
                 bounds.bottom(),
             ),
         ))
@@ -506,7 +532,7 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let local = self.last_bounds?.localize(&point)?;
         let layout = self.last_layout.as_ref()?;
-        let index = layout.index_for_x(local.x)?;
+        let index = self.text_offset(layout.index_for_x(local.x)?);
         Some(self.offset_to_utf16(index))
     }
 }
@@ -601,9 +627,13 @@ impl Element for TextField {
         let style = window.text_style();
         let (display, color) = if input.text.is_empty() {
             (input.placeholder.clone(), style.color.opacity(0.45))
+        } else if input.secret {
+            // Only bullets are shaped (and cached by GPUI's line layout).
+            (text_mask::mask(&input.text), style.color)
         } else {
             (SharedString::from(input.text.clone()), style.color)
         };
+        let shown = |offset| input.display_offset(offset);
         let run = TextRun {
             len: display.len(),
             font: style.font(),
@@ -612,7 +642,8 @@ impl Element for TextField {
             underline: None,
             strikethrough: None,
         };
-        let runs = match input.marked.as_ref() {
+        let marked = input.marked.as_ref().map(|m| shown(m.start)..shown(m.end));
+        let runs = match marked {
             Some(marked) if !input.text.is_empty() => vec![
                 TextRun {
                     len: marked.start,
@@ -647,7 +678,7 @@ impl Element for TextField {
             let x = if input.text.is_empty() {
                 px(0.0)
             } else {
-                line.x_for_index(input.cursor())
+                line.x_for_index(shown(input.cursor()))
             };
             (
                 None,
@@ -664,11 +695,11 @@ impl Element for TextField {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left() + line.x_for_index(input.selected.start),
+                            bounds.left() + line.x_for_index(shown(input.selected.start)),
                             bounds.top(),
                         ),
                         point(
-                            bounds.left() + line.x_for_index(input.selected.end),
+                            bounds.left() + line.x_for_index(shown(input.selected.end)),
                             bounds.bottom(),
                         ),
                     ),

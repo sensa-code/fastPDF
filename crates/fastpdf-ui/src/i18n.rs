@@ -11,6 +11,7 @@
 //! as `Strings` methods that match on the language.
 
 mod navigation;
+mod password;
 
 use std::fmt::Write as _;
 
@@ -415,7 +416,7 @@ const EN: Strings = Strings {
     file_not_found: "The file does not exist.",
     no_permission: "FastPDF is not allowed to read this file.",
     file_empty: "The file is empty.",
-    password_protected: "This document is password protected. FastPDF cannot open protected documents yet.",
+    password_protected: "This document is password protected.",
 };
 
 const ZH_TW: Strings = Strings {
@@ -570,7 +571,7 @@ const ZH_TW: Strings = Strings {
     file_not_found: "找不到這個檔案。",
     no_permission: "沒有權限讀取這個檔案。",
     file_empty: "檔案是空的。",
-    password_protected: "這份文件受密碼保護，FastPDF 目前還不支援開啟加密文件。",
+    password_protected: "這份文件受密碼保護。",
 };
 
 impl Strings {

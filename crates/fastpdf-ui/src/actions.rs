@@ -58,6 +58,7 @@ actions!(
         Copy,
         SelectAll,
         Cancel,
+        ConfirmPrompt,
     ]
 );
 
@@ -109,6 +110,7 @@ fn action_for(command: ReaderCommand) -> Box<dyn Action> {
         C::Copy => Box::new(Copy),
         C::SelectAll => Box::new(SelectAll),
         C::Cancel => Box::new(Cancel),
+        C::ConfirmPrompt => Box::new(ConfirmPrompt),
     }
 }
 
@@ -214,6 +216,7 @@ macro_rules! all_actions {
                 Copy,
                 SelectAll,
                 Cancel,
+                ConfirmPrompt,
             ]
         )
     };

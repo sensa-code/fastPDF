@@ -93,6 +93,35 @@ reader_commands! {
         SelectAll,
         /// Close the find bar / clear the selection.
         Cancel,
+        /// Confirms the prompt card in front of the window (its Enter): opens
+        /// an encrypted document with the typed password.
+        ConfirmPrompt,
+    }
+}
+
+impl ReaderCommand {
+    /// The commands that write a new PDF (ADR 0013); refused for documents
+    /// opened with a password (ADR 0014).
+    pub fn writes_document(self) -> bool {
+        use ReaderCommand::*;
+        matches!(self, SaveCopy | PageTools | StampTool | EditText | Sign)
+    }
+
+    /// The commands that still work while a prompt card blocks the window:
+    /// answering it, leaving it (another file, closing, quitting) and the
+    /// window itself.
+    pub fn allowed_during_prompt(self) -> bool {
+        use ReaderCommand::*;
+        matches!(
+            self,
+            Cancel
+                | ConfirmPrompt
+                | Quit
+                | OpenFile
+                | CloseDocument
+                | ToggleFullscreen
+                | ToggleDevOverlay
+        )
     }
 }
 
@@ -109,6 +138,9 @@ pub struct Binding {
 pub const FIND_BAR: &str = "FindBar";
 /// Key context of the field that edits a line of a page's text.
 pub const LINE_EDITOR: &str = "LineEditor";
+/// Key context of the prompt card that blocks the window (a password, a
+/// confirmation) and of the text field inside it.
+pub const PROMPT: &str = "Prompt";
 
 const fn bind(keystroke: &'static str, command: ReaderCommand) -> Binding {
     Binding {
@@ -176,6 +208,8 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind_in(FIND_BAR, "escape", Cancel),
         bind_in(LINE_EDITOR, "enter", ConfirmEdit),
         bind_in(LINE_EDITOR, "escape", Cancel),
+        bind_in(PROMPT, "enter", ConfirmPrompt),
+        bind_in(PROMPT, "escape", Cancel),
     ]
 };
 
@@ -221,6 +255,34 @@ mod tests {
             Some(ReaderCommand::FindNext)
         );
         assert_eq!(command_for("enter"), None);
+        assert_eq!(
+            command_in(Some(PROMPT), "enter"),
+            Some(ReaderCommand::ConfirmPrompt)
+        );
+        assert_eq!(
+            command_in(Some(PROMPT), "escape"),
+            Some(ReaderCommand::Cancel)
+        );
+    }
+
+    #[test]
+    fn write_and_prompt_command_groups() {
+        use ReaderCommand::*;
+        let writes: Vec<_> = ReaderCommand::ALL
+            .iter()
+            .copied()
+            .filter(|c| c.writes_document())
+            .collect();
+        assert_eq!(writes, [SaveCopy, PageTools, StampTool, EditText, Sign]);
+        for command in ReaderCommand::ALL {
+            // Nothing that writes, moves the view or opens a panel gets past
+            // a prompt.
+            if command.allowed_during_prompt() {
+                assert!(!command.writes_document(), "{command:?}");
+            }
+        }
+        assert!(ConfirmPrompt.allowed_during_prompt() && Cancel.allowed_during_prompt());
+        assert!(!Print.allowed_during_prompt() && !NavigateBack.allowed_during_prompt());
     }
 
     #[test]

@@ -71,6 +71,10 @@ impl ReaderView {
             session,
         } = match result {
             Ok(opened) => opened,
+            Err(OpenFailure::Locked(locked)) => {
+                self.lock_document(locked, window, cx);
+                return;
+            }
             Err(failure) => {
                 log::warn!("cannot open {}: {failure}", path.display());
                 self.doc = DocState::Failed { failure, path };
@@ -116,6 +120,7 @@ impl ReaderView {
             name,
             opened_at: Instant::now(),
             exact_reported: false,
+            protected: opened.password_protected,
         }));
         self.report(BenchEvent::DocumentOpened);
         // Panels that were open carry over to the new document.
@@ -169,8 +174,12 @@ impl ReaderView {
                 .detach();
             window.set_window_title(APP_TITLE);
             self.load_recent(cx);
-        } else if !matches!(self.doc, DocState::Empty) {
-            self.doc = DocState::Empty;
+        } else if let DocState::Locked(_) = mem::replace(&mut self.doc, DocState::Empty) {
+            // The prompt and its field (wiped on drop) are gone: back to the
+            // empty window.
+            window.focus(&self.focus, cx);
+            window.set_window_title(APP_TITLE);
+            self.load_recent(cx);
         }
         cx.notify();
     }

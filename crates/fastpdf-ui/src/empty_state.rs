@@ -50,7 +50,7 @@ impl ReaderView {
         let theme = self.theme;
         let strings = self.strings();
         let (title, detail, is_error): (String, String, bool) = match &self.doc {
-            DocState::Open(_) => return None,
+            DocState::Open(_) | DocState::Locked(_) => return None,
             DocState::Empty => (APP_TITLE.into(), strings.empty_hint.into(), false),
             DocState::Loading { path } => {
                 (strings.opening(&display_name(path)), String::new(), false)

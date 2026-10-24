@@ -61,6 +61,10 @@
 //! | `expect-page=N`, `expect-zoom=PERCENT` | stops the script unless on page N (one-based) or at that zoom (`checks.rs`) |
 //! | `expect-history=B,F` | stops the script unless Back and Forward hold B and F views (`checks.rs`) |
 //! | `outline=N` | activates outline row N (one-based), once the outline has loaded (`checks.rs`) |
+//! | `wait-prompt=password` | waits until the password prompt waits for input (`checks.rs`) |
+//! | `password=TEXT` | types TEXT into the password prompt and confirms it; fixture passwords only, never logged (`checks.rs`) |
+//! | `password-text=TEXT` | only types TEXT into the password prompt (to see the masked field) (`checks.rs`) |
+//! | `prompt-cancel` | cancels the prompt, like Esc (`checks.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
@@ -334,6 +338,11 @@ impl ReaderView {
             Step::WaitOpen => match &self.doc {
                 DocState::Open(_) => Done,
                 DocState::Failed { failure, .. } => Abort(failure.to_string()),
+                DocState::Locked(locked) if locked.checking => Pending,
+                DocState::Locked(locked) if locked.wrong => {
+                    Abort("the password did not open the document".into())
+                }
+                DocState::Locked(_) => Abort("the document needs a password".into()),
                 _ => Pending,
             },
             Step::Wait(duration) => {
@@ -662,7 +671,7 @@ impl ReaderView {
                 self.wheel_notches(*notches, window, cx);
                 Done
             }
-            Step::Check(check) => self.run_check_step(*check, cx),
+            Step::Check(check) => self.run_check_step(check, window, cx),
         }
     }
 }

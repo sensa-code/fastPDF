@@ -88,6 +88,8 @@ OCR、AI chat、cloud storage、account、login、sync、annotations 編輯、co
 
 PDF 寫入（另存副本、頁面操作、印章、文字修改、數位簽章）依 ADR 0013 進行：一律另存新檔、在 `--write-job` 子行程執行、閱讀路徑零成本。不在原處修改 PDF。
 
+加密文件的開啟密碼依 ADR 0014 處理：只用 `fastpdf_engine_api::Password` 傳遞（`Debug` 會遮蔽、drop 時清除），不寫進 log、檔案、命令列參數或環境變數；用密碼開啟的文件不寫入，新的寫入指令要列入 `ReaderCommand::writes_document()`。
+
 ## Logging（spec §31）
 
 - 開發：`FASTPDF_LOG=debug`（或 `FASTPDF_LOG=fastpdf_render=trace,info`）。
