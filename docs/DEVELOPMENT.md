@@ -90,6 +90,8 @@ PDF 寫入（另存副本、頁面操作、印章、文字修改、數位簽章�
 
 加密文件的開啟密碼依 ADR 0014 處理：只用 `fastpdf_engine_api::Password` 傳遞（`Debug` 會遮蔽、drop 時清除），不寫進 log、檔案、命令列參數或環境變數；用密碼開啟的文件不寫入，新的寫入指令要列入 `ReaderCommand::writes_document()`。
 
+文件中的連結依 ADR 0015 處理：任何要交給 Windows shell 的東西都只經過 `fastpdf_shell::check_external_uri`（只允許 http、https、mailto）與 `fastpdf_shell::open_external`，而且每次都要使用者在提示卡上按「開啟」；`Launch`、`GoToR`、JavaScript、`file:` 等一律不執行。開發腳本一律 dry run，不啟動瀏覽器、不碰剪貼簿。
+
 ## Logging（spec §31）
 
 - 開發：`FASTPDF_LOG=debug`（或 `FASTPDF_LOG=fastpdf_render=trace,info`）。

@@ -76,6 +76,8 @@
 //! | `focus=results` | gives the keyboard focus to the search result list (`search.rs`) |
 //! | `link-hover=P,X,Y`, `link-click=P,X,Y` | moves the pointer to (or clicks) page-space point (X, Y) of page P, waiting for the page's links; a click stops the script unless a link is there (`links.rs`) |
 //! | `link-drag=P,X0,Y0,X1,Y1[,X2,Y2]` | presses at the first point of page P, drags to the second (and on to the third) and releases there (`links.rs`) |
+//! | `wait-prompt=link` | stops the script unless the card of an external link shows (`checks.rs`) |
+//! | `link-prompt=open`, `=copy`, `=cancel` | answers that card like its buttons; scripts only log what would open or be copied (`links.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
@@ -310,6 +312,8 @@ impl ReaderView {
         cx: &mut Context<'_, Self>,
     ) {
         log::info!("dev script: {} steps", steps.len());
+        // Scripts never launch a browser or mail app (nor touch the clipboard).
+        self.links.dry_run = true;
         let task = cx.spawn_in(window, async move |this, cx| {
             for (index, step) in steps.into_iter().enumerate() {
                 let started = Instant::now();

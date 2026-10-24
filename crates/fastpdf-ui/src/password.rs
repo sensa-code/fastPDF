@@ -20,7 +20,7 @@ use gpui::{
 
 use crate::document::{LockedSource, OpenFailure, OpenedDocument, open_loaded};
 use crate::opening::{APP_TITLE, display_name};
-use crate::prompt::{PromptStatus, prompt_card};
+use crate::prompt::{CardPlacement, PromptStatus, prompt_card};
 use crate::reader::{DocState, ReaderView};
 use crate::text_input::{TextChanged, TextInput};
 use crate::toolbar::styled_button;
@@ -72,7 +72,7 @@ impl ReaderView {
         // dialog of Open closes: hand it back to the field, or typing and
         // Enter would go nowhere.
         let refocus = cx.on_focus(&self.focus, window, |view: &mut Self, window, cx| {
-            view.refocus_password_field(window, cx);
+            view.refocus_prompt(window, cx);
         });
         let name: SharedString = display_name(&locked.path).into();
         window.set_window_title(&format!("{name} - {APP_TITLE}"));
@@ -261,6 +261,7 @@ impl ReaderView {
         Some(prompt_card(
             "password-prompt",
             theme,
+            CardPlacement::Center,
             None,
             strings.password_required().into(),
             body,

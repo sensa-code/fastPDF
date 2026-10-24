@@ -3,8 +3,11 @@
 //! corner (unrotated, as in fixtures/README.md). The page is brought into
 //! view first if the point is not visible (not a jump: Back does not
 //! return from it). The steps drive the same handlers as the mouse and
-//! wait while the page's links are read.
+//! wait while the page's links are read. `link-prompt` answers the card of
+//! an external link like its buttons; scripts run dry (`LinkLayer::dry_run`):
+//! Open logs what would open, Copy what would be copied.
 
+use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_engine_api::{PageIndex, PageRect};
 use gpui::{Context, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, Window, point, px};
 
@@ -28,11 +31,30 @@ pub(crate) enum LinkStep {
         to: (f32, f32),
         back: Option<(f32, f32)>,
     },
+    /// `link-prompt=open|copy|cancel`: answers the card of an external
+    /// link; stops the script unless it shows.
+    Prompt(PromptAnswer),
+}
+
+/// A button of the link card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptAnswer {
+    Open,
+    Copy,
+    Cancel,
 }
 
 impl LinkStep {
     /// The step written `name=value`; `None` for another step or a bad value.
     pub(super) fn parse(name: &str, value: Option<&str>) -> Option<Self> {
+        if name == "link-prompt" {
+            return Some(Self::Prompt(match value? {
+                "open" => PromptAnswer::Open,
+                "copy" => PromptAnswer::Copy,
+                "cancel" => PromptAnswer::Cancel,
+                _ => return None,
+            }));
+        }
         if !matches!(name, "link-hover" | "link-click" | "link-drag") {
             return None;
         }
@@ -60,9 +82,12 @@ impl LinkStep {
         })
     }
 
-    fn page(&self) -> u32 {
+    fn page(&self) -> Option<u32> {
         match *self {
-            Self::Hover { page, .. } | Self::Click { page, .. } | Self::Drag { page, .. } => page,
+            Self::Hover { page, .. } | Self::Click { page, .. } | Self::Drag { page, .. } => {
+                Some(page)
+            }
+            Self::Prompt(_) => None,
         }
     }
 }
@@ -74,16 +99,20 @@ impl ReaderView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> StepState {
+        let Some(number) = step.page() else {
+            return self.answer_link_step(step, window, cx);
+        };
         let Some(page_count) = self.session().map(|s| s.page_count()) else {
             return StepState::Abort("no document".into());
         };
-        if step.page() > page_count {
+        if number > page_count {
             return StepState::Abort(format!("the document has {page_count} pages"));
         }
-        let page = PageIndex::new(step.page() - 1);
+        let page = PageIndex::new(number - 1);
         let (x, y) = match *step {
             LinkStep::Hover { x, y, .. } | LinkStep::Click { x, y, .. } => (x, y),
             LinkStep::Drag { from, .. } => from,
+            LinkStep::Prompt(_) => return StepState::Abort("not a point".into()),
         };
         let Some(position) = self.window_point(page, x, y) else {
             return StepState::Pending;
@@ -115,7 +144,7 @@ impl ReaderView {
                 }
                 log::info!("link click: {at}: {label}");
                 self.dev_press(position, window, cx);
-                self.on_selection_end(&release(position), cx);
+                self.on_selection_end(&release(position), window, cx);
                 StepState::Done
             }
             LinkStep::Drag { to, back, .. } => {
@@ -137,10 +166,34 @@ impl ReaderView {
                     self.link_hover(point, cx);
                     end = point;
                 }
-                self.on_selection_end(&release(end), cx);
+                self.on_selection_end(&release(end), window, cx);
                 StepState::Done
             }
+            LinkStep::Prompt(_) => StepState::Abort("not a point".into()),
         }
+    }
+
+    /// `link-prompt=...`: the card's buttons.
+    fn answer_link_step(
+        &mut self,
+        step: &LinkStep,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> StepState {
+        let LinkStep::Prompt(answer) = *step else {
+            return StepState::Abort("not a prompt answer".into());
+        };
+        if self.links.prompt.is_none() {
+            return StepState::Abort("no link prompt".into());
+        }
+        log::info!("link prompt: {answer:?}");
+        match answer {
+            PromptAnswer::Open => self.answer_link_prompt(true, window, cx),
+            PromptAnswer::Copy => self.copy_link_address(window, cx),
+            // Like Esc or the Cancel button.
+            PromptAnswer::Cancel => self.run_command(ReaderCommand::Cancel, window, cx),
+        }
+        StepState::Done
     }
 
     /// A left-button press at `position`, as the mouse makes it.
@@ -225,7 +278,18 @@ mod tests {
                 back: Some((101.0, 100.0)),
             })]
         );
+        assert_eq!(
+            parse("link-prompt=open; link-prompt=copy; link-prompt=cancel").unwrap(),
+            vec![
+                Step::Link(LinkStep::Prompt(PromptAnswer::Open)),
+                Step::Link(LinkStep::Prompt(PromptAnswer::Copy)),
+                Step::Link(LinkStep::Prompt(PromptAnswer::Cancel)),
+            ]
+        );
         for bad in [
+            "link-prompt",
+            "link-prompt=yes",
+            "link-prompt=Open",
             "link-hover",
             "link-hover=1,100",
             "link-hover=0,1,1",

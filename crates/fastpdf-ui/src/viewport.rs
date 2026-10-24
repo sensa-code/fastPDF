@@ -356,9 +356,9 @@ pub(crate) fn track_selection_drag(view: Entity<ReaderView>, window: &mut Window
             move_view.update(cx, |this, cx| this.on_selection_drag(event.position, cx));
         }
     });
-    window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
         if phase == DispatchPhase::Bubble {
-            view.update(cx, |this, cx| this.on_selection_end(event, cx));
+            view.update(cx, |this, cx| this.on_selection_end(event, window, cx));
         }
     });
 }

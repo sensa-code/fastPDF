@@ -142,7 +142,7 @@ impl ReaderView {
         self.end_go_to(false, window, cx);
         self.find.reset(cx);
         self.selection.reset();
-        self.reset_links();
+        self.reset_links(window, cx);
         self.sidebar.reset_document();
         self.smooth_scroll.stop();
         self.page_turn = PageTurn::default();

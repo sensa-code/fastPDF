@@ -1,7 +1,8 @@
-//! Text about links: where the link under the pointer goes, and why
-//! FastPDF does not follow one.
+//! Text about links: where the link under the pointer goes, why FastPDF
+//! does not follow one, and the card that asks before an external link
+//! opens.
 
-use fastpdf_shell::UriRejection;
+use fastpdf_shell::{OpenError, UriKind, UriRejection};
 
 use super::{Language, Strings};
 use crate::links::LinkBlock;
@@ -73,6 +74,68 @@ impl Strings {
             LinkBlock::Uri(_) => text("the address is not supported", "不支援這個網址"),
         }
     }
+
+    /// The question on the card.
+    pub(crate) fn link_prompt_title(&self, kind: UriKind) -> &'static str {
+        match (self.language, kind) {
+            (Language::English, UriKind::Web) => "Open this link in your browser?",
+            (Language::English, UriKind::Mail) => "Open this link in your email app?",
+            (Language::TraditionalChinese, UriKind::Web) => "要在瀏覽器開啟這個連結嗎？",
+            (Language::TraditionalChinese, UriKind::Mail) => "要用郵件程式開啟這個連結嗎？",
+        }
+    }
+
+    /// The web site the link goes to (`host`: punycode for international
+    /// names).
+    pub(crate) fn link_prompt_site(&self, host: &str) -> String {
+        match self.language {
+            Language::English => format!("Site: {host}"),
+            Language::TraditionalChinese => format!("網站：{host}"),
+        }
+    }
+
+    pub(crate) fn link_prompt_note(&self) -> &'static str {
+        match self.language {
+            Language::English => {
+                "This link comes from the PDF document. Open it only if you trust the address."
+            }
+            Language::TraditionalChinese => "這個連結來自 PDF 文件，請確認網址可信再開啟。",
+        }
+    }
+
+    pub(crate) fn link_open(&self) -> &'static str {
+        match self.language {
+            Language::English => "Open",
+            Language::TraditionalChinese => "開啟",
+        }
+    }
+
+    pub(crate) fn link_copy_address(&self) -> &'static str {
+        match self.language {
+            Language::English => "Copy address",
+            Language::TraditionalChinese => "複製網址",
+        }
+    }
+
+    /// The link did not open.
+    pub(crate) fn link_open_failed(&self, why: &OpenError) -> String {
+        let zh = self.language == Language::TraditionalChinese;
+        let why = match (why, zh) {
+            (OpenError::NoHandler, false) => "no app is set up to open this kind of link".into(),
+            (OpenError::NoHandler, true) => "沒有可以開啟這種連結的程式".into(),
+            (OpenError::Cancelled, false) => "it was cancelled".into(),
+            (OpenError::Cancelled, true) => "已取消".into(),
+            (OpenError::Win32(code), false) => format!("Windows error {code}"),
+            (OpenError::Win32(code), true) => format!("Windows 錯誤 {code}"),
+            (OpenError::Unsupported, false) => "opening links is not supported here".into(),
+            (OpenError::Unsupported, true) => "這裡無法開啟連結".into(),
+        };
+        if zh {
+            format!("無法開啟連結：{why}")
+        } else {
+            format!("Cannot open the link: {why}")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +177,44 @@ mod tests {
             zh.link_not_followed("x"),
         ] {
             assert!(han(&text), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_card_and_failures_have_both_languages() {
+        let en = Language::English.strings();
+        let zh = Language::TraditionalChinese.strings();
+        for kind in [UriKind::Web, UriKind::Mail] {
+            assert!(!han(en.link_prompt_title(kind)));
+            assert!(han(zh.link_prompt_title(kind)));
+        }
+        for (e, z) in [
+            (en.link_prompt_note(), zh.link_prompt_note()),
+            (en.link_open(), zh.link_open()),
+            (en.link_copy_address(), zh.link_copy_address()),
+        ] {
+            assert!(!e.is_empty() && !han(e), "{e}");
+            assert!(han(z), "{z}");
+        }
+        assert_eq!(
+            zh.link_prompt_site("example.invalid"),
+            "網站：example.invalid"
+        );
+        for why in [
+            OpenError::NoHandler,
+            OpenError::Cancelled,
+            OpenError::Win32(5),
+            OpenError::Unsupported,
+        ] {
+            let (e, z) = (en.link_open_failed(&why), zh.link_open_failed(&why));
+            assert!(
+                e.starts_with("Cannot open the link: ") && e.len() > 22,
+                "{e}"
+            );
+            assert!(
+                z.starts_with("無法開啟連結：") && han(&z[21..]) || z.contains("Windows"),
+                "{z}"
+            );
         }
     }
 }

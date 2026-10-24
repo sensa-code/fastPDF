@@ -134,7 +134,7 @@ impl ReaderView {
             && self.active_prompt().is_none();
         if !shown && self.find.results.is_focused(window) {
             window.focus(&self.focus, cx);
-            self.refocus_password_field(window, cx);
+            self.refocus_prompt(window, cx);
         }
     }
 

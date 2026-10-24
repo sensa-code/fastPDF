@@ -105,7 +105,7 @@ impl ReaderView {
                 let focused = match target {
                     FocusTarget::Find => self.find.input.read(cx).focus_handle().is_focused(window),
                     FocusTarget::Document => self.focus.is_focused(window),
-                    FocusTarget::Prompt => self.password_field_focused(window, cx),
+                    FocusTarget::Prompt => self.prompt_focused(window, cx),
                     FocusTarget::Results => self.find.results.is_focused(window),
                 };
                 return if focused {
@@ -170,6 +170,9 @@ impl ReaderView {
     /// opened or failed instead.
     fn prompt_waiting(&self, kind: PromptKind) -> StepState {
         match (&self.doc, kind) {
+            // A link prompt opens with the click that asks for it.
+            (_, PromptKind::OpenLink) if self.active_prompt() == Some(kind) => StepState::Done,
+            (_, PromptKind::OpenLink) => StepState::Abort("no link prompt".into()),
             (DocState::Locked(locked), PromptKind::Password) if !locked.checking => StepState::Done,
             (DocState::Locked(_) | DocState::Loading { .. }, _) => StepState::Pending,
             (DocState::Open(_), _) => StepState::Abort("the document opened, no prompt".into()),

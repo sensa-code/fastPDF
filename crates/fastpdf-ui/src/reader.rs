@@ -578,8 +578,8 @@ impl ReaderView {
     /// Esc: cancels a prompt, closes the page field or a menu, stops editing
     /// a line, unarms or deselects a stamp, closes the stamp or text edit
     /// panel, stops printing or closes the print panel, then the page tools,
-    /// the settings panel, leaves the result list, closes the find bar, then
-    /// clears the selection.
+    /// the settings panel, leaves the result list, closes the find bar or a
+    /// link's error, then clears the selection.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.cancel_prompt(window, cx) || self.end_go_to(true, window, cx) {
         } else if self.menus.open.is_some() {
@@ -606,6 +606,7 @@ impl ReaderView {
             window.focus(&self.focus, cx);
         } else if self.find.open {
             self.close_find(window, cx);
+        } else if self.links.notice.take().is_some() {
         } else {
             self.selection.clear();
         }
@@ -993,6 +994,7 @@ impl ReaderView {
                 |area| area.cursor_pointer(),
             )
             .when_some(self.render_link_status(), |area, chip| area.child(chip))
+            .when_some(self.render_link_notice(cx), |area, chip| area.child(chip))
             .when_some(self.render_write_notice(cx), |area, notice| {
                 area.child(notice)
             })

@@ -68,12 +68,17 @@ impl ReaderView {
     /// The release ending a selection drag: a click (not a drag) clears
     /// the selection, and on a link follows it. Other buttons released
     /// meanwhile do not end it.
-    pub(crate) fn on_selection_end(&mut self, event: &MouseUpEvent, cx: &mut Context<'_, Self>) {
+    pub(crate) fn on_selection_end(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if event.button != MouseButton::Left {
             return;
         }
         self.selection.end();
-        let followed = self.link_release(event, cx);
+        let followed = self.link_release(event, window, cx);
         if followed || self.selection.anchor == self.selection.focus {
             self.selection.clear();
         }

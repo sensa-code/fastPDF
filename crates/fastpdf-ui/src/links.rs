@@ -13,8 +13,9 @@
 //!
 //! Internal links jump through `ReaderView::jump_to_destination` (Back
 //! returns). External addresses are checked with
-//! `fastpdf_shell::check_external_uri` when the hover changes; everything
-//! else (launching programs, other files, scripts) is never followed.
+//! `fastpdf_shell::check_external_uri` when the hover changes and open only
+//! after a confirmation (`crate::link_open`); everything else (launching
+//! programs, other files, scripts) is never followed.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -23,8 +24,9 @@ use std::time::{Duration, Instant};
 use fastpdf_core::links::{LinkAction, LinkCache, NotFollowed, PageLinks, is_click};
 use fastpdf_engine_api::{Destination, EngineError, Link, PageId, PageIndex};
 use fastpdf_shell::{ExternalUri, UriKind, UriRejection, check_external_uri};
-use gpui::{Bounds, Context, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point};
+use gpui::{Bounds, Context, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, Window};
 
+use crate::link_open::{LinkNotice, LinkPrompt};
 use crate::reader::ReaderView;
 
 /// Link reads running at once; one more waits (the newest).
@@ -53,6 +55,12 @@ pub(crate) struct LinkLayer {
     memo: Option<(PageId, Arc<PageLinks>)>,
     pub hover: Option<LinkHover>,
     press: Option<LinkPress>,
+    /// The question whether to open an external link.
+    pub prompt: Option<LinkPrompt>,
+    /// A link that did not open.
+    pub notice: Option<LinkNotice>,
+    /// Development scripts: log what would open instead of opening it.
+    pub dry_run: bool,
 }
 
 impl std::fmt::Debug for LinkLayer {
@@ -104,7 +112,7 @@ impl LinkBlock {
 }
 
 impl HoverTarget {
-    fn of(action: &LinkAction) -> Self {
+    pub(crate) fn of(action: &LinkAction) -> Self {
         match action {
             LinkAction::GoTo(d) => Self::Page(d.clone()),
             LinkAction::Uri(uri) => match check_external_uri(uri) {
@@ -169,11 +177,16 @@ impl LinkLayer {
             memo: None,
             hover: None,
             press: None,
+            prompt: None,
+            notice: None,
+            dry_run: false,
         }
     }
 
-    /// Everything but the cache (a document closed).
+    /// Everything but the cache and the dry run (a document closed).
     fn clear(&mut self) {
+        self.prompt = None;
+        self.notice = None;
         self.loading.clear();
         self.failed.clear();
         self.queued = None;
@@ -271,6 +284,7 @@ impl ReaderView {
     pub(crate) fn link_release(
         &mut self,
         event: &MouseUpEvent,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
         let Some(press) = self.links.press.take() else {
@@ -289,22 +303,23 @@ impl ReaderView {
         let Some(link) = links.get(index) else {
             return false;
         };
-        self.follow_link(HoverTarget::of(&link.action), cx);
+        self.follow_link(HoverTarget::of(&link.action), event.position, window, cx);
         true
     }
 
-    fn follow_link(&mut self, target: HoverTarget, cx: &mut Context<'_, Self>) {
+    fn follow_link(
+        &mut self,
+        target: HoverTarget,
+        click: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         match target {
             HoverTarget::Page(destination) => {
                 log::info!("link followed: page {}", destination.page.display_number());
                 self.jump_to_destination(&destination);
             }
-            HoverTarget::External(uri) => {
-                log::info!(
-                    "link not opened yet: {}",
-                    HoverTarget::External(uri).log_text()
-                );
-            }
+            HoverTarget::External(uri) => self.open_link_prompt(uri, click, window, cx),
             HoverTarget::Blocked(why) => {
                 log::info!("link not followed: {}", why.log_reason());
             }
@@ -348,10 +363,13 @@ impl ReaderView {
     }
 
     /// The document closes: its links go (the cache is shared by all
-    /// documents of the window).
-    pub(crate) fn reset_links(&mut self) {
+    /// documents of the window), and a question about one of them.
+    pub(crate) fn reset_links(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if let Some(document) = self.session().map(|s| s.id()) {
             self.links.cache.remove_document(document);
+        }
+        if self.links.prompt.is_some() {
+            window.focus(&self.focus, cx);
         }
         self.links.clear();
     }

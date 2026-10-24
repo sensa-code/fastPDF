@@ -4,9 +4,10 @@
 //! cancels), and while a prompt shows, `ReaderView::run_command` lets only
 //! the commands through that answer or leave it
 //! (`ReaderCommand::allowed_during_prompt`). Each feature keeps its own
-//! state (the locked document for a password, `crate::password`); this
-//! module only knows which prompt is showing. Nothing is created before a
-//! prompt is needed, and nothing animates.
+//! state (the locked document for a password, `crate::password`; the
+//! address of a link to open, `crate::links`); this module only knows
+//! which prompt is showing. Nothing is created before a prompt is needed,
+//! and nothing animates.
 
 use fastpdf_core::keymap;
 use gpui::{
@@ -27,16 +28,29 @@ const STATUS_HEIGHT: f32 = 18.0;
 pub(crate) enum PromptKind {
     /// The password of an encrypted document.
     Password,
+    /// Whether to open an external link (Enter does not answer it).
+    OpenLink,
 }
 
 impl PromptKind {
-    /// The name development scripts use (`wait-prompt=password`).
+    /// The name development scripts use (`wait-prompt=password`, `=link`).
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         match name {
             "password" => Some(Self::Password),
+            "link" => Some(Self::OpenLink),
             _ => None,
         }
     }
+}
+
+/// Where the card sits in the document area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CardPlacement {
+    Center,
+    /// Near the top or the bottom: away from where the pointer was, so a
+    /// second click of the click that opened it cannot land on a button.
+    Top,
+    Bottom,
 }
 
 /// A line under the body: a problem (`error`) or progress.
@@ -45,13 +59,15 @@ pub(crate) struct PromptStatus {
     pub error: bool,
 }
 
-/// The card with `title`, `body`, a status line and `buttons`, centered on
-/// a scrim that covers the document area. With `focus`, the card itself
+/// The card with `title`, `body`, a status line and `buttons`, placed on a
+/// scrim that covers the document area. With `focus`, the card itself
 /// takes the keyboard (a prompt without a text field); otherwise a field in
 /// `body` holds it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prompt_card(
     id: &'static str,
     theme: Theme,
+    placement: CardPlacement,
     focus: Option<&FocusHandle>,
     title: SharedString,
     body: impl IntoElement,
@@ -95,7 +111,11 @@ pub(crate) fn prompt_card(
         .size_full()
         .occlude()
         .flex()
-        .items_center()
+        .map(|scrim| match placement {
+            CardPlacement::Center => scrim.items_center(),
+            CardPlacement::Top => scrim.items_start(),
+            CardPlacement::Bottom => scrim.items_end(),
+        })
         .justify_center()
         .p_4()
         .bg(theme.modal_scrim)
@@ -105,13 +125,40 @@ pub(crate) fn prompt_card(
 impl ReaderView {
     /// The prompt in front of the window, if any.
     pub(crate) fn active_prompt(&self) -> Option<PromptKind> {
-        matches!(self.doc, DocState::Locked(_)).then_some(PromptKind::Password)
+        if matches!(self.doc, DocState::Locked(_)) {
+            Some(PromptKind::Password)
+        } else if self.links.prompt.is_some() {
+            Some(PromptKind::OpenLink)
+        } else {
+            None
+        }
     }
 
-    /// Enter in a prompt.
+    /// Enter in a prompt. A link opens only on a click on its Open button:
+    /// Enter, typed on and on, must not open what a document suggests.
     pub(crate) fn confirm_prompt(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if let Some(PromptKind::Password) = self.active_prompt() {
-            self.unlock_document(window, cx);
+        match self.active_prompt() {
+            Some(PromptKind::Password) => self.unlock_document(window, cx),
+            Some(PromptKind::OpenLink) | None => {}
+        }
+    }
+
+    /// Gives the keyboard back to the prompt that shows (its field, or the
+    /// card itself).
+    pub(crate) fn refocus_prompt(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        match self.active_prompt() {
+            Some(PromptKind::Password) => self.refocus_password_field(window, cx),
+            Some(PromptKind::OpenLink) => self.refocus_link_prompt(window, cx),
+            None => {}
+        }
+    }
+
+    /// The prompt that shows has the keyboard (development scripts).
+    pub(crate) fn prompt_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        match self.active_prompt() {
+            Some(PromptKind::Password) => self.password_field_focused(window, cx),
+            Some(PromptKind::OpenLink) => self.link_prompt_focused(window),
+            None => false,
         }
     }
 
@@ -127,6 +174,10 @@ impl ReaderView {
                 self.close_document(window, cx);
                 true
             }
+            Some(PromptKind::OpenLink) => {
+                self.answer_link_prompt(false, window, cx);
+                true
+            }
             None => false,
         }
     }
@@ -136,6 +187,9 @@ impl ReaderView {
         match self.active_prompt()? {
             PromptKind::Password => self
                 .render_password_prompt(cx)
+                .map(IntoElement::into_any_element),
+            PromptKind::OpenLink => self
+                .render_link_prompt(cx)
                 .map(IntoElement::into_any_element),
         }
     }
