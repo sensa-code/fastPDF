@@ -111,12 +111,17 @@ impl NavigationHistory {
         Some(target)
     }
 
-    pub fn can_go_back(&self) -> bool {
-        !self.back.is_empty()
+    /// Whether [`NavigationHistory::back`] from `current` would find a
+    /// view to show (peeks; entries that would show `current` again do not
+    /// count).
+    pub fn can_go_back(&self, current: &ViewState, layout: &DocumentLayout) -> bool {
+        has_target(&self.back, current, layout)
     }
 
-    pub fn can_go_forward(&self) -> bool {
-        !self.forward.is_empty()
+    /// Whether [`NavigationHistory::forward`] from `current` would find a
+    /// view to show.
+    pub fn can_go_forward(&self, current: &ViewState, layout: &DocumentLayout) -> bool {
+        has_target(&self.forward, current, layout)
     }
 
     /// Entries (back, forward), for dev-script checks.
@@ -130,6 +135,11 @@ fn push_capped(stack: &mut VecDeque<ViewState>, view: ViewState, capacity: usize
     while stack.len() > capacity {
         stack.pop_front();
     }
+}
+
+/// Whether `stack` holds an entry that would change the view.
+fn has_target(stack: &VecDeque<ViewState>, current: &ViewState, layout: &DocumentLayout) -> bool {
+    stack.iter().any(|view| !view.same_view(current, layout))
 }
 
 /// Pops the newest entry that would change the view, dropping the ones
@@ -182,11 +192,13 @@ mod tests {
     fn jumps_record_where_they_left_and_clear_forward() {
         let l = layout();
         let mut h = history();
-        assert!(!h.can_go_back() && !h.can_go_forward());
-        assert!(h.record(at(0, 0.0), at(30, 0.0), Jump::Direct, &l));
+        let here = at(30, 0.0);
+        assert!(!h.can_go_back(&here, &l) && !h.can_go_forward(&here, &l));
+        assert!(h.record(at(0, 0.0), here, Jump::Direct, &l));
         assert_eq!(h.depth(), (1, 0));
-        assert_eq!(h.back(at(30, 0.0), &l), Some(at(0, 0.0)));
-        assert!(h.can_go_forward());
+        assert!(h.can_go_back(&here, &l));
+        assert_eq!(h.back(here, &l), Some(at(0, 0.0)));
+        assert!(h.can_go_forward(&at(0, 0.0), &l));
         assert!(h.record(at(0, 0.0), at(50, 0.0), Jump::Direct, &l));
         assert_eq!(h.depth(), (1, 0), "a new jump clears Forward");
     }
@@ -289,6 +301,13 @@ mod tests {
         h.record(at(1, 0.0), at(20, 0.0), Jump::Direct, &l);
         assert_eq!(h.back(at(1, 0.0), &l), None);
         assert_eq!(h.depth(), (0, 0));
+        // The buttons agree: nothing but the current place is no target.
+        let mut h = history();
+        h.record(at(1, 0.0), at(20, 0.0), Jump::Direct, &l);
+        assert!(!h.can_go_back(&at(1, 0.0), &l));
+        assert!(h.can_go_back(&at(1, 0.3), &l));
+        h.record(at(20, 0.0), at(40, 0.0), Jump::Direct, &l);
+        assert!(h.can_go_back(&at(20, 0.0), &l), "an older entry differs");
         // Same place at another zoom still changes the view.
         let mut h = history();
         h.record(at(1, 0.0), at(20, 0.0), Jump::Direct, &l);

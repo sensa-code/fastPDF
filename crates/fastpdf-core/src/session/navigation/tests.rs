@@ -22,43 +22,81 @@ fn close(a: (f64, f64), b: (f64, f64)) -> bool {
 
 #[test]
 fn back_and_forward_restore_the_exact_view() {
-    let mut s = session();
-    s.set_zoom(ZoomLevel::new(2.0), None);
-    s.scroll_by(150.0, 2500.0);
-    let start = scroll(&s);
-    assert!(start.0 > 0.0 && start.1 > 0.0);
-    assert!(s.jump(Jump::Direct, |s| s.go_to_page(PageIndex::new(30))));
-    assert_eq!(s.current_page(), PageIndex::new(30));
-    s.scroll_by(-40.0, 300.0);
-    let there = scroll(&s);
-    assert!(s.can_go_back() && !s.can_go_forward());
+    let layouts = [
+        mode(Spread::Single, true),
+        mode(Spread::Single, false),
+        mode(Spread::Double, false),
+    ];
+    for layout in layouts {
+        let mut s = session();
+        s.set_layout_mode(layout);
+        s.set_zoom(ZoomLevel::new(2.0), None);
+        s.go_to_page(PageIndex::new(1));
+        s.scroll_by(150.0, 600.0);
+        let start = scroll(&s);
+        assert!(start.0 > 0.0 && start.1 > 0.0, "{layout:?}");
+        assert!(s.jump(Jump::Direct, |s| s.go_to_page(PageIndex::new(30))));
+        assert_eq!(
+            s.layout().row_of(s.current_page()),
+            s.layout().row_of(PageIndex::new(30))
+        );
+        s.scroll_by(-40.0, 300.0);
+        let there = scroll(&s);
+        assert!(s.can_go_back() && !s.can_go_forward());
 
-    assert!(s.go_back());
-    assert!(close(scroll(&s), start), "{:?} vs {start:?}", scroll(&s));
-    assert_eq!(s.history_depth(), (0, 1));
-    assert!(!s.go_back());
-    assert!(s.go_forward());
-    assert!(close(scroll(&s), there), "{:?} vs {there:?}", scroll(&s));
-    assert_eq!(s.history_depth(), (1, 0));
-    assert!(!s.go_forward());
+        assert!(s.go_back());
+        assert!(
+            close(scroll(&s), start),
+            "{layout:?}: {:?} vs {start:?}",
+            scroll(&s)
+        );
+        assert_eq!(
+            s.layout().row_of(s.current_page()),
+            s.layout().row_of(PageIndex::new(1))
+        );
+        assert_eq!(s.history_depth(), (0, 1));
+        assert!(!s.go_back());
+        assert!(s.go_forward());
+        assert!(
+            close(scroll(&s), there),
+            "{layout:?}: {:?} vs {there:?}",
+            scroll(&s)
+        );
+        assert_eq!(s.history_depth(), (1, 0));
+        assert!(!s.go_forward());
+    }
 }
 
 #[test]
-fn ordinary_navigation_is_not_recorded() {
+fn moving_after_a_jump_is_not_recorded_and_forward_returns_there() {
     let mut s = session();
     assert_eq!(s.history_depth(), (0, 0), "fresh sessions have no history");
+    let start = s.view_state();
+    s.jump(Jump::Direct, |s| s.go_to_page(PageIndex::new(20)));
+    // Paging, scrolling and zooming are not jumps.
     s.next_page();
     s.page_down();
-    s.scroll_by(0.0, 500.0);
+    s.scroll_by(30.0, 200.0);
     s.zoom_in(None);
-    s.scroll_to(ScrollAxis::Vertical, 0.5);
-    s.fit_page();
-    s.set_layout_mode(mode(Spread::Double, true));
-    s.rotate_clockwise();
-    s.first_page();
-    s.last_page();
-    assert!(!s.can_go_back() && !s.can_go_forward());
-    assert_eq!(s.history_depth(), (0, 0));
+    s.scroll_to(ScrollAxis::Vertical, 0.6);
+    assert_eq!(s.history_depth(), (1, 0));
+    let moved = s.view_state();
+
+    // Back returns to the start in its zoom; Forward to where the view
+    // moved to, not where the jump landed.
+    assert!(s.go_back());
+    let back = s.view_state();
+    assert_eq!(back.anchor.page, start.anchor.page);
+    assert!((back.anchor.fraction - start.anchor.fraction).abs() < 1e-9);
+    assert_eq!((back.zoom, back.zoom_mode), (start.zoom, start.zoom_mode));
+    assert!(s.go_forward());
+    let forward = s.view_state();
+    assert_eq!(forward.anchor.page, moved.anchor.page);
+    assert!((forward.anchor.fraction - moved.anchor.fraction).abs() < 1e-9);
+    assert_eq!(
+        (forward.zoom, forward.zoom_mode),
+        (moved.zoom, ZoomMode::Custom)
+    );
 }
 
 #[test]
@@ -67,22 +105,62 @@ fn back_restores_zoom_and_zoom_mode() {
     s.set_zoom(ZoomLevel::new(2.0), None);
     s.jump(Jump::Direct, |s| s.go_to_page(PageIndex::new(20)));
     s.fit_width();
-    let fitted = s.zoom();
     assert!(s.go_back());
     assert_eq!(s.zoom_mode(), ZoomMode::Custom);
     assert_eq!(s.zoom(), ZoomLevel::new(2.0));
+
+    // The window got narrower meanwhile: fit width is recomputed for it.
+    s.resize(1000.0, 720.0, 1.0);
     assert!(s.go_forward());
     assert_eq!(s.zoom_mode(), ZoomMode::FitWidth);
-    assert_eq!(s.zoom(), fitted);
+    let mut fresh = session();
+    fresh.resize(1000.0, 720.0, 1.0);
+    assert_eq!(s.zoom(), fresh.zoom());
     assert_eq!(s.current_page(), PageIndex::new(20));
 
-    // Fit page is recomputed for the page shown.
+    // Fit page is recomputed for the page shown and the window.
     s.fit_page();
     s.jump(Jump::Direct, |s| s.go_to_page(PageIndex::new(2)));
     s.actual_size();
+    s.resize(1000.0, 650.0, 1.0);
     assert!(s.go_back());
     assert_eq!(s.zoom_mode(), ZoomMode::FitPage);
     assert_eq!(s.current_page(), PageIndex::new(20));
+    let mut fresh = session();
+    fresh.resize(1000.0, 650.0, 1.0);
+    fresh.go_to_page(PageIndex::new(20));
+    fresh.fit_page();
+    assert_ne!(fresh.zoom(), ZoomLevel::ACTUAL_SIZE);
+    assert_eq!(s.zoom(), fresh.zoom());
+}
+
+#[test]
+fn saved_views_name_the_page_go_to_page_shows() {
+    let mut s = session();
+    s.go_to_page(PageIndex::new(10));
+    // The gap above row 10 belongs to the end of row 9 ...
+    let anchor = s.view_state().anchor;
+    assert_eq!((anchor.page, anchor.fraction), (PageIndex::new(9), 1.0));
+    // ... but the view is saved as the top of page 10.
+    let saved = s.saved_view();
+    assert_eq!(saved.page, PageIndex::new(10));
+    assert!(saved.offset < 0.0 && saved.offset > -0.05, "{saved:?}");
+
+    let mut same = session();
+    same.restore_saved(&saved, RestoreScope::Exact);
+    assert!((same.viewport().scroll_y - s.viewport().scroll_y).abs() < 1e-3);
+    for layout in [mode(Spread::Single, false), mode(Spread::DoubleCover, true)] {
+        let mut t = session();
+        t.set_layout_mode(layout);
+        t.restore_saved(&saved, RestoreScope::Exact);
+        let row = t.layout().row_of(PageIndex::new(10));
+        assert_eq!(t.layout().row_of(t.current_page()), row, "{layout:?}");
+        let frame = settle(&mut t);
+        assert!(
+            frame.pages.iter().any(|p| p.page == PageIndex::new(10)),
+            "{layout:?}"
+        );
+    }
 }
 
 #[test]

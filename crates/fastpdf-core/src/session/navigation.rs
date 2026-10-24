@@ -55,8 +55,32 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
     }
 
     /// The view in its persisted, layout-independent form.
+    ///
+    /// `go_to_page` leaves the view one gap above its row, which the anchor
+    /// gives to the end of the row before (fraction 1). Saved like that,
+    /// another layout would show the wrong row, so a view in the gap below
+    /// a row is saved as the top of the next one (a small negative offset).
     pub fn saved_view(&self) -> SavedView {
-        SavedView::from_state(&self.view_state(), self.layout.total_size().0)
+        let mut state = self.view_state();
+        let layout = &self.layout;
+        if layout.mode().continuous
+            && state.anchor.fraction >= 1.0
+            && let Some(next) = layout.next_row_page(state.anchor.page)
+        {
+            let top = layout.y_for_anchor(ScrollAnchor {
+                page: next,
+                fraction: 0.0,
+            });
+            let bottom = layout.y_for_anchor(ScrollAnchor {
+                page: next,
+                fraction: 1.0,
+            });
+            state.anchor = ScrollAnchor {
+                page: next,
+                fraction: (self.viewport.scroll_y - top) / (bottom - top).max(1.0),
+            };
+        }
+        SavedView::from_state(&state, layout.total_size().0)
     }
 
     /// Shows a saved view (sanitized first): page and offset, plus the
@@ -128,12 +152,15 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
         }
     }
 
+    /// Whether Back would change the view.
     pub fn can_go_back(&self) -> bool {
-        self.history.can_go_back()
+        self.history.can_go_back(&self.view_state(), &self.layout)
     }
 
+    /// Whether Forward would change the view.
     pub fn can_go_forward(&self) -> bool {
-        self.history.can_go_forward()
+        self.history
+            .can_go_forward(&self.view_state(), &self.layout)
     }
 
     /// History entries (back, forward), for dev-script checks.
