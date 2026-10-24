@@ -5,7 +5,10 @@
 //! Number trees in hostile files can be cyclic, absurdly deep or huge, and
 //! their entries can point at enormous objects. Resolving a reference costs
 //! up to the size of the object it points at (hayro scans an object of the
-//! wrong type to its end), so the walk never resolves the same object
+//! wrong type to its end), so every reference is resolved as whatever
+//! object it is and its size is charged to a byte budget before its type
+//! is checked; several object numbers whose xref entries point at the same
+//! bytes are each charged. The walk also never resolves the same object
 //! twice: kids, arrays and prefix strings are resolved once by identity,
 //! label dictionaries are remembered, and `/S` and `/St` are only read when
 //! they are direct. Kids are resolved one at a time when the walk reaches
@@ -33,6 +36,12 @@ const MAX_PAIRS: usize = 131_072;
 /// Bytes of nodes, arrays, value dictionaries and prefix strings looked at
 /// in total. Far above any real number tree.
 const MAX_SCANNED_BYTES: usize = 32 << 20;
+/// What resolving a stream counts against [`MAX_SCANNED_BYTES`] besides its
+/// dictionary: streams never belong in a number tree, and reading one can
+/// make hayro resolve its `/Length` or search for `endstream`, which cannot
+/// be measured from here. Their data is never touched (no decryption).
+/// At most 8 streams per walk.
+const STREAM_COST: usize = MAX_SCANNED_BYTES / 8;
 /// Distinct indirect label dictionaries (and indirect prefixes) read at
 /// most; real documents have a handful. References to further objects are
 /// skipped.
@@ -119,15 +128,18 @@ impl<'p> Walk<'p> {
             }
             self.nodes += 1;
             let node = match pending {
-                Pending::Direct(dict) => dict,
-                Pending::Indirect(id) => match self.pdf.xref().get::<Dict<'p>>(id) {
-                    Some(dict) => dict,
-                    None => continue,
+                Pending::Direct(dict) => {
+                    if !self.charge(dict.data().len()) {
+                        return;
+                    }
+                    dict
+                }
+                // Charged by `resolve`; the loop head checks the budget.
+                Pending::Indirect(id) => match self.resolve(id) {
+                    Some(Object::Dict(dict)) => dict,
+                    _ => continue,
                 },
             };
-            if !self.charge(node.data().len()) {
-                return;
-            }
             if let Some(nums) = self.array(&node, b"Nums") {
                 if !self.charge(nums.data().len()) {
                     return;
@@ -174,9 +186,22 @@ impl<'p> Walk<'p> {
                 if !self.resolved.insert(id) {
                     return None;
                 }
-                self.pdf.xref().get::<Array<'p>>(id)
+                match self.resolve(id)? {
+                    Object::Array(array) => Some(array),
+                    _ => None,
+                }
             }
         }
+    }
+
+    /// Resolves an indirect object as whatever it is and charges its size.
+    /// Asking hayro for the expected type would cost the same (an object of
+    /// another type is scanned to its end) without telling how much.
+    /// Streams are charged a flat [`STREAM_COST`]. `None` when the object is
+    /// missing or the budget is spent.
+    fn resolve(&mut self, id: ObjectIdentifier) -> Option<Object<'p>> {
+        let object = self.pdf.xref().get::<Object<'p>>(id)?;
+        self.charge(object_bytes(&object)).then_some(object)
     }
 
     fn read_nums(&mut self, nums: &Array<'p>) {
@@ -220,8 +245,8 @@ impl<'p> Walk<'p> {
                 if self.values.len() >= MAX_INDIRECT_VALUES {
                     return None;
                 }
-                let entry = match self.pdf.xref().get::<Dict<'p>>(id) {
-                    Some(dict) if self.charge(dict.data().len()) => self.entry(&dict),
+                let entry = match self.resolve(id) {
+                    Some(Object::Dict(dict)) => self.entry(&dict),
                     _ => None,
                 };
                 self.values.insert(id, entry.clone());
@@ -271,13 +296,25 @@ impl<'p> Walk<'p> {
         if self.prefixes.len() >= MAX_INDIRECT_VALUES {
             return Some(String::new());
         }
-        let text = match self.pdf.xref().get::<PdfString<'p>>(id) {
-            Some(text) if !self.charge(text.as_bytes().len()) => return None,
-            Some(text) => prefix_text(&text),
-            None => String::new(),
+        let text = match self.resolve(id) {
+            Some(Object::String(text)) => prefix_text(&text),
+            _ if self.bytes > MAX_SCANNED_BYTES => return None,
+            _ => String::new(),
         };
         self.prefixes.insert(id, text.clone());
         Some(text)
+    }
+}
+
+/// Bytes an object spans (its scan cost); scalars count a few bytes.
+fn object_bytes(object: &Object<'_>) -> usize {
+    match object {
+        Object::Dict(dict) => dict.data().len(),
+        Object::Array(array) => array.data().len(),
+        Object::String(text) => text.as_bytes().len(),
+        Object::Name(name) => name.len(),
+        Object::Stream(stream) => stream.dict().data().len().saturating_add(STREAM_COST),
+        Object::Null(_) | Object::Boolean(_) | Object::Number(_) => 8,
     }
 }
 

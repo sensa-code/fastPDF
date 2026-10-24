@@ -257,6 +257,49 @@ fn hostile_number_trees_are_bounded() {
 }
 
 #[test]
+fn rejected_objects_count_against_the_byte_budget() {
+    // Four 9 MB arrays where kid dictionaries belong: rejecting them costs a
+    // scan each, so the walk stops before the real node after them.
+    let big = format!("[({})]", "y".repeat(9 << 20));
+    let mut objects: Vec<(u32, String)> = (0..4).map(|i| (101 + i, big.clone())).collect();
+    objects.push((105, "<< /Nums [0 << /S /r >>] >>".into()));
+    objects.push((
+        100,
+        "<< /Kids [101 0 R 102 0 R 103 0 R 104 0 R 105 0 R] >>".into(),
+    ));
+    let started = Instant::now();
+    let (labels, _) = labels_of(document(2, "/PageLabels 100 0 R", &objects));
+    assert!(labels.is_empty(), "{labels:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+
+    // Streams are charged a flat cost: nine of them end the walk too.
+    let mut objects: Vec<(u32, String)> = (0..9)
+        .map(|i| {
+            (
+                101 + i,
+                "<< /Length 3 >>\nstream\nabc\nendstream".to_owned(),
+            )
+        })
+        .collect();
+    objects.push((110, "<< /Nums [0 << /S /r >>] >>".into()));
+    let kids: String = (101..=110).map(|n| format!("{n} 0 R ")).collect();
+    objects.push((100, format!("<< /Kids [{kids}] >>")));
+    let (labels, _) = labels_of(document(2, "/PageLabels 100 0 R", &objects));
+    assert!(labels.is_empty(), "{labels:?}");
+
+    // Without the big arrays the same node is read.
+    let (_, all) = labels_of(document(
+        2,
+        "/PageLabels 100 0 R",
+        &[
+            (100, "<< /Kids [105 0 R] >>".into()),
+            (105, "<< /Nums [0 << /S /r >>] >>".into()),
+        ],
+    ));
+    assert_eq!(all, some(&["i", "ii"]));
+}
+
+#[test]
 fn page_labels_fixtures() {
     if let Some(bytes) = fixture("small-text/page-labels-mixed.pdf") {
         let (_, all) = labels_of(bytes);
