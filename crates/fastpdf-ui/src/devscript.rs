@@ -60,6 +60,7 @@
 //! | `wheel=NOTCHES` | a mouse-wheel turn (negative: up), as the wheel sends it |
 //! | `expect-page=N`, `expect-zoom=PERCENT` | stops the script unless on page N (one-based) or at that zoom (`checks.rs`) |
 //! | `expect-history=B,F` | stops the script unless Back and Forward hold B and F views (`checks.rs`) |
+//! | `expect-focus=find`, `=document` | stops the script unless the find field (or the reader itself) has the keyboard focus (`checks.rs`) |
 //! | `outline=N` | activates outline row N (one-based), once the outline has loaded (`checks.rs`) |
 //! | `wait-prompt=password` | waits until the password prompt waits for input (`checks.rs`) |
 //! | `password=TEXT` | types TEXT into the password prompt and confirms it; fixture passwords only, never logged (`checks.rs`) |

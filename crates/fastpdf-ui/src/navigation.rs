@@ -134,7 +134,9 @@ impl ReaderView {
 /// The mouse's back and forward buttons (X1, X2) anywhere in the window.
 /// Registered by the document canvas' paint for the next frame: a
 /// window-level listener, so the panels that occlude the document (find
-/// bar, print, tools, ...) do not swallow the buttons.
+/// bar, print, tools, ...) do not swallow the buttons. It runs before the
+/// reader root's focus-on-click and suppresses it, so the buttons leave the
+/// keyboard focus where it was (e.g. in the find field).
 pub(crate) fn listen_navigation_buttons(view: Entity<ReaderView>, window: &mut Window) {
     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
         if phase != DispatchPhase::Bubble {
@@ -146,5 +148,6 @@ pub(crate) fn listen_navigation_buttons(view: Entity<ReaderView>, window: &mut W
             _ => return,
         };
         view.update(cx, |this, cx| this.run_command(command, window, cx));
+        window.prevent_default();
     });
 }
