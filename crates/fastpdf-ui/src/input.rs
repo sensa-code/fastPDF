@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use fastpdf_core::ScrollAxis;
 use gpui::{
-    Context, ExternalPaths, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels,
-    ScrollWheelEvent, Window, px,
+    Context, ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent,
+    Pixels, ScrollWheelEvent, Window, px,
 };
 
 use crate::navigation::LINE_SCROLL_PX;
@@ -57,6 +57,7 @@ impl ReaderView {
         position: gpui::Point<Pixels>,
         cx: &mut Context<'_, Self>,
     ) {
+        self.link_drag(position);
         if let Some(point) = self.page_point(position) {
             let missing = self.selection.extend(point);
             self.fetch_text_layers(missing, cx);
@@ -65,8 +66,12 @@ impl ReaderView {
     }
 
     /// The release ending a selection drag: a click (not a drag) clears
-    /// the selection, and on a link follows it.
+    /// the selection, and on a link follows it. Other buttons released
+    /// meanwhile do not end it.
     pub(crate) fn on_selection_end(&mut self, event: &MouseUpEvent, cx: &mut Context<'_, Self>) {
+        if event.button != MouseButton::Left {
+            return;
+        }
         self.selection.end();
         let followed = self.link_release(event, cx);
         if followed || self.selection.anchor == self.selection.focus {

@@ -75,7 +75,7 @@
 //! | `find-result=N` | shows search result N (one-based) as a click on its row does; waits while the search runs, stops if it found fewer (`search.rs`) |
 //! | `focus=results` | gives the keyboard focus to the search result list (`search.rs`) |
 //! | `link-hover=P,X,Y`, `link-click=P,X,Y` | moves the pointer to (or clicks) page-space point (X, Y) of page P, waiting for the page's links; a click stops the script unless a link is there (`links.rs`) |
-//! | `link-drag=P,X0,Y0,X1,Y1` | presses at the first point of page P and drags to the second (`links.rs`) |
+//! | `link-drag=P,X0,Y0,X1,Y1[,X2,Y2]` | presses at the first point of page P, drags to the second (and on to the third) and releases there (`links.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 

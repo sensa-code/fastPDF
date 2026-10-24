@@ -147,6 +147,8 @@ struct LinkPress {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ViewKey {
     bounds: Option<Bounds<Pixels>>,
+    /// Page mode turns pages without changing the scroll position.
+    page: PageIndex,
     scroll: (f64, f64),
     zoom: f32,
     rotation: fastpdf_engine_api::Rotation,
@@ -250,6 +252,17 @@ impl ReaderView {
                 index,
                 origin: event.position,
             });
+        }
+    }
+
+    /// The selection drag moved: once it went farther than a click may, the
+    /// press is a drag, wherever it ends.
+    pub(crate) fn link_drag(&mut self, position: Point<Pixels>) {
+        if let Some(press) = self.links.press {
+            let moved = position - press.origin;
+            if !is_click(f32::from(moved.x), f32::from(moved.y)) {
+                self.links.press = None;
+            }
         }
     }
 
@@ -360,6 +373,7 @@ impl ReaderView {
         let vp = session.viewport();
         Some(ViewKey {
             bounds: self.viewport_bounds,
+            page: session.current_page(),
             scroll: (vp.scroll_x, vp.scroll_y),
             zoom: vp.zoom.get(),
             rotation: session.rotation(),
@@ -522,6 +536,11 @@ impl ReaderView {
             && next.document == key.document
         {
             self.want_links(next.page, cx);
+        }
+        // The development overlay outlines what arrived (and reads the
+        // next visible pages on that frame).
+        if self.overlay.visible {
+            cx.notify();
         }
         // The pointer may be over the page that arrived.
         if let Some(pointer) = self.links.pointer

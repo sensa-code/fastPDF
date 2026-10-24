@@ -19,11 +19,14 @@ pub(crate) enum LinkStep {
     /// is there.
     Click { page: u32, x: f32, y: f32 },
     /// `link-drag=P,X0,Y0,X1,Y1`: a press there and a drag to the second
-    /// point, on the same page (selects text, follows nothing).
+    /// point, on the same page (selects text, follows nothing);
+    /// `link-drag=P,X0,Y0,X1,Y1,X2,Y2` drags on to a third point and is
+    /// released there (back near the start: still a drag).
     Drag {
         page: u32,
         from: (f32, f32),
         to: (f32, f32),
+        back: Option<(f32, f32)>,
     },
 }
 
@@ -45,6 +48,13 @@ impl LinkStep {
                 page,
                 from: (x0, y0),
                 to: (x1, y1),
+                back: None,
+            },
+            ("link-drag", &[x0, y0, x1, y1, x2, y2]) => Self::Drag {
+                page,
+                from: (x0, y0),
+                to: (x1, y1),
+                back: Some((x2, y2)),
             },
             _ => return None,
         })
@@ -108,15 +118,25 @@ impl ReaderView {
                 self.on_selection_end(&release(position), cx);
                 StepState::Done
             }
-            LinkStep::Drag { to, .. } => {
-                let Some(end) = self.window_point(page, to.0, to.1) else {
-                    return StepState::Abort(format!("{at}: the end point is not shown"));
-                };
-                log::info!("link drag: {at} to ({}, {}): starts on {label}", to.0, to.1);
+            LinkStep::Drag { to, back, .. } => {
+                let mut points = vec![to];
+                points.extend(back);
+                let mut path = Vec::new();
+                for (x, y) in points {
+                    let Some(end) = self.window_point(page, x, y) else {
+                        return StepState::Abort(format!("{at}: ({x}, {y}) is not shown"));
+                    };
+                    path.push(end);
+                }
+                log::info!("link drag: {at} via {:?}: starts on {label}", to);
                 self.dev_press(position, window, cx);
-                // The pointer moves with the drag (no hover while dragging).
-                self.on_selection_drag(end, cx);
-                self.link_hover(end, cx);
+                let mut end = position;
+                for point in path {
+                    // The pointer moves with the drag (no hover while dragging).
+                    self.on_selection_drag(point, cx);
+                    self.link_hover(point, cx);
+                    end = point;
+                }
                 self.on_selection_end(&release(end), cx);
                 StepState::Done
             }
@@ -191,9 +211,19 @@ mod tests {
                 Step::Link(LinkStep::Drag {
                     page: 1,
                     from: (100.0, 100.0),
-                    to: (300.0, 130.0)
+                    to: (300.0, 130.0),
+                    back: None,
                 }),
             ]
+        );
+        assert_eq!(
+            parse("link-drag=1,100,100,200,100,101,100").unwrap(),
+            vec![Step::Link(LinkStep::Drag {
+                page: 1,
+                from: (100.0, 100.0),
+                to: (200.0, 100.0),
+                back: Some((101.0, 100.0)),
+            })]
         );
         for bad in [
             "link-hover",
@@ -203,6 +233,7 @@ mod tests {
             "link-hover=1,1,NaN",
             "link-click=1,1,1,1",
             "link-drag=1,1,1",
+            "link-drag=1,1,1,1,1,1",
             "link-press=1,1,1",
         ] {
             assert!(parse(bad).is_err(), "{bad}");
