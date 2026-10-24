@@ -95,6 +95,39 @@ fn full_width_words_next_to_a_gap_are_whole_words() {
 }
 
 #[test]
+fn combining_marks_and_more_scripts_belong_to_words() {
+    // Decomposed accents continue the word they are on.
+    assert!(find("nai", "nai\u{308}ve", false, true).is_empty());
+    assert_eq!(
+        find("nai\u{308}ve", "a nai\u{308}ve idea", false, true),
+        vec![(2, 8)]
+    );
+    assert!(find("cafe", "cafe\u{301} au lait", false, true).is_empty());
+    assert_eq!(count("cafe", "cafe\u{301} au lait"), 1);
+    // Vietnamese, precomposed and decomposed.
+    assert!(find("Vi", "Việt Nam", false, true).is_empty());
+    assert_eq!(find("Việt", "Việt Nam", false, true), vec![(0, 4)]);
+    assert!(find("Vie", "Vie\u{323}\u{302}t Nam", false, true).is_empty());
+    // Polytonic Greek and Korean are written with spaces between words.
+    assert!(find("νθρωπος", "ὁ ἄνθρωπος", false, true).is_empty());
+    assert_eq!(find("ἄνθρωπος", "ὁ ἄνθρωπος", false, true), vec![(2, 10)]);
+    assert!(find("한국", "한국어 문서", false, true).is_empty());
+    assert_eq!(find("한국어", "한국어 문서", false, true), vec![(0, 3)]);
+    assert_eq!(count("한국", "한국어 문서"), 1);
+}
+
+#[test]
+fn the_final_sigma_matches_sigma() {
+    assert_eq!(count("ΟΔΟΣ", "η οδος"), 1);
+    assert_eq!(count("οδος", "Η ΟΔΟΣ"), 1);
+    assert_eq!(count("οδοσ", "η οδος"), 1);
+    // Match case keeps them apart.
+    assert!(find("ΟΔΟΣ", "η οδος", true, false).is_empty());
+    // A sigma inside a word is not a word end.
+    assert!(find("οδο", "οδος", false, true).is_empty());
+}
+
+#[test]
 fn rejected_candidates_are_searched_inside() {
     // The first candidate (1..6) has a letter before it; the whole word
     // overlaps it.
