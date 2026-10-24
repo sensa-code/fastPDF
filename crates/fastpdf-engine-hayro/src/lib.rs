@@ -87,7 +87,7 @@ impl PdfEngine for HayroEngine {
         options: &OpenOptions,
     ) -> Result<Box<dyn EngineDocument>, EngineError> {
         let password = options.password.clone().unwrap_or_default();
-        let pdf = open_pdf(&source.data, &password)?;
+        let pdf = open_pdf(&source.data, password.as_str())?;
         let inner = DocInner::new(source.data, password, options.limits.clone(), pdf);
         Ok(Box::new(HayroDocument::new(inner)))
     }

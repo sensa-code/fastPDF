@@ -21,7 +21,8 @@ use fastpdf_cache::{BudgetConfig, MemoryBudgetManager, MemoryPressure};
 use fastpdf_core::memory::MemoryMonitor;
 use fastpdf_core::{DocumentSession, Frame, SessionConfig, loader};
 use fastpdf_engine_api::{
-    DocumentSource, EngineDocument, GuardedDocument, OpenOptions, PdfEngine, Pixmap, open_guarded,
+    DocumentSource, EngineDocument, GuardedDocument, OpenOptions, Password, PdfEngine, Pixmap,
+    open_guarded,
 };
 use fastpdf_render::{TileKey, ZoomLevel};
 use serde::Serialize;
@@ -535,7 +536,7 @@ pub(crate) fn scroll(
     report.file_bytes = Some(loaded.bytes.len() as u64);
     report.load_strategy = Some(loaded.strategy.to_string());
     let options = OpenOptions {
-        password,
+        password: password.map(Password::from),
         ..OpenOptions::default()
     };
     let source = DocumentSource::from_bytes(loaded.bytes).with_path(file);

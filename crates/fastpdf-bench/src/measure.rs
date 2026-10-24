@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use fastpdf_core::loader;
 use fastpdf_engine_api::{
     CancelToken, ColorMode, DocumentId, DocumentSource, EngineDocument, EngineError,
-    GuardedDocument, OpenOptions, PageId, PageIndex, PdfEngine, PixelFormat, PixelRect, Pixmap,
-    RenderRequest, RenderScale, Rgba8, Rotation, open_guarded,
+    GuardedDocument, OpenOptions, PageId, PageIndex, Password, PdfEngine, PixelFormat, PixelRect,
+    Pixmap, RenderRequest, RenderScale, Rgba8, Rotation, open_guarded,
 };
 use fastpdf_render::{
     PlannedTile, Priority, RenderScheduler, ScaleBucket, SchedulerConfig, TileGrid, TileKey,
@@ -47,7 +47,7 @@ fn open_document(
     report.load_strategy = Some(loaded.strategy.to_string());
 
     let options = OpenOptions {
-        password: args.password.clone(),
+        password: args.password.as_deref().map(Password::from),
         ..OpenOptions::default()
     };
     let started = Instant::now();

@@ -373,6 +373,25 @@ fn encrypted_fixtures() {
     }
 }
 
+/// hayro checks owner passwords only for AES-256 (R5/R6); for R2-R4 it lacks
+/// Algorithm 7, so the owner password of an AES-128 file is rejected (draft
+/// upstream issue #2 in docs/upstream-issues/hayro.md, ADR 0014). When a hayro
+/// update fixes that, this test fails on purpose so the docs get updated.
+#[test]
+fn owner_passwords_by_revision() {
+    if let Some(bytes) = fixture("encrypted/aes128-user-password.pdf") {
+        assert_eq!(
+            open_with(bytes, Some("fastpdf-owner128"), ResourceLimits::default()).unwrap_err(),
+            EngineError::InvalidPassword
+        );
+    }
+    if let Some(bytes) = fixture("encrypted/aes256-r6-user-password.pdf") {
+        let doc = open_with(bytes, Some("fastpdf-owner"), ResourceLimits::default())
+            .unwrap_or_else(|e| panic!("R6 owner password: {e}"));
+        assert!(doc.metadata().unwrap().encrypted);
+    }
+}
+
 #[test]
 fn malformed_input_fails_cleanly() {
     let limits = ResourceLimits::default;

@@ -368,7 +368,7 @@ mod tests {
     use super::*;
     use crate::document::open_pdf;
     use fastpdf_engine_api::{
-        PixelRect, RenderScale, ResourceLimits, Rgba8, Rotation, SharedBytes,
+        Password, PixelRect, RenderScale, ResourceLimits, Rgba8, Rotation, SharedBytes,
     };
 
     /// One 100x100 pt page with a black square.
@@ -408,7 +408,7 @@ mod tests {
         let pdf = open_pdf(&bytes, "").unwrap();
         let doc = Arc::new(DocInner::new(
             bytes,
-            String::new(),
+            Password::default(),
             ResourceLimits::default(),
             pdf,
         ));
@@ -456,7 +456,7 @@ mod tests {
         let pdf = open_pdf(&bytes, "").unwrap();
         let doc = Arc::new(DocInner::new(
             bytes,
-            String::new(),
+            Password::default(),
             ResourceLimits::default(),
             pdf,
         ));

@@ -1,6 +1,7 @@
 use crate::{
     CancelToken, DocumentMetadata, DocumentSource, EngineError, Link, OutlineItem, PageIndex,
-    PageSize, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, Rotation, TextLayer,
+    PageSize, Password, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, Rotation,
+    TextLayer,
 };
 
 /// Static description of an engine adapter.
@@ -35,7 +36,9 @@ pub struct EngineCapabilities {
 /// Options for [`PdfEngine::open`].
 #[derive(Debug, Clone, Default)]
 pub struct OpenOptions {
-    pub password: Option<String>,
+    /// Open password of an encrypted document. Redacted in `Debug` and wiped
+    /// on drop (ADR 0014).
+    pub password: Option<Password>,
     pub limits: ResourceLimits,
 }
 

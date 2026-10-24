@@ -43,7 +43,7 @@ use std::time::Duration;
 use fastpdf_engine_api::{
     CancelToken, ColorMode, DocumentMetadata, DocumentSource, EngineCapabilities, EngineDocument,
     EngineError, EngineInfo, Link, MemoryPressure, OpenOptions, OutlineItem, PageIndex, PageInfo,
-    PdfEngine, PixmapMut, RenderOutcome, RenderRequest, TextLayer,
+    Password, PdfEngine, PixmapMut, RenderOutcome, RenderRequest, TextLayer,
 };
 use zpdf_core::{ParseLimits, PdfObject};
 use zpdf_document::PdfDocument;
@@ -122,7 +122,8 @@ pub struct ZpdfDocument {
     /// Shared with zpdf's `PdfFile` (no extra copy); kept to reopen the
     /// document when memory pressure asks for its caches to be dropped.
     bytes: Arc<[u8]>,
-    password: Vec<u8>,
+    /// Kept for reopening; wiped on drop.
+    password: Password,
     limits: ParseLimits,
     render_budget: Option<Duration>,
     page_count: u32,
@@ -145,13 +146,13 @@ impl std::fmt::Debug for ZpdfDocument {
 impl ZpdfDocument {
     fn open(bytes: Arc<[u8]>, options: &OpenOptions) -> Result<Self, EngineError> {
         let limits = convert::parse_limits(&options.limits);
-        let password = options.password.as_deref();
+        let password = options.password.as_ref().map(Password::as_str);
         let doc = open_checked(&bytes, password, &limits)?;
         let page_count = u32::try_from(doc.page_count())
             .map_err(|_| EngineError::LimitExceeded(fastpdf_engine_api::LimitKind::PageCount))?;
         Ok(Self {
             bytes,
-            password: password.unwrap_or_default().as_bytes().to_vec(),
+            password: options.password.clone().unwrap_or_default(),
             limits,
             render_budget: options.limits.max_render_time,
             page_count,
@@ -171,7 +172,7 @@ impl ZpdfDocument {
                 let mut guard = poisoned.into_inner();
                 if let Ok(doc) = PdfDocument::open_with_password_and_limits(
                     Arc::clone(&self.bytes),
-                    &self.password,
+                    self.password.as_str().as_bytes(),
                     self.limits.clone(),
                 ) {
                     *guard = DocState::new(doc);
@@ -413,7 +414,7 @@ impl EngineDocument for ZpdfDocument {
                 let mut state = self.state();
                 if let Ok(doc) = PdfDocument::open_with_password_and_limits(
                     Arc::clone(&self.bytes),
-                    &self.password,
+                    self.password.as_str().as_bytes(),
                     self.limits.clone(),
                 ) {
                     *state = DocState::new(doc);

@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use fastpdf_engine_api::{
     CancelToken, ColorMode, DocumentSource, EngineDocument, EngineError, FileOrigin,
     GuardedDocument, HostExit, HostExitReason, MemoryPressure, OpenOptions, OutlineItem, PageIndex,
-    PdfEngine, PixelFormat, PixelRect, Pixmap, RenderOutcome, RenderRequest, RenderScale, Rgba8,
-    Rotation, SharedBytes, open_guarded,
+    Password, PdfEngine, PixelFormat, PixelRect, Pixmap, RenderOutcome, RenderRequest, RenderScale,
+    Rgba8, Rotation, SharedBytes, open_guarded,
 };
 use fastpdf_engine_remote::{CrashPolicy, HostStats, RemoteConfig, RemoteEngine};
 use synthetic::{Behavior, Spec, SyntheticEngine};
@@ -72,7 +72,7 @@ fn open_with(
     let source =
         DocumentSource::from_bytes(SharedBytes::from_vec(spec.bytes())).with_path("synthetic.pdf");
     let options = OpenOptions {
-        password: password.map(str::to_owned),
+        password: password.map(Password::from),
         ..OpenOptions::default()
     };
     open_guarded(engine, source, &options)
@@ -510,6 +510,22 @@ fn open_errors_cross_the_process_boundary() {
             "{result:?}"
         );
     }
+}
+
+/// A restarted host reopens the document with the password kept in memory;
+/// without it the restart would fail with `PasswordRequired`.
+#[test]
+fn password_survives_host_restart() {
+    let engine = engine(patient(config()));
+    let spec = Spec::new(3).password("s3cret").page(1, Behavior::Abort);
+    let doc = open_with(&engine, &spec, Some("s3cret")).unwrap_or_else(|e| panic!("{e}"));
+    let first_pid = stats(&engine).pid;
+    assert!(render(&doc, 0).is_ok());
+    assert_eq!(render(&doc, 1).err(), Some(crashed(FAIL_FAST, false)));
+    assert!(render(&doc, 2).is_ok(), "the restarted host did not reopen");
+    let s = stats(&engine);
+    assert_ne!(s.pid, first_pid);
+    assert!(s.restarts >= 1, "{s:?}");
 }
 
 #[test]

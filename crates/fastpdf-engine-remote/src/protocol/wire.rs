@@ -119,6 +119,11 @@ impl Encoder {
         }
     }
 
+    /// Makes room for `additional` more bytes without moving the buffer later.
+    pub(crate) fn reserve(&mut self, additional: usize) {
+        self.buf.reserve(additional);
+    }
+
     /// Reserves a `u32` to be filled in later with [`Self::patch_u32`].
     pub(crate) fn placeholder_u32(&mut self) -> usize {
         let at = self.buf.len();

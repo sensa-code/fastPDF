@@ -28,7 +28,9 @@ use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-use fastpdf_engine_api::{CancelToken, EngineError, FileOrigin, HostExitReason, PageIndex};
+use fastpdf_engine_api::{
+    CancelToken, EngineError, FileOrigin, HostExitReason, PageIndex, wipe_vec,
+};
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, SYNCHRONIZATION_SYNCHRONIZE};
 
@@ -633,13 +635,20 @@ impl Connection {
         let id = request.command.id().ok_or_else(|| {
             CallError::Fatal(EngineError::InvalidRequest("request without an id".into()))
         })?;
-        let frame = encode_command(&request.command).map_err(|e| {
+        let mut frame = encode_command(&request.command).map_err(|e| {
             CallError::Fatal(EngineError::InvalidRequest(format!(
                 "cannot send request: {e}"
             )))
         })?;
+        // An Open frame carries the document's password (ADR 0014).
+        let secret = matches!(request.command, Command::Open(_));
         let (tx, rx) = mpsc::sync_channel(1);
-        let Some(deadline) = self.send(id, request, Some(tx), timeout, &frame) else {
+        let sent = self.send(id, request, Some(tx), timeout, &frame);
+        if secret {
+            wipe_vec(&mut frame);
+        }
+        drop(frame);
+        let Some(deadline) = sent else {
             return Err(CallError::Lost);
         };
         let give_up = deadline + GIVE_UP_GRACE;

@@ -222,7 +222,9 @@ impl PdfEngine for SyntheticEngine {
         if let Some(expected) = &spec.password {
             match &options.password {
                 None => return Err(EngineError::PasswordRequired),
-                Some(given) if given != expected => return Err(EngineError::InvalidPassword),
+                Some(given) if given.as_str() != expected => {
+                    return Err(EngineError::InvalidPassword);
+                }
                 Some(_) => {}
             }
         }

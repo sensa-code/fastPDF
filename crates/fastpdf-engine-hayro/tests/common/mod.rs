@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use fastpdf_engine_api::{
     CancelToken, DocumentSource, EngineDocument, EngineError, GuardedDocument, OpenOptions,
-    PageIndex, PixelFormat, PixelRect, Pixmap, RenderRequest, RenderScale, ResourceLimits,
-    Rotation, SharedBytes, open_guarded,
+    PageIndex, Password, PixelFormat, PixelRect, Pixmap, RenderRequest, RenderScale,
+    ResourceLimits, Rotation, SharedBytes, open_guarded,
 };
 use fastpdf_engine_hayro::HayroEngine;
 
@@ -36,7 +36,7 @@ pub(crate) fn open_with(
     limits: ResourceLimits,
 ) -> Result<GuardedDocument, EngineError> {
     let options = OpenOptions {
-        password: password.map(str::to_owned),
+        password: password.map(Password::from),
         limits,
     };
     open_guarded(

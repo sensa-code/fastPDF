@@ -32,8 +32,8 @@ use std::time::Duration;
 use fastpdf_engine_api::{
     ColorMode, Destination, DestinationView, DocumentMetadata, EngineCapabilities, EngineError,
     LimitKind, Link, LinkTarget, MemoryPressure, OutlineItem, PageIndex, PageInfo, PageRect,
-    PageSize, PixelFormat, PixelRect, RenderOutcome, RenderRequest, RenderScale, ResourceLimits,
-    Rgba8, Rotation, TextLayer, TextSpan,
+    PageSize, Password, PixelFormat, PixelRect, RenderOutcome, RenderRequest, RenderScale,
+    ResourceLimits, Rgba8, Rotation, TextLayer, TextSpan,
 };
 
 pub(crate) use wire::ProtocolError;
@@ -234,7 +234,8 @@ pub(crate) struct Open {
     pub(crate) document: Option<DocumentRef>,
     /// Diagnostics only (`DocumentSource::path`).
     pub(crate) path: Option<PathBuf>,
-    pub(crate) password: Option<String>,
+    /// Redacted in `Debug`; the frames that carry it are wiped (ADR 0014).
+    pub(crate) password: Option<Password>,
     pub(crate) limits: ResourceLimits,
 }
 
@@ -425,8 +426,11 @@ pub(crate) fn encode_command(cmd: &Command) -> Result<Vec<u8>> {
             }
             match &open.password {
                 Some(p) => {
+                    // Room for the rest of the frame, so the buffer is not
+                    // moved (leaving an unwiped copy) after the password.
+                    e.reserve(p.len() + 128);
                     e.u8(1);
-                    put_bounded_str(&mut e, p, MAX_PASSWORD, "password")?;
+                    put_bounded_str(&mut e, p.as_str(), MAX_PASSWORD, "password")?;
                 }
                 None => e.u8(0),
             }
@@ -565,7 +569,7 @@ pub(crate) fn decode_command(payload: &[u8]) -> Result<Command> {
             } else {
                 None
             };
-            let password = d.opt_str("password", MAX_PASSWORD)?;
+            let password = d.opt_str("password", MAX_PASSWORD)?.map(Password::from);
             let limits = get_limits(&mut d)?;
             Command::Open(Open {
                 id,

@@ -7,8 +7,8 @@
 
 use fastpdf_engine_api::{
     CancelToken, DocumentSource, EngineDocument, EngineError, GuardedDocument, OpenOptions,
-    PageIndex, PixelFormat, PixelRect, Pixmap, RenderRequest, RenderScale, Rgba8, Rotation,
-    SharedBytes, open_guarded,
+    PageIndex, Password, PixelFormat, PixelRect, Pixmap, RenderRequest, RenderScale, Rgba8,
+    Rotation, SharedBytes, open_guarded,
 };
 use fastpdf_engine_zpdf::ZpdfEngine;
 
@@ -88,7 +88,7 @@ pub(crate) fn open_with(
     password: Option<&str>,
 ) -> Result<GuardedDocument, EngineError> {
     let options = OpenOptions {
-        password: password.map(str::to_owned),
+        password: password.map(Password::from),
         ..OpenOptions::default()
     };
     open_guarded(

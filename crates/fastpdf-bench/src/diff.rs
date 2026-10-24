@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use fastpdf_core::loader;
 use fastpdf_engine_api::{
-    DocumentSource, EngineDocument, GuardedDocument, OpenOptions, PageIndex, PdfEngine,
+    DocumentSource, EngineDocument, GuardedDocument, OpenOptions, PageIndex, Password, PdfEngine,
     PixelFormat, Pixmap, ResourceLimits, open_guarded,
 };
 use fastpdf_render::ScaleBucket;
@@ -83,7 +83,7 @@ fn open(engine: &dyn PdfEngine, file: &Path, args: &Args) -> (EngineOpen, Option
         .map_err(|e| e.to_string())
         .and_then(|loaded| {
             let options = OpenOptions {
-                password: args.password.clone(),
+                password: args.password.as_deref().map(Password::from),
                 ..OpenOptions::default()
             };
             let source = DocumentSource::from_bytes(loaded.bytes).with_path(file);

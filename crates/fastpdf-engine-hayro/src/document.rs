@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
 use fastpdf_engine_api::{
     CancelToken, DocumentMetadata, EngineDocument, EngineError, Link, MemoryPressure, OutlineItem,
-    PageIndex, PageInfo, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, SharedBytes,
-    TextLayer,
+    PageIndex, PageInfo, Password, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits,
+    SharedBytes, TextLayer,
 };
 use hayro::hayro_syntax::object::ObjectIdentifier;
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
@@ -104,7 +104,8 @@ impl std::fmt::Debug for Generation {
 /// State shared by the document handle, the render pool and its threads.
 pub(crate) struct DocInner {
     pub(crate) bytes: SharedBytes,
-    pub(crate) password: String,
+    /// Kept for the memory-pressure reopen; wiped on drop.
+    pub(crate) password: Password,
     pub(crate) limits: ResourceLimits,
     pub(crate) encrypted: bool,
     page_count: u32,
@@ -142,7 +143,7 @@ impl std::fmt::Debug for DocInner {
 impl DocInner {
     pub(crate) fn new(
         bytes: SharedBytes,
-        password: String,
+        password: Password,
         limits: ResourceLimits,
         pdf: Pdf,
     ) -> Self {
@@ -215,7 +216,7 @@ impl DocInner {
         }
         // The bytes opened before, so this only fails if hayro changed its
         // mind (it does not); keep the old generation in that case.
-        if let Ok(pdf) = open_pdf(&self.bytes, &self.password) {
+        if let Ok(pdf) = open_pdf(&self.bytes, self.password.as_str()) {
             let id = self.next_generation.fetch_add(1, Ordering::Relaxed);
             *write(&self.current) = Arc::new(Generation::new(id, pdf));
             stats::add(&stats::counters().reopens, 1);

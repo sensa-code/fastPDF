@@ -254,7 +254,7 @@ impl Rng {
                     }
                 },
                 path: self.opt_string(30).map(PathBuf::from),
-                password: self.opt_string(20),
+                password: self.opt_string(20).map(Password::from),
                 limits: self.limits(),
             }),
             2 => Command::PageInfo { id, page },
@@ -790,12 +790,35 @@ fn invalid_field_values_are_rejected() {
 }
 
 #[test]
+fn open_commands_never_show_their_password() {
+    let open = Command::Open(Open {
+        id: 7,
+        document: None,
+        path: Some(PathBuf::from("locked.pdf")),
+        password: Some(Password::from("zq9-secret")),
+        limits: ResourceLimits::default(),
+    });
+    let text = format!("{open:?} {open:#?}");
+    assert!(!text.contains("zq9"), "{text}");
+    // The wire still carries it, unchanged.
+    let frame = encode_command(&open).unwrap();
+    let decoded = decode_command(&frame[4..]).unwrap();
+    let Command::Open(decoded) = decoded else {
+        panic!("not an open: {decoded:?}");
+    };
+    assert_eq!(
+        decoded.password.as_ref().map(Password::as_str),
+        Some("zq9-secret")
+    );
+}
+
+#[test]
 fn unencodable_commands_fail_instead_of_truncating() {
     let open = Command::Open(Open {
         id: 1,
         document: None,
         path: None,
-        password: Some("x".repeat(MAX_PASSWORD + 1)),
+        password: Some(Password::from("x".repeat(MAX_PASSWORD + 1))),
         limits: ResourceLimits::default(),
     });
     assert_eq!(

@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use fastpdf_engine_api::{
     CancelToken, DocumentMetadata, DocumentSource, EngineDocument, EngineError, EngineInfo,
     FileOrigin, HostExit, HostExitReason, HostStatus, Link, MemoryPressure, OpenOptions,
-    OutlineItem, PageIndex, PageInfo, PdfEngine, PixelFormat, PixmapMut, RenderOutcome,
+    OutlineItem, PageIndex, PageInfo, Password, PdfEngine, PixelFormat, PixmapMut, RenderOutcome,
     RenderRequest, ResourceLimits, TextLayer,
 };
 
@@ -427,7 +427,8 @@ struct DocShared {
     /// Document bytes; shared again with every new host.
     bytes: DocBytes,
     path: Option<PathBuf>,
-    password: Option<String>,
+    /// Resent to every host this document restarts on; wiped on drop.
+    password: Option<Password>,
     limits: ResourceLimits,
     page_count: u32,
     timeout: Duration,

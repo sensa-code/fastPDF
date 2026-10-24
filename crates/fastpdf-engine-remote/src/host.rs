@@ -36,7 +36,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 
 use fastpdf_engine_api::{
     CancelToken, DocumentSource, EngineDocument, EngineError, GuardedDocument, OpenOptions,
-    PageIndex, PdfEngine, PixelFormat, PixmapMut, SharedBytes, open_guarded,
+    PageIndex, PdfEngine, PixelFormat, PixmapMut, SharedBytes, open_guarded, wipe_vec,
 };
 
 use crate::protocol::{
@@ -199,9 +199,16 @@ enum NextError {
 
 fn next_command(pipe: &mut impl Read) -> Result<Option<Command>, NextError> {
     match read_frame(pipe, MAX_COMMAND_FRAME) {
-        Ok(Some(payload)) => decode_command(&payload)
-            .map(Some)
-            .map_err(|_| NextError::Protocol),
+        Ok(Some(mut payload)) => {
+            let command = decode_command(&payload);
+            // An Open frame carries the password, and a frame that does not
+            // decode may be one (ADR 0014). The pipe's read buffer is
+            // overwritten by later commands.
+            if matches!(command, Ok(Command::Open(_)) | Err(_)) {
+                wipe_vec(&mut payload);
+            }
+            command.map(Some).map_err(|_| NextError::Protocol)
+        }
         Ok(None) => Ok(None),
         Err(FrameError::Protocol(_)) => Err(NextError::Protocol),
         Err(FrameError::Io(_)) => Err(NextError::Pipe),
