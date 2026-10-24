@@ -13,6 +13,7 @@
 mod labels;
 mod navigation;
 mod password;
+mod search;
 
 use std::fmt::Write as _;
 

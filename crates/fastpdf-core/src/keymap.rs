@@ -101,6 +101,12 @@ reader_commands! {
         GoToPage,
         /// Goes to the page typed in the page field (its Enter).
         ConfirmGoToPage,
+        /// Find: letters match only in the case typed (while the find bar
+        /// is open; otherwise nothing).
+        ToggleMatchCase,
+        /// Find: only whole words match (while the find bar is open;
+        /// otherwise nothing).
+        ToggleWholeWord,
     }
 }
 
@@ -211,6 +217,8 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind("escape", Cancel),
         bind("delete", RemoveStamp),
         bind("ctrl-g", GoToPage),
+        bind("alt-c", ToggleMatchCase),
+        bind("alt-w", ToggleWholeWord),
         bind_in(FIND_BAR, "enter", FindNext),
         bind_in(FIND_BAR, "shift-enter", FindPrevious),
         bind_in(FIND_BAR, "escape", Cancel),
@@ -331,5 +339,7 @@ mod tests {
         assert_eq!(command_for("left"), Some(ReaderCommand::PreviousPage));
         assert_eq!(command_for("right"), Some(ReaderCommand::NextPage));
         assert_eq!(keystrokes_for(ReaderCommand::ZoomIn).next(), Some("ctrl-="));
+        assert_eq!(command_for("alt-c"), Some(ReaderCommand::ToggleMatchCase));
+        assert_eq!(command_for("alt-w"), Some(ReaderCommand::ToggleWholeWord));
     }
 }

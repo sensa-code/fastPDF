@@ -61,6 +61,8 @@ actions!(
         ConfirmPrompt,
         GoToPage,
         ConfirmGoToPage,
+        ToggleMatchCase,
+        ToggleWholeWord,
     ]
 );
 
@@ -115,6 +117,8 @@ fn action_for(command: ReaderCommand) -> Box<dyn Action> {
         C::ConfirmPrompt => Box::new(ConfirmPrompt),
         C::GoToPage => Box::new(GoToPage),
         C::ConfirmGoToPage => Box::new(ConfirmGoToPage),
+        C::ToggleMatchCase => Box::new(ToggleMatchCase),
+        C::ToggleWholeWord => Box::new(ToggleWholeWord),
     }
 }
 
@@ -223,6 +227,8 @@ macro_rules! all_actions {
                 ConfirmPrompt,
                 GoToPage,
                 ConfirmGoToPage,
+                ToggleMatchCase,
+                ToggleWholeWord,
             ]
         )
     };

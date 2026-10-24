@@ -1,5 +1,5 @@
 //! UI settings kept between runs (M7): appearance, night mode, sidebar,
-//! default zoom, page layout and window placement.
+//! default zoom, page layout, the find options and window placement.
 //!
 //! The file is a handful of `key = value` lines, a subset of TOML, read and
 //! written with std only (spec §36: no serde / toml for this). Reading never
@@ -18,6 +18,8 @@
 //! cover_page = true
 //! language = "zh-TW"
 //! smooth_scrolling = true
+//! find_match_case = false
+//! find_whole_word = true
 //! window = [120, 80, 900, 1100]
 //! window_maximized = false
 //! ```
@@ -237,6 +239,10 @@ pub(crate) struct Settings {
     pub language: LanguageChoice,
     /// Mouse-wheel notches scroll with a short ease-out animation.
     pub smooth_scrolling: bool,
+    /// Find: letters match only in the case typed (Alt+C).
+    pub find_match_case: bool,
+    /// Find: only whole words match (Alt+W).
+    pub find_whole_word: bool,
     pub window: Option<WindowPlacement>,
 }
 
@@ -252,6 +258,8 @@ impl Default for Settings {
             cover_page: false,
             language: LanguageChoice::default(),
             smooth_scrolling: true,
+            find_match_case: false,
+            find_whole_word: false,
             window: None,
         }
     }
@@ -365,6 +373,14 @@ impl Settings {
                     settings.smooth_scrolling = on;
                     true
                 }
+                ("find_match_case", Value::Bool(on)) => {
+                    settings.find_match_case = on;
+                    true
+                }
+                ("find_whole_word", Value::Bool(on)) => {
+                    settings.find_whole_word = on;
+                    true
+                }
                 ("window_maximized", Value::Bool(on)) => {
                     maximized = on;
                     true
@@ -372,7 +388,7 @@ impl Settings {
                 (
                     "appearance" | "night_mode" | "sidebar_open" | "sidebar_tab" | "default_zoom"
                     | "page_layout" | "cover_page" | "language" | "smooth_scrolling" | "window"
-                    | "window_maximized",
+                    | "window_maximized" | "find_match_case" | "find_whole_word",
                     _,
                 ) => false,
                 _ => {
@@ -425,6 +441,8 @@ impl Settings {
         line("cover_page", self.cover_page.to_string());
         line("language", format!("\"{}\"", self.language.name()));
         line("smooth_scrolling", self.smooth_scrolling.to_string());
+        line("find_match_case", self.find_match_case.to_string());
+        line("find_whole_word", self.find_whole_word.to_string());
         if let Some(w) = self.window.filter(WindowPlacement::is_plausible) {
             line(
                 "window",
@@ -575,6 +593,8 @@ mod tests {
             cover_page: true,
             language: LanguageChoice::Fixed(Language::TraditionalChinese),
             smooth_scrolling: false,
+            find_match_case: true,
+            find_whole_word: true,
             window: Some(WindowPlacement {
                 x: -1200.5,
                 y: 40.0,
@@ -615,9 +635,14 @@ mod tests {
                     default_zoom = \"ACTUAL-SIZE\" # comment\r\n\
                     language = zh-hant\r\n\
                     smooth_scrolling = false\r\n\
+                    find_whole_word = true\r\n\
+                    find_match_case = nope\r\n\
                     window = [ 10 , 20, 800, 600 ]\r\n";
         let (s, problems) = Settings::parse(text);
-        assert!(problems.is_empty(), "{problems:?}");
+        // A bad value loses only that entry.
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("find_match_case"), "{problems:?}");
+        assert!(s.find_whole_word && !s.find_match_case);
         assert_eq!(
             s.language,
             LanguageChoice::Fixed(Language::TraditionalChinese)

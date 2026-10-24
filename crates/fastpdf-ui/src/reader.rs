@@ -28,6 +28,7 @@ use crate::actions::{KEY_CONTEXT, all_actions};
 use crate::bench::{BenchEvent, BenchHook};
 use crate::document::OpenFailure;
 use crate::find::{FindBar, SearchTarget};
+use crate::find_options::FindOption;
 use crate::i18n::{Language, Strings};
 use crate::navigation::{navigate, reveal};
 use crate::opening::APP_TITLE;
@@ -500,6 +501,8 @@ impl ReaderView {
             C::ConfirmGoToPage => {
                 self.confirm_go_to(window, cx);
             }
+            C::ToggleMatchCase => self.toggle_find_option(FindOption::MatchCase, cx),
+            C::ToggleWholeWord => self.toggle_find_option(FindOption::WholeWord, cx),
             C::Print => self.toggle_print_panel(window, cx),
             C::SaveCopy => {
                 self.menus.open = None;
@@ -689,8 +692,9 @@ impl ReaderView {
         };
         let waker = self.waker.clone();
         let texts = Arc::clone(&self.texts);
+        let options = self.find_options();
         self.find
-            .start(text, target, &texts, move || waker.wake(), cx);
+            .start(text, options, target, &texts, move || waker.wake(), cx);
         cx.notify();
     }
 

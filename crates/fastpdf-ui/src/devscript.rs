@@ -71,11 +71,13 @@
 //! | `wait-labels` | asks for the page labels and waits for the answer (`labels.rs`) |
 //! | `expect-label=TEXT` | stops the script unless the current page is labeled TEXT (`labels.rs`) |
 //! | `goto=TEXT` | types TEXT into the page field (a label, a number, `#N`) and presses Enter (`labels.rs`) |
+//! | `find-case=on`, `=off`, `find-word=on`, `=off` | sets the find options match case and whole word, like their toggles (`search.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
 mod checks;
 mod labels;
+mod search;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -153,6 +155,7 @@ pub(crate) enum Step {
     Wheel(i32),
     Check(checks::Check),
     Labels(labels::LabelStep),
+    Search(search::SearchStep),
 }
 
 /// What a step reports after one poll.
@@ -263,9 +266,13 @@ fn parse_step(step: &str) -> Option<Step> {
         ("smooth", Some("on")) => Step::Smooth(true),
         ("smooth", Some("off")) => Step::Smooth(false),
         ("wheel", Some(n)) => Step::Wheel(n.parse().ok().filter(|n: &i32| *n != 0)?),
-        _ => match labels::LabelStep::parse(name, value) {
-            Some(step) => Step::Labels(step),
-            None => Step::Check(checks::Check::parse(name, value)?),
+        _ => match (
+            labels::LabelStep::parse(name, value),
+            search::SearchStep::parse(name, value),
+        ) {
+            (Some(step), _) => Step::Labels(step),
+            (None, Some(step)) => Step::Search(step),
+            (None, None) => Step::Check(checks::Check::parse(name, value)?),
         },
     })
 }
@@ -689,6 +696,7 @@ impl ReaderView {
             }
             Step::Check(check) => self.run_check_step(check, window, cx),
             Step::Labels(step) => self.run_label_step(step, window, cx),
+            Step::Search(step) => self.run_search_step(step, cx),
         }
     }
 }

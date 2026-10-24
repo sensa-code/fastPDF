@@ -1,22 +1,23 @@
 //! Find in document (Ctrl+F, spec §22): a find field over the document,
 //! hits streamed from `fastpdf_search` while the search runs from the
 //! current page outward, F3 / Shift+F3 / Enter navigation, highlights drawn
-//! by the viewport canvas.
+//! by the viewport canvas. The hits are kept by `crate::hit_list`, the
+//! options (match case, whole words) by `crate::find_options`.
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
 use fastpdf_core::keymap::ReaderCommand;
-use fastpdf_engine_api::{
-    DocumentId, EngineDocument, EngineError, GuardedDocument, PageIndex, PageRect,
-};
-use fastpdf_search::{SearchEvent, SearchHit, SearchQuery, SearchSession, TextCache};
+use fastpdf_engine_api::{DocumentId, EngineDocument, EngineError, GuardedDocument, PageIndex};
+use fastpdf_search::{SearchEvent, SearchSession, TextCache};
 use gpui::{
     AppContext, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Subscription, div, px,
+    StatefulInteractiveElement, Styled, Subscription, div, prelude::FluentBuilder, px,
 };
 
+use crate::find_options::FindOptions;
+use crate::hit_list::HitList;
 use crate::i18n::Strings;
 use crate::reader::ReaderView;
 use crate::text_input::{TextChanged, TextInput};
@@ -24,84 +25,10 @@ use crate::toolbar::{styled_button, tooltip};
 
 /// Width of the status text, enough for "12345 found so far… (1234/2000 pages)".
 const STATUS_WIDTH: f32 = 230.0;
-
-/// Hits in document order with the active one.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub(crate) struct HitList {
-    hits: Vec<SearchHit>,
-    active: Option<usize>,
-}
-
-impl HitList {
-    pub(crate) fn len(&self) -> usize {
-        self.hits.len()
-    }
-
-    pub(crate) fn active_index(&self) -> Option<usize> {
-        self.active
-    }
-
-    pub(crate) fn active(&self) -> Option<&SearchHit> {
-        self.hits.get(self.active?)
-    }
-
-    /// Adds hits from one page, keeping document order and the active hit.
-    pub(crate) fn insert(&mut self, mut found: Vec<SearchHit>) {
-        found.sort_by_key(|h| (h.page, h.start));
-        for hit in found {
-            let at = self
-                .hits
-                .partition_point(|h| (h.page, h.start) < (hit.page, hit.start));
-            if let Some(active) = self.active.as_mut()
-                && at <= *active
-            {
-                *active += 1;
-            }
-            self.hits.insert(at, hit);
-        }
-    }
-
-    /// Activates the first hit at or after `page` (wrapping to the first),
-    /// unless one is active already. Returns true when it changed.
-    pub(crate) fn activate_from(&mut self, page: PageIndex) -> bool {
-        if self.active.is_some() || self.hits.is_empty() {
-            return false;
-        }
-        let at = self.hits.partition_point(|h| h.page < page);
-        self.active = Some(if at < self.hits.len() { at } else { 0 });
-        true
-    }
-
-    /// Moves to the next (or previous) hit, wrapping around.
-    pub(crate) fn step(&mut self, forward: bool) -> Option<&SearchHit> {
-        let len = self.hits.len();
-        if len == 0 {
-            return None;
-        }
-        let next = match (self.active, forward) {
-            (None, true) => 0,
-            (None, false) => len - 1,
-            (Some(i), true) => (i + 1) % len,
-            (Some(i), false) => (i + len - 1) % len,
-        };
-        self.active = Some(next);
-        self.hits.get(next)
-    }
-
-    /// Highlight rectangles on `page`; the bool marks the active hit.
-    pub(crate) fn on_page(&self, page: PageIndex) -> impl Iterator<Item = (PageRect, bool)> + '_ {
-        let start = self.hits.partition_point(|h| h.page < page);
-        let active = self.active;
-        self.hits[start..]
-            .iter()
-            .enumerate()
-            .take_while(move |(_, h)| h.page == page)
-            .flat_map(move |(i, h)| {
-                let is_active = active == Some(start + i);
-                h.rects.iter().map(move |r| (*r, is_active))
-            })
-    }
-}
+/// Width of the find field with its option toggles.
+const FIELD_WIDTH: f32 = 264.0;
+/// The status gives way first in a narrow document area, down to this.
+const STATUS_MIN_WIDTH: f32 = 96.0;
 
 /// What to search: a document, from a page outward.
 #[derive(Debug)]
@@ -119,6 +46,8 @@ pub(crate) struct Progress {
     pub finished: bool,
     pub unsupported: bool,
     pub failed_pages: u32,
+    /// The search stopped at its hit cap; more hits may exist.
+    pub limit_reached: bool,
 }
 
 /// The find bar and its search.
@@ -188,10 +117,11 @@ impl FindBar {
         self.progress = Progress::default();
     }
 
-    /// Starts searching `query` (cancels the old search).
+    /// Starts searching `query` with `options` (cancels the old search).
     pub(crate) fn start(
         &mut self,
         query: String,
+        options: FindOptions,
         target: SearchTarget,
         texts: &Arc<TextCache>,
         wake: impl Fn() + Send + 'static,
@@ -210,7 +140,7 @@ impl FindBar {
             target.document,
             target.doc as Arc<dyn EngineDocument>,
             Arc::clone(texts),
-            &SearchQuery::new(self.query.clone()),
+            &options.query(self.query.clone()),
             target.start,
             move |event| {
                 if tx.send((generation, event)).is_ok() {
@@ -254,10 +184,12 @@ impl FindBar {
                     limit_reached,
                 } => {
                     self.progress.finished = true;
+                    self.progress.limit_reached = limit_reached;
                     if !cancelled {
                         log::info!(
-                            "search finished: {hits} hits{} in {:.1} ms",
+                            "search finished: {hits} hits{}, {} KiB of results, in {:.1} ms",
                             if limit_reached { " (limit)" } else { "" },
+                            self.hits.heap_bytes().div_ceil(1024),
                             self.started
                                 .map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0),
                         );
@@ -284,11 +216,17 @@ impl ReaderView {
         let next_keys = fastpdf_core::keymap::keystrokes_for(ReaderCommand::FindNext).next();
         let previous_keys =
             fastpdf_core::keymap::keystrokes_for(ReaderCommand::FindPrevious).next();
+        // In a narrow document area (a small window with the sidebar open)
+        // the status gives way, never the field or the buttons.
+        let room = self
+            .viewport_bounds
+            .map(|b| (f32::from(b.size.width) - 28.0).max(0.0));
         div()
             .id("find-bar")
             .absolute()
             .top(px(8.0))
             .right(px(20.0))
+            .when_some(room, |bar, room| bar.max_w(px(room)))
             .occlude()
             .flex()
             .flex_row()
@@ -302,21 +240,36 @@ impl ReaderView {
             .text_size(px(13.0))
             .child(
                 div()
-                    .w(px(220.0))
+                    .w(px(FIELD_WIDTH))
                     .h(px(28.0))
-                    .px_2()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .pl_2()
+                    .pr(px(2.0))
                     .rounded(px(4.0))
                     .bg(theme.input_bg)
                     .border_1()
                     .border_color(theme.accent)
                     .text_size(px(14.0))
-                    .child(self.find.input.clone()),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.find.input.clone()),
+                    )
+                    .child(self.render_find_toggles(cx)),
             )
             .child(
                 // Fixed width: the bar is anchored on the right, so a status
                 // that changes length while typing would move the input box.
                 div()
                     .w(px(STATUS_WIDTH))
+                    .min_w(px(STATUS_MIN_WIDTH))
+                    .flex_shrink_1()
                     .px_1()
                     .text_color(theme.text_muted)
                     .whitespace_nowrap()
@@ -375,16 +328,20 @@ fn status_text(query: &str, hits: &HitList, p: Progress, strings: &Strings) -> S
     if !p.finished {
         return strings.found_so_far(n, p.pages_done, p.page_count);
     }
-    match (n, hits.active_index()) {
-        (0, _) => strings.no_results.into(),
-        (n, Some(i)) => strings.hit_position(i + 1, n),
-        (n, None) => strings.result_count(n),
+    match (n, hits.active_index(), p.limit_reached) {
+        (0, _, _) => strings.no_results.into(),
+        (n, Some(i), true) => strings.hit_position_capped(i + 1, n),
+        (n, Some(i), false) => strings.hit_position(i + 1, n),
+        (n, None, true) => strings.limit_reached(n),
+        (n, None, false) => strings.result_count(n),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fastpdf_engine_api::PageRect;
+    use fastpdf_search::SearchHit;
 
     fn hit(page: u32, start: usize) -> SearchHit {
         SearchHit {
@@ -397,91 +354,11 @@ mod tests {
     }
 
     #[test]
-    fn hits_stay_in_document_order_and_keep_the_active_one() {
+    fn status_names_the_active_hit_in_document_order() {
         let mut list = HitList::default();
-        // The search starts at page 5 and wraps around.
-        list.insert(vec![hit(5, 30), hit(5, 10)]);
-        assert!(list.activate_from(PageIndex::new(5)));
-        assert_eq!(
-            list.active().map(|h| (h.page.get(), h.start)),
-            Some((5, 10))
-        );
-        list.insert(vec![hit(7, 0)]);
-        list.insert(vec![hit(1, 4), hit(2, 0)]);
-        // Earlier hits shift the index, not the active hit.
-        assert_eq!(
-            list.active().map(|h| (h.page.get(), h.start)),
-            Some((5, 10))
-        );
-        assert!(!list.activate_from(PageIndex::FIRST), "already active");
-        let order: Vec<_> = (0..list.len())
-            .map(|_| list.step(true).map(|h| (h.page.get(), h.start)))
-            .collect();
-        assert_eq!(
-            order,
-            vec![
-                Some((5, 30)),
-                Some((7, 0)),
-                Some((1, 4)),
-                Some((2, 0)),
-                Some((5, 10))
-            ]
-        );
-        assert_eq!(list.step(false).map(|h| h.page.get()), Some(2));
-    }
-
-    #[test]
-    fn activation_wraps_when_no_hit_follows_the_page() {
-        let mut list = HitList::default();
-        list.insert(vec![hit(0, 0), hit(1, 0)]);
-        assert!(list.activate_from(PageIndex::new(9)));
-        assert_eq!(list.active_index(), Some(0));
-        let mut empty = HitList::default();
-        assert!(!empty.activate_from(PageIndex::FIRST));
-        assert!(empty.step(true).is_none());
-    }
-
-    #[test]
-    fn page_rects_mark_the_active_hit() {
-        let mut list = HitList::default();
-        list.insert(vec![hit(3, 0), hit(3, 20), hit(4, 0)]);
-        list.step(true);
-        list.step(true); // second hit on page 3
-        let rects: Vec<_> = list.on_page(PageIndex::new(3)).collect();
-        assert_eq!(rects.len(), 2);
-        assert!(!rects[0].1 && rects[1].1);
-        assert_eq!(list.on_page(PageIndex::new(9)).count(), 0);
-    }
-
-    #[test]
-    fn hits_that_wrap_highlight_every_line() {
-        // A word broken over two lines has a rectangle on each.
-        let wrapped = SearchHit {
-            page: PageIndex::new(3),
-            start: 40,
-            end: 46,
-            rects: vec![
-                PageRect::new(500.0, 100.0, 520.0, 114.0),
-                PageRect::new(72.0, 120.0, 86.0, 134.0),
-            ],
-            context: Default::default(),
-        };
-        let mut list = HitList::default();
-        list.insert(vec![hit(3, 60), wrapped.clone(), hit(3, 0)]);
+        list.insert(vec![hit(3, 60), hit(3, 40), hit(3, 0)]);
         assert!(list.activate_from(PageIndex::new(3)));
         list.step(true);
-        assert_eq!(list.active(), Some(&wrapped));
-        // Both of its rectangles are drawn as the active hit, in order.
-        let rects: Vec<_> = list.on_page(PageIndex::new(3)).collect();
-        assert_eq!(
-            rects,
-            vec![
-                (PageRect::new(0.0, 0.0, 10.0, 10.0), false),
-                (wrapped.rects[0], true),
-                (wrapped.rects[1], true),
-                (PageRect::new(60.0, 0.0, 70.0, 10.0), false),
-            ]
-        );
         let done = Progress {
             finished: true,
             ..Progress::default()
@@ -516,6 +393,14 @@ mod tests {
         assert_eq!(status_text("x", &list, p, en), "1 of 3");
         assert_eq!(status_text("x", &list, p, zh), "第 1／3 筆");
         assert_eq!(status_text("x", &HitList::default(), p, en), "No results");
+        // The search stopped at its cap: more may exist.
+        p.limit_reached = true;
+        assert_eq!(status_text("x", &list, p, en), "1 of 3+");
+        assert_eq!(status_text("x", &list, p, zh), "第 1／3+ 筆");
+        let mut fresh = HitList::default();
+        fresh.insert(vec![hit(0, 0), hit(1, 0)]);
+        assert_eq!(status_text("x", &fresh, p, en), "Stopped at 2 results");
+        assert_eq!(status_text("x", &fresh, p, zh), "已達 2 筆上限，搜尋已停止");
         p.unsupported = true;
         assert!(status_text("x", &list, p, en).contains("not available"));
     }
