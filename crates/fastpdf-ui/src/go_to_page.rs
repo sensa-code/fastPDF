@@ -1,11 +1,14 @@
 //! Go to a page by number or label (Ctrl+G): the toolbar's page indicator
-//! is a button that turns into a small field. Enter goes there (a jump Back
-//! returns from), Esc or leaving the field closes it, and text that names
-//! no page keeps the field open with a red border and "No such page" below
-//! it. What the text means is `fastpdf_core::go_to`.
+//! is a button that turns into a small field, with the page count inside
+//! it ("/ 120"); while it is open it also takes the place of the previous
+//! and next page buttons, so even a narrow toolbar has room for both the
+//! text and the count. Enter goes there (a jump Back returns from), Esc or
+//! leaving the field closes it, and text that names no page keeps the
+//! field open with a red border and "No such page" below it. What the text
+//! means, and what the field starts with, is `fastpdf_core::go_to`.
 
 use fastpdf_core::Jump;
-use fastpdf_core::go_to::{PageInputError, resolve_page_input};
+use fastpdf_core::go_to::{KnownLabels, PageInputError, prefill_text, resolve_page_input};
 use fastpdf_core::keymap::{ReaderCommand, keystrokes_for};
 use fastpdf_engine_api::PageIndex;
 use gpui::{
@@ -21,10 +24,11 @@ use crate::toolbar::tooltip;
 /// Key context of the field: the editing keys plus the page field's own
 /// bindings from the central keymap (`PAGE_FIELD`: Enter, Esc).
 const FIELD_CONTEXT: &str = "TextInput PageField";
-/// Width of the field when the row has room; it narrows to
-/// [`MIN_FIELD_WIDTH`] in a crowded toolbar rather than push buttons out.
-const FIELD_WIDTH: f32 = 84.0;
-const MIN_FIELD_WIDTH: f32 = 48.0;
+/// Width of the field (the page count included) when the row has room; it
+/// narrows to [`MIN_FIELD_WIDTH`] in a crowded toolbar rather than push
+/// buttons out.
+const FIELD_WIDTH: f32 = 104.0;
+const MIN_FIELD_WIDTH: f32 = 64.0;
 
 /// The page field's state.
 pub(crate) struct GoToPage {
@@ -77,21 +81,20 @@ impl GoToPage {
 impl ReaderView {
     /// Ctrl+G or a click on the page indicator: the field opens with the
     /// current page's label (or number) selected, so typing replaces it.
-    /// Enter on that text stays on the page: when another page has the same
-    /// label (chapters that restart at 1), or the number is another page's
-    /// label, the field holds `#N` instead.
+    /// Enter on that text stays on the page (`go_to::prefill_text`: `#N`
+    /// when the label or number could mean another page, and while the
+    /// labels are still loading).
     pub(crate) fn start_go_to(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some((page, count)) = self.session().map(|s| (s.current_page(), s.page_count())) else {
             return;
         };
         self.ensure_page_labels(cx);
-        let number = page.display_number();
-        let text = self.page_label(page).unwrap_or_else(|| number.to_string());
-        let text = if resolve_page_input(&text, self.page_labels(), count) == Ok(page) {
-            text
+        let known = if self.page_labels_settled() {
+            KnownLabels::Loaded(self.page_labels())
         } else {
-            format!("#{number}")
+            KnownLabels::Loading
         };
+        let text = prefill_text(page, self.page_label(page).as_deref(), known, count);
         self.go_to.editing = true;
         self.go_to.invalid = None;
         let field = self.go_to.field.clone();
@@ -179,34 +182,43 @@ pub(crate) fn page_control(
         } else {
             theme.accent
         };
+        // The count sits inside the field, which has the page buttons'
+        // room as well: in a narrow window both the text and the count show.
         let field = div()
             .w(px(FIELD_WIDTH))
             .flex_shrink(1.0)
             .min_w(px(MIN_FIELD_WIDTH))
             .h(px(28.0))
             .px_1()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
             .rounded(px(4.0))
             .bg(theme.input_bg)
             .border_1()
             .border_color(border)
-            .child(view.go_to.field.clone());
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(24.0))
+                    .child(view.go_to.field.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .text_size(px(12.0))
+                    .text_color(theme.text_muted)
+                    .child(format!("/ {count}")),
+            );
         let control = div()
             .relative()
             .flex()
             .flex_row()
             .items_center()
-            .gap_1()
             .min_w(px(MIN_FIELD_WIDTH))
-            .child(field)
-            .child(
-                div()
-                    .flex_shrink(4.0)
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_color(theme.text_muted)
-                    .child(format!("/ {count}")),
-            );
+            .child(field);
         if !invalid {
             return control.into_any_element();
         }
@@ -241,14 +253,22 @@ pub(crate) fn page_control(
         strings.tip_go_to_page(),
         keystrokes_for(ReaderCommand::GoToPage).next(),
     );
+    let (indicator, narrowest) = crate::page_labels::indicator(view, window);
+    // The button narrows exactly as far as its indicator may, so a label
+    // wraps and gives way before any button of the row does.
+    let pad = px(4.0);
     div()
         .id("go-to-page")
         .flex()
         .items_center()
         .h(px(28.0))
-        .px(px(4.0))
+        .px(pad)
         .rounded(px(4.0))
-        .child(crate::page_labels::indicator(view, window))
+        .map(|button| match narrowest {
+            Some(narrowest) => button.min_w(narrowest + pad * 2.0),
+            None => button.flex_none(),
+        })
+        .child(indicator)
         .tooltip(tooltip(tip.into(), theme, font))
         .when(enabled, |button| {
             let hover = theme.button_hover;

@@ -91,23 +91,29 @@ pub(crate) fn render(
             cx,
         ))
         .child(separator(&theme))
-        .child(tools.button(
-            "prev",
-            "\u{2039}",
-            strings.tip_previous_page,
-            C::PreviousPage,
-            has_doc,
-            cx,
-        ))
+        // While the page field is open it takes the place of the page
+        // buttons too (crate::go_to_page).
+        .when(!view.go_to.editing, |row| {
+            row.child(tools.button(
+                "prev",
+                "\u{2039}",
+                strings.tip_previous_page,
+                C::PreviousPage,
+                has_doc,
+                cx,
+            ))
+        })
         .child(crate::go_to_page::page_control(view, blocked, window, cx))
-        .child(tools.button(
-            "next",
-            "\u{203a}",
-            strings.tip_next_page,
-            C::NextPage,
-            has_doc,
-            cx,
-        ))
+        .when(!view.go_to.editing, |row| {
+            row.child(tools.button(
+                "next",
+                "\u{203a}",
+                strings.tip_next_page,
+                C::NextPage,
+                has_doc,
+                cx,
+            ))
+        })
         .child(separator(&theme))
         .child(tools.button(
             "zoom-out",

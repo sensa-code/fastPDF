@@ -135,13 +135,17 @@ fn shorten(text: &str, width: usize) -> String {
 /// way), the numbers wrap under the label onto a second line, and a label
 /// still too wide is cut with an ellipsis. The indicator never gets
 /// narrower than its numbers, so they stay whole.
-pub(crate) fn indicator(view: &ReaderView, window: &Window) -> Div {
+///
+/// Also returns how narrow it may get: `None` for plain numbers (they keep
+/// their width), the width of the numbers with a label. Whatever holds the
+/// indicator must allow the same (`crate::go_to_page` wraps it in a button).
+pub(crate) fn indicator(view: &ReaderView, window: &Window) -> (Div, Option<Pixels>) {
     let Some((page, count)) = view.page_indicator() else {
-        return numbers_box("- / -".to_owned());
+        return (numbers_box("- / -".to_owned()), None);
     };
     let numbers = format!("{} / {count}", page.display_number());
     let Some(label) = view.page_label(page) else {
-        return numbers_box(numbers);
+        return (numbers_box(numbers), None);
     };
     let numbers = format!("({numbers})");
     // The label's own width must not hold the indicator open (the row
@@ -160,15 +164,16 @@ pub(crate) fn indicator(view: &ReaderView, window: &Window) -> Div {
         .text_system()
         .shape_line(SharedString::from(numbers.clone()), size, &[run], None)
         .width
-        .ceil();
-    div()
+        .ceil()
+        + px(1.0);
+    let indicator = div()
         .flex()
         .flex_row()
         .flex_wrap()
         .justify_center()
         .content_center()
         .gap_x_1()
-        .min_w(narrowest + px(1.0))
+        .min_w(narrowest)
         .max_w(px(220.0))
         .overflow_hidden()
         .whitespace_nowrap()
@@ -187,7 +192,8 @@ pub(crate) fn indicator(view: &ReaderView, window: &Window) -> Div {
                 .text_size(size)
                 .text_color(view.theme.text_muted)
                 .child(numbers),
-        )
+        );
+    (indicator, Some(narrowest))
 }
 
 fn numbers_box(numbers: String) -> Div {
