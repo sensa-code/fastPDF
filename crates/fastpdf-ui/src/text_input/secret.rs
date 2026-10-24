@@ -5,7 +5,7 @@
 //! by move (`take_secret`) and whatever is left is wiped on drop.
 
 use fastpdf_engine_api::{Password, wipe_string};
-use gpui::{Context, SharedString};
+use gpui::{ClipboardEntry, ClipboardItem, Context, SharedString};
 
 use super::{TextChanged, TextInput};
 use crate::text_mask;
@@ -69,6 +69,19 @@ impl TextInput {
     pub(super) fn discard(&self, mut copy: String) {
         if self.secret {
             wipe_string(&mut copy);
+        }
+    }
+
+    /// Drops what was read from the clipboard, its text wiped in a secret
+    /// field (the system clipboard itself keeps what the user copied).
+    pub(super) fn discard_clipboard(&self, item: ClipboardItem) {
+        if !self.secret {
+            return;
+        }
+        for entry in item.into_entries() {
+            if let ClipboardEntry::String(mut copy) = entry {
+                wipe_string(&mut copy.text);
+            }
         }
     }
 

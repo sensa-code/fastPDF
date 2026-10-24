@@ -148,7 +148,8 @@ impl ReaderView {
         self.text_edits.reset_document();
         // A print job keeps the document alive until it stops.
         self.print.cancel_job();
-        if let DocState::Open(open) = mem::replace(&mut self.doc, DocState::Empty) {
+        let previous = mem::replace(&mut self.doc, DocState::Empty);
+        if let DocState::Open(open) = previous {
             let OpenDoc {
                 mut session, path, ..
             } = *open;
@@ -174,7 +175,7 @@ impl ReaderView {
                 .detach();
             window.set_window_title(APP_TITLE);
             self.load_recent(cx);
-        } else if let DocState::Locked(_) = mem::replace(&mut self.doc, DocState::Empty) {
+        } else if let DocState::Locked(_) = previous {
             // The prompt and its field (wiped on drop) are gone: back to the
             // empty window.
             window.focus(&self.focus, cx);

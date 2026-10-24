@@ -306,12 +306,17 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        if let Some(text) = item.text() {
             // Single line: line breaks become spaces (a password drops them).
             let line = text.replace(['\r', '\n'], if self.secret { "" } else { " " });
             self.replace_text_in_range(None, &line, window, cx);
             self.discard(line);
+            self.discard(text);
         }
+        self.discard_clipboard(item);
     }
 
     fn on_mouse_down(

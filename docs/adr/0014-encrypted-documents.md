@@ -33,7 +33,7 @@
   - 上限 1024 bytes，buffer 事先保留，打字時不會搬移；欄位被丟棄時清除。
 - 輸入法維持開啟，才能輸入中文密碼（例如 fixture 的 `測試密碼2026`）；組字中的文字也顯示成 •。代價：有些輸入法會學習輸入過的詞。
 - 文件關閉後，reader 與 host 的兩份副本隨文件一起丟棄並清除。密碼不保存、不重用。
-- 清除只是 best effort，以下不在範圍內：hayro 由密碼推導出的金鑰、host 讀取指令用的 `BufReader`、kernel 的 pipe buffer、輸入法與 GPUI 的事件傳遞、WER crash dump。同一個使用者執行的其他程式本來就能讀取這些記憶體。
+- 清除只是 best effort，以下不在範圍內：hayro 由密碼推導出的金鑰、host 讀取指令用的 `BufReader`、kernel 的 pipe buffer、輸入法與 GPUI 的事件傳遞、GPUI 讀取剪貼簿時的暫存（FastPDF 自己拿到的副本會清除；系統剪貼簿本身仍保有使用者複製的內容）、WER crash dump。同一個使用者執行的其他程式本來就能讀取這些記憶體。
 
 ### 3. 用密碼開啟的文件不寫入
 
