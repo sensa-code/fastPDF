@@ -12,6 +12,7 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use fastpdf_core::Jump;
 use fastpdf_core::session::ThumbnailItem;
 use fastpdf_engine_api::{
     Destination, DocumentId, EngineDocument, EngineError, OutlineItem, PageIndex,
@@ -313,16 +314,14 @@ impl ReaderView {
         }
     }
 
-    fn activate_outline(&mut self, index: usize, cx: &mut Context<'_, Self>) {
+    pub(crate) fn activate_outline(&mut self, index: usize, cx: &mut Context<'_, Self>) {
         let OutlineState::Ready(rows) = &self.sidebar.outline else {
             return;
         };
         let Some(destination) = rows.get(index).and_then(|r| r.destination.clone()) else {
             return;
         };
-        if let Some(session) = self.session_mut() {
-            session.go_to_destination(&destination);
-        }
+        self.jump_to_destination(&destination);
         cx.notify();
     }
 
@@ -496,9 +495,7 @@ impl ReaderView {
         else {
             return;
         };
-        if let Some(session) = self.session_mut() {
-            session.go_to_page(PageIndex::new(row));
-        }
+        self.jump(Jump::Direct, |s| s.go_to_page(PageIndex::new(row)));
         cx.notify();
     }
 

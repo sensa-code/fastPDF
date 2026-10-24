@@ -72,6 +72,23 @@ pub(crate) fn render(
         ))
         .child(separator(&theme))
         .child(tools.button(
+            "back",
+            "\u{2190}",
+            strings.tip_back(),
+            C::NavigateBack,
+            session.is_some_and(|s| s.can_go_back()),
+            cx,
+        ))
+        .child(tools.button(
+            "forward",
+            "\u{2192}",
+            strings.tip_forward(),
+            C::NavigateForward,
+            session.is_some_and(|s| s.can_go_forward()),
+            cx,
+        ))
+        .child(separator(&theme))
+        .child(tools.button(
             "prev",
             "\u{2039}",
             strings.tip_previous_page,

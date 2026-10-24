@@ -15,7 +15,7 @@
 //! | `cmd=NAME` | runs a command by name (`ZoomIn`, `Print`, `LayoutTwoPage`, `ToggleDevOverlay`, `CloseDocument`, `Quit`, ...) |
 //! | `find=TEXT` | opens the find bar and searches for TEXT |
 //! | `wait-find` | waits until the search finished |
-//! | `page=N` | goes to page N (one-based) |
+//! | `page=N` | goes to page N (one-based), a jump Back returns from |
 //! | `zoom=PERCENT` | sets the zoom |
 //! | `print-pages=all`, `=current`, `=1-3,5` | page choice of the print panel |
 //! | `print-copies=N` | copies in the print panel |
@@ -59,6 +59,8 @@
 //! | `smooth=on`, `=off` | turns smooth wheel scrolling on or off |
 //! | `wheel=NOTCHES` | a mouse-wheel turn (negative: up), as the wheel sends it |
 //! | `expect-page=N`, `expect-zoom=PERCENT` | stops the script unless on page N (one-based) or at that zoom (`checks.rs`) |
+//! | `expect-history=B,F` | stops the script unless Back and Forward hold B and F views (`checks.rs`) |
+//! | `outline=N` | activates outline row N (one-based), once the outline has loaded (`checks.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
@@ -67,6 +69,7 @@ mod checks;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use fastpdf_core::Jump;
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_engine_api::PageIndex;
 use fastpdf_render::ZoomLevel;
@@ -368,14 +371,12 @@ impl ReaderView {
                     Pending
                 }
             }
-            Step::Page(n) => match self.session_mut() {
-                Some(session) => {
-                    session.go_to_page(PageIndex::new(n - 1));
-                    cx.notify();
-                    Done
-                }
-                None => Abort("no document".into()),
-            },
+            Step::Page(n) if self.session().is_some() => {
+                self.jump(Jump::Direct, |s| s.go_to_page(PageIndex::new(n - 1)));
+                cx.notify();
+                Done
+            }
+            Step::Page(_) => Abort("no document".into()),
             Step::Zoom(percent) => match self.session_mut() {
                 Some(session) => {
                     session.set_zoom(ZoomLevel::new(percent / 100.0), None);
@@ -661,7 +662,7 @@ impl ReaderView {
                 self.wheel_notches(*notches, window, cx);
                 Done
             }
-            Step::Check(check) => self.run_check_step(*check),
+            Step::Check(check) => self.run_check_step(*check, cx),
         }
     }
 }

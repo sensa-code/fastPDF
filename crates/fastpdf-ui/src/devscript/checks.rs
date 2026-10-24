@@ -1,17 +1,27 @@
-//! Assertion steps of development scripts: each one passes when the reader
-//! is in the expected state and otherwise stops the script with a message
-//! saying what it found, so a GUI check's log proves where the view went.
+//! Generic steps of development scripts that every feature's GUI check can
+//! use. Assertions pass when the reader is in the expected state and
+//! otherwise stop the script with a message saying what they found, so a
+//! GUI check's log proves where the view went; the others drive shared
+//! parts of the reader (the outline).
+
+use gpui::Context;
 
 use super::StepState;
 use crate::reader::ReaderView;
+use crate::sidebar::OutlineState;
 
-/// A condition on the reader's state.
+/// A condition on the reader's state, or a shared action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Check {
     /// `expect-page=N`: the current page (one-based) is N.
     ExpectPage(u32),
     /// `expect-zoom=PERCENT`: the zoom, rounded to a whole percent, is PERCENT.
     ExpectZoom(u32),
+    /// `expect-history=B,F`: Back and Forward hold B and F views.
+    ExpectHistory(usize, usize),
+    /// `outline=N`: activates outline row N (one-based, as listed), waiting
+    /// while the outline loads.
+    Outline(usize),
 }
 
 impl Check {
@@ -21,6 +31,11 @@ impl Check {
         Some(match (name, value?) {
             ("expect-page", n) => Self::ExpectPage(positive(n)?),
             ("expect-zoom", p) => Self::ExpectZoom(positive(p.trim_end_matches('%'))?),
+            ("expect-history", depths) => {
+                let (back, forward) = depths.split_once(',')?;
+                Self::ExpectHistory(back.trim().parse().ok()?, forward.trim().parse().ok()?)
+            }
+            ("outline", n) => Self::Outline(n.parse().ok().filter(|&n: &usize| n >= 1)?),
             _ => return None,
         })
     }
@@ -28,7 +43,10 @@ impl Check {
 
 impl ReaderView {
     /// Done when `check` holds; otherwise the script stops.
-    pub(super) fn run_check_step(&self, check: Check) -> StepState {
+    pub(super) fn run_check_step(&mut self, check: Check, cx: &mut Context<'_, Self>) -> StepState {
+        if let Check::Outline(row) = check {
+            return self.run_outline_step(row - 1, cx);
+        }
         let Some(session) = self.session() else {
             return StepState::Abort("no document".into());
         };
@@ -41,8 +59,36 @@ impl ReaderView {
                 let zoom = session.zoom().percent();
                 (zoom != expected).then(|| format!("zoom {zoom}%, expected {expected}%"))
             }
+            Check::ExpectHistory(back, forward) => {
+                let depth = session.history_depth();
+                (depth != (back, forward))
+                    .then(|| format!("history {},{}, expected {back},{forward}", depth.0, depth.1))
+            }
+            Check::Outline(_) => None,
         };
         failure.map_or(StepState::Done, StepState::Abort)
+    }
+
+    /// Activates outline row `index` (zero-based) like a click on it.
+    fn run_outline_step(&mut self, index: usize, cx: &mut Context<'_, Self>) -> StepState {
+        if self.session().is_none() {
+            return StepState::Abort("no document".into());
+        }
+        self.ensure_outline(cx);
+        let target = match &self.sidebar.outline {
+            OutlineState::NotLoaded | OutlineState::Loading(_) => return StepState::Pending,
+            OutlineState::Empty => return StepState::Abort("the document has no outline".into()),
+            OutlineState::Failed(e) => return StepState::Abort(format!("outline failed: {e}")),
+            OutlineState::Ready(rows) => rows.get(index).map(|row| row.destination.is_some()),
+        };
+        match target {
+            Some(true) => {
+                self.activate_outline(index, cx);
+                StepState::Done
+            }
+            Some(false) => StepState::Abort(format!("outline row {} has no target", index + 1)),
+            None => StepState::Abort(format!("the outline has no row {}", index + 1)),
+        }
     }
 }
 
@@ -54,11 +100,19 @@ mod tests {
     #[test]
     fn checks_parse() {
         assert_eq!(
-            parse("expect-page=3; expect-zoom=250%; expect-zoom=80").unwrap(),
+            parse(
+                "expect-page=3; expect-zoom=250%; expect-zoom=80; cmd=NavigateBack; \
+                 expect-history=2,0; expect-history= 0 , 12 ; outline=5"
+            )
+            .unwrap(),
             vec![
                 Step::Check(Check::ExpectPage(3)),
                 Step::Check(Check::ExpectZoom(250)),
                 Step::Check(Check::ExpectZoom(80)),
+                Step::Command(fastpdf_core::keymap::ReaderCommand::NavigateBack),
+                Step::Check(Check::ExpectHistory(2, 0)),
+                Step::Check(Check::ExpectHistory(0, 12)),
+                Step::Check(Check::Outline(5)),
             ]
         );
         for bad in [
@@ -68,6 +122,11 @@ mod tests {
             "expect-zoom=x",
             "expect-zoom=0%",
             "expect-zoom",
+            "expect-history=1",
+            "expect-history=1,x",
+            "expect-history=-1,0",
+            "outline=0",
+            "outline",
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }

@@ -49,6 +49,11 @@ reader_commands! {
         PreviousPage,
         FirstPage,
         LastPage,
+        /// Back to the view before the last jump (go to page, first/last
+        /// page, outline item, thumbnail, search hit, link).
+        NavigateBack,
+        /// Forward again after Back.
+        NavigateForward,
         PageDown,
         PageUp,
         ScrollDown,
@@ -150,6 +155,8 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind("left", PreviousPage),
         bind("home", FirstPage),
         bind("end", LastPage),
+        bind("alt-left", NavigateBack),
+        bind("alt-right", NavigateForward),
         bind("pagedown", PageDown),
         bind("space", PageDown),
         bind("pageup", PageUp),
@@ -234,6 +241,13 @@ mod tests {
             assert!(command_for(key).is_some(), "{key} is unbound");
         }
         assert_eq!(command_for("CTRL-O"), Some(ReaderCommand::OpenFile));
+        assert_eq!(command_for("alt-left"), Some(ReaderCommand::NavigateBack));
+        assert_eq!(
+            command_for("alt-right"),
+            Some(ReaderCommand::NavigateForward)
+        );
+        assert_eq!(command_for("left"), Some(ReaderCommand::PreviousPage));
+        assert_eq!(command_for("right"), Some(ReaderCommand::NextPage));
         assert_eq!(keystrokes_for(ReaderCommand::ZoomIn).next(), Some("ctrl-="));
     }
 }

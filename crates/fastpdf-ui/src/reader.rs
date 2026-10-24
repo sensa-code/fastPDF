@@ -10,7 +10,7 @@ use fastpdf_cache::{BudgetConfig, MemoryBudgetManager};
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_core::memory::MemoryMonitor;
 use fastpdf_core::recent::RecentFiles;
-use fastpdf_core::{DocumentSession, SessionConfig};
+use fastpdf_core::{DocumentSession, Jump, SessionConfig};
 use fastpdf_engine_api::write::{WriteError, WriteJob, WriteReport};
 use fastpdf_engine_api::{CancelToken, ColorMode, PageIndex, PdfEngine};
 use fastpdf_search::TextCache;
@@ -515,6 +515,10 @@ impl ReaderView {
                 self.settings.cover_page = !self.settings.cover_page;
                 self.apply_page_layout(cx);
             }
+            C::FirstPage => self.jump(Jump::Direct, |s| s.first_page()),
+            C::LastPage => self.jump(Jump::Direct, |s| s.last_page()),
+            C::NavigateBack => self.go_back(),
+            C::NavigateForward => self.go_forward(),
             C::ZoomIn
             | C::ZoomOut
             | C::ActualSize
@@ -524,8 +528,6 @@ impl ReaderView {
             | C::RotateCounterClockwise
             | C::NextPage
             | C::PreviousPage
-            | C::FirstPage
-            | C::LastPage
             | C::PageDown
             | C::PageUp
             | C::ScrollDown
@@ -696,9 +698,7 @@ impl ReaderView {
         else {
             return;
         };
-        if let Some(session) = self.session_mut() {
-            reveal(session, page, rect);
-        }
+        self.jump(Jump::SearchHit, |s| reveal(s, page, rect));
     }
 
     // ---- text selection --------------------------------------------------------
@@ -869,6 +869,7 @@ impl ReaderView {
                 prepaint_view.update(cx, |this, _| this.prepare_viewport(bounds, window))
             },
             move |bounds, state, window, cx| {
+                crate::navigation::listen_navigation_buttons(view.clone(), window);
                 let (selecting, scrolling, stamping) = view.update(cx, |this, cx| {
                     this.paint_viewport(bounds, state, window, cx);
                     (

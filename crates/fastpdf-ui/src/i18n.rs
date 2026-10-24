@@ -6,6 +6,11 @@
 //!
 //! The language follows the Windows UI language unless the settings file
 //! names one (`language = "zh-TW"`).
+//!
+//! Text of a round-1 feature lives in a child module (`i18n/<feature>.rs`)
+//! as `Strings` methods that match on the language.
+
+mod navigation;
 
 use std::fmt::Write as _;
 
