@@ -504,6 +504,7 @@ impl ReaderView {
         }
         let page_count = session.page_count();
         self.links.loading.remove(&key);
+        let stored = matches!(result, Ok(_) | Err(EngineError::Unsupported(_)));
         match result {
             Ok(links) => {
                 let links = PageLinks::from_engine(links, page_count);
@@ -538,8 +539,9 @@ impl ReaderView {
             self.want_links(next.page, cx);
         }
         // The development overlay outlines what arrived (and reads the
-        // next visible pages on that frame).
-        if self.overlay.visible {
+        // next visible pages on that frame). A failure asks for no frame:
+        // it would only ask again for the pages that just failed.
+        if self.overlay.visible && stored {
             cx.notify();
         }
         // The pointer may be over the page that arrived.
