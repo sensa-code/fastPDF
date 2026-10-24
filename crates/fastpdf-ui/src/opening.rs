@@ -139,6 +139,7 @@ impl ReaderView {
     /// Closes the current document and frees its GPU textures, its cached
     /// text and (once a running print job has stopped) the engine document.
     pub(crate) fn close_document(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.end_go_to(false, window, cx);
         self.find.reset(cx);
         self.selection.reset();
         self.sidebar.reset_document();

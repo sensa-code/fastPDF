@@ -7,6 +7,7 @@
 //! [`SavedView`] say where its view is; [`NavigationHistory`] keeps the
 //! views Back and Forward return to.
 
+pub mod go_to;
 pub mod history;
 pub mod keymap;
 pub mod loader;

@@ -10,6 +10,7 @@
 //! Text of a round-1 feature lives in a child module (`i18n/<feature>.rs`)
 //! as `Strings` methods that match on the language.
 
+mod labels;
 mod navigation;
 mod password;
 

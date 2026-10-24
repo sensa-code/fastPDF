@@ -99,7 +99,7 @@ pub(crate) fn render(
             has_doc,
             cx,
         ))
-        .child(crate::page_labels::indicator(view, window))
+        .child(crate::go_to_page::page_control(view, blocked, window, cx))
         .child(tools.button(
             "next",
             "\u{203a}",

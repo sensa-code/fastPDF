@@ -47,6 +47,7 @@ mod doc_queries;
 mod document;
 mod empty_state;
 mod find;
+mod go_to_page;
 mod i18n;
 mod input;
 mod navigation;

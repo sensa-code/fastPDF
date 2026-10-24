@@ -252,6 +252,8 @@ pub struct ReaderView {
     /// The document area's scroll bars (`crate::scrollbar`).
     pub(crate) scrollbars: ScrollBarState,
     pub(crate) menus: MenuState,
+    /// The toolbar's page field (go to a page by number or label).
+    pub(crate) go_to: crate::go_to_page::GoToPage,
     /// Save a copy, the page tools panel and the write in progress.
     pub(crate) tools: ToolsPanel,
     /// Stamps placed on the open document and the stamp panel.
@@ -364,6 +366,7 @@ impl ReaderView {
             page_turn: PageTurn::default(),
             scrollbars: ScrollBarState::default(),
             menus: MenuState::default(),
+            go_to: crate::go_to_page::GoToPage::new(window, cx),
             tools: ToolsPanel::new(cx),
             stamps: StampPanel::default(),
             text_edits: TextEditPanel::new(cx),
@@ -493,6 +496,10 @@ impl ReaderView {
             C::SelectAll => self.select_current_page(cx),
             C::Cancel => self.cancel(window, cx),
             C::ConfirmPrompt => self.confirm_prompt(window, cx),
+            C::GoToPage => self.start_go_to(window, cx),
+            C::ConfirmGoToPage => {
+                self.confirm_go_to(window, cx);
+            }
             C::Print => self.toggle_print_panel(window, cx),
             C::SaveCopy => {
                 self.menus.open = None;
@@ -556,12 +563,12 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// Esc: cancels a prompt, closes a menu, stops editing a line, unarms or
-    /// deselects a stamp, closes the stamp or text edit panel, stops
-    /// printing or closes the print panel, then the page tools, the settings
-    /// panel, the find bar, then clears the selection.
+    /// Esc: cancels a prompt, closes the page field or a menu, stops editing
+    /// a line, unarms or deselects a stamp, closes the stamp or text edit
+    /// panel, stops printing or closes the print panel, then the page tools,
+    /// the settings panel, the find bar, then clears the selection.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if self.cancel_prompt(window, cx) {
+        if self.cancel_prompt(window, cx) || self.end_go_to(true, window, cx) {
         } else if self.menus.open.is_some() {
             self.menus.open = None;
         } else if self.cancel_line_edit(window, cx) {
@@ -802,6 +809,9 @@ impl ReaderView {
             input.set_placeholder(strings.range_placeholder, cx)
         });
         self.relabel_password_field(cx);
+        self.go_to.field.update(cx, |input, cx| {
+            input.set_placeholder(strings.go_to_placeholder(), cx)
+        });
     }
 
     /// Everything a new session needs besides the document.

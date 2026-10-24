@@ -68,6 +68,7 @@
 //! | `prompt-cancel` | cancels the prompt, like Esc (`checks.rs`) |
 //! | `wait-labels` | asks for the page labels and waits for the answer (`labels.rs`) |
 //! | `expect-label=TEXT` | stops the script unless the current page is labeled TEXT (`labels.rs`) |
+//! | `goto=TEXT` | types TEXT into the page field (a label, a number, `#N`) and presses Enter (`labels.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
@@ -685,7 +686,7 @@ impl ReaderView {
                 Done
             }
             Step::Check(check) => self.run_check_step(check, window, cx),
-            Step::Labels(step) => self.run_label_step(step, cx),
+            Step::Labels(step) => self.run_label_step(step, window, cx),
         }
     }
 }

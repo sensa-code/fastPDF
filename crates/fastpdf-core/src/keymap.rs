@@ -96,6 +96,11 @@ reader_commands! {
         /// Confirms the prompt card in front of the window (its Enter): opens
         /// an encrypted document with the typed password.
         ConfirmPrompt,
+        /// Puts the cursor in the toolbar's page field (a page number or
+        /// label).
+        GoToPage,
+        /// Goes to the page typed in the page field (its Enter).
+        ConfirmGoToPage,
     }
 }
 
@@ -141,6 +146,8 @@ pub const LINE_EDITOR: &str = "LineEditor";
 /// Key context of the prompt card that blocks the window (a password, a
 /// confirmation) and of the text field inside it.
 pub const PROMPT: &str = "Prompt";
+/// Key context of the toolbar's page field (go to a page).
+pub const PAGE_FIELD: &str = "PageField";
 
 const fn bind(keystroke: &'static str, command: ReaderCommand) -> Binding {
     Binding {
@@ -203,6 +210,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind("ctrl-a", SelectAll),
         bind("escape", Cancel),
         bind("delete", RemoveStamp),
+        bind("ctrl-g", GoToPage),
         bind_in(FIND_BAR, "enter", FindNext),
         bind_in(FIND_BAR, "shift-enter", FindPrevious),
         bind_in(FIND_BAR, "escape", Cancel),
@@ -210,6 +218,8 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind_in(LINE_EDITOR, "escape", Cancel),
         bind_in(PROMPT, "enter", ConfirmPrompt),
         bind_in(PROMPT, "escape", Cancel),
+        bind_in(PAGE_FIELD, "enter", ConfirmGoToPage),
+        bind_in(PAGE_FIELD, "escape", Cancel),
     ]
 };
 
@@ -263,6 +273,15 @@ mod tests {
             command_in(Some(PROMPT), "escape"),
             Some(ReaderCommand::Cancel)
         );
+        assert_eq!(command_for("ctrl-g"), Some(ReaderCommand::GoToPage));
+        assert_eq!(
+            command_in(Some(PAGE_FIELD), "enter"),
+            Some(ReaderCommand::ConfirmGoToPage)
+        );
+        assert_eq!(
+            command_in(Some(PAGE_FIELD), "escape"),
+            Some(ReaderCommand::Cancel)
+        );
     }
 
     #[test]
@@ -283,6 +302,7 @@ mod tests {
         }
         assert!(ConfirmPrompt.allowed_during_prompt() && Cancel.allowed_during_prompt());
         assert!(!Print.allowed_during_prompt() && !NavigateBack.allowed_during_prompt());
+        assert!(!GoToPage.allowed_during_prompt() && !ConfirmGoToPage.allowed_during_prompt());
     }
 
     #[test]
