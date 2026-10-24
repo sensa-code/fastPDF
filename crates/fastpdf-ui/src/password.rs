@@ -165,7 +165,11 @@ impl ReaderView {
         cx.notify();
     }
 
-    fn refocus_password_field(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+    pub(crate) fn refocus_password_field(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if let DocState::Locked(locked) = &self.doc {
             let focus = locked.field.read(cx).focus_handle().clone();
             window.focus(&focus, cx);

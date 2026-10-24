@@ -73,6 +73,7 @@
 //! | `goto=TEXT` | types TEXT into the page field (a label, a number, `#N`) and presses Enter (`labels.rs`) |
 //! | `find-case=on`, `=off`, `find-word=on`, `=off` | sets the find options match case and whole word, like their toggles (`search.rs`) |
 //! | `find-result=N` | shows search result N (one-based) as a click on its row does; waits while the search runs, stops if it found fewer (`search.rs`) |
+//! | `focus=results` | gives the keyboard focus to the search result list (`search.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
@@ -698,7 +699,7 @@ impl ReaderView {
             }
             Step::Check(check) => self.run_check_step(check, window, cx),
             Step::Labels(step) => self.run_label_step(step, window, cx),
-            Step::Search(step) => self.run_search_step(step, cx),
+            Step::Search(step) => self.run_search_step(step, window, cx),
         }
     }
 }

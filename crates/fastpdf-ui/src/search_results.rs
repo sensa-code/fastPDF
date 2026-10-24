@@ -105,29 +105,36 @@ impl ReaderView {
     /// The Results tab: a header (count, how far a capped search got) and
     /// the rows, or what there is instead (a hint, searching, no results).
     /// Whatever it shows takes the keyboard focus of the list, so the list
-    /// keeps it while a search starts again or the document closes.
+    /// keeps it while a search starts again or the document closes; never
+    /// while a prompt waits, which keeps the keyboard (a press here goes to
+    /// the reader, which hands it back to the prompt).
     pub(crate) fn render_search_results(&self, cx: &mut Context<'_, Self>) -> AnyElement {
+        let free = self.active_prompt().is_none();
         div()
             .id("search-results")
             .key_context(keymap::SEARCH_RESULTS)
-            .track_focus(&self.find.results.focus)
+            .when(free, |list| list.track_focus(&self.find.results.focus))
             .size_full()
             .child(self.results_content(cx))
             .into_any_element()
     }
 
     /// Every frame: a list that holds the keyboard but is not shown (the
-    /// sidebar closed, another tab) gives it back to the document. A focused
-    /// element that is not drawn would leave the keyboard outside the
-    /// reader, where none of its shortcuts work.
+    /// sidebar closed, another tab) gives it back to the document, and to
+    /// the prompt's field while a prompt waits. A focused element that is
+    /// not drawn would leave the keyboard outside the reader, where none of
+    /// its shortcuts work.
     pub(crate) fn keep_keyboard_in_view(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let shown = self.sidebar.open && self.sidebar.tab == SidebarTab::Results;
+        let shown = self.sidebar.open
+            && self.sidebar.tab == SidebarTab::Results
+            && self.active_prompt().is_none();
         if !shown && self.find.results.is_focused(window) {
             window.focus(&self.focus, cx);
+            self.refocus_password_field(window, cx);
         }
     }
 
