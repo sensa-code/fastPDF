@@ -8,6 +8,8 @@ use url::form_urlencoded;
 
 /// The fields a mail link may set (compared without regard to case).
 const ALLOWED: [&str; 6] = ["to", "cc", "bcc", "subject", "body", "in-reply-to"];
+/// The allowed fields that only write the mail's text.
+const TEXT_FIELDS: [&str; 3] = ["subject", "body", "in-reply-to"];
 /// Longest field name kept in the rejection (it is shown to the user).
 const MAX_NAME_LEN: usize = 32;
 
@@ -32,9 +34,38 @@ pub(super) fn refused_field(query: &str) -> Option<String> {
         })
 }
 
+/// Whether every field of `query` only writes the mail's text, so the
+/// recipients before `?` are all of them. A field without a name counts as
+/// one that does not.
+pub(super) fn only_writes_text(query: &str) -> bool {
+    form_urlencoded::parse(query.as_bytes())
+        .all(|(name, _)| TEXT_FIELDS.iter().any(|ok| name.eq_ignore_ascii_case(ok)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_text_fields_leave_the_recipients_alone() {
+        for text in [
+            "",
+            "subject=x",
+            "Subject=x&BODY=y&in-reply-to=z",
+            "&&subject=x",
+        ] {
+            assert!(only_writes_text(text), "{text}");
+        }
+        for adds in [
+            "to=b@example.invalid",
+            "subject=x&bcc=b@example.invalid",
+            "%62cc=b@example.invalid",
+            "CC=b@example.invalid",
+            "=b@example.invalid",
+        ] {
+            assert!(!only_writes_text(adds), "{adds}");
+        }
+    }
 
     #[test]
     fn only_addressing_and_text_fields_pass() {

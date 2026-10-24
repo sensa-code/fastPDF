@@ -64,6 +64,16 @@ impl ExternalUri {
     pub fn scheme(&self) -> &str {
         self.text.split(':').next().unwrap_or_default()
     }
+
+    /// The recipients of a mail link when it names them all before `?`
+    /// (its query only writes the subject, text or reply reference); `None`
+    /// otherwise and for a web address: then only the whole address says
+    /// who gets the mail.
+    pub fn mail_recipients(&self) -> Option<&str> {
+        let rest = self.text.strip_prefix("mailto:")?;
+        let (recipients, query) = rest.split_once('?').unwrap_or((rest, ""));
+        (!recipients.is_empty() && mailto::only_writes_text(query)).then_some(recipients)
+    }
 }
 
 /// Why an address is not opened.

@@ -268,23 +268,12 @@ impl ReaderView {
 }
 
 /// What a chip names for an external link: the host of a web address, the
-/// recipients of a mail link (the whole address when it has them only in
-/// its query).
+/// recipients of a mail link, or its whole address when the query names
+/// recipients too (`mailto:a@x?bcc=b@y` must not read as mail to a@x only).
 fn external_target(uri: &ExternalUri) -> &str {
     match uri.kind() {
         UriKind::Web => uri.host().unwrap_or(uri.as_str()),
-        UriKind::Mail => {
-            let recipients = uri
-                .as_str()
-                .strip_prefix("mailto:")
-                .and_then(|rest| rest.split('?').next())
-                .unwrap_or_default();
-            if recipients.is_empty() {
-                uri.as_str()
-            } else {
-                recipients
-            }
-        }
+        UriKind::Mail => uri.mail_recipients().unwrap_or(uri.as_str()),
     }
 }
 
@@ -337,6 +326,18 @@ mod tests {
         assert_eq!(
             target("mailto:?to=a@example.invalid"),
             "mailto:?to=a@example.invalid"
+        );
+        for whole in [
+            "mailto:a@example.invalid?bcc=b@example.invalid",
+            "mailto:a@example.invalid?subject=x&CC=b@example.invalid",
+            "mailto:a@example.invalid?%74o=b@example.invalid",
+            "mailto:a@example.invalid?=b@example.invalid",
+        ] {
+            assert_eq!(target(whole), whole);
+        }
+        assert_eq!(
+            target("mailto:a@example.invalid?Subject=x&body=y"),
+            "a@example.invalid"
         );
     }
 }
