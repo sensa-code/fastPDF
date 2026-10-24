@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use fastpdf_engine_api::{
     ColorMode, Destination, DestinationView, DocumentMetadata, EngineCapabilities, EngineError,
-    LimitKind, Link, LinkTarget, MemoryPressure, OutlineItem, PageIndex, PageInfo, PageRect,
-    PageSize, PixelFormat, PixelRect, RenderOutcome, RenderRequest, RenderScale, ResourceLimits,
-    Rgba8, Rotation, TextLayer, TextSpan,
+    LimitKind, Link, LinkTarget, MemoryPressure, OutlineItem, PageIndex, PageInfo, PageLabelRange,
+    PageLabelStyle, PageRect, PageSize, PixelFormat, PixelRect, RenderOutcome, RenderRequest,
+    RenderScale, ResourceLimits, Rgba8, Rotation, TextLayer, TextSpan,
 };
 
 use super::*;
@@ -209,7 +209,8 @@ impl Rng {
     fn command(&mut self) -> Command {
         let id = self.next();
         let page = PageIndex::new(self.next() as u32);
-        match self.below(12) {
+        match self.below(13) {
+            12 => Command::PageLabels { id },
             11 => Command::PageInfos {
                 id,
                 first: page,
@@ -297,7 +298,8 @@ impl Rng {
     }
 
     fn payload(&mut self) -> Payload {
-        match self.below(10) {
+        match self.below(11) {
+            10 => Payload::PageLabels(self.page_labels()),
             9 => Payload::PageInfos {
                 first: PageIndex::new(self.next() as u32),
                 pages: (0..self.below(20))
@@ -358,6 +360,31 @@ impl Rng {
             7 => Payload::MemoryUsage(self.chance(2).then(|| self.next())),
             _ => Payload::Trimmed,
         }
+    }
+
+    /// Valid on the wire: strictly increasing pages, start >= 1, short
+    /// prefixes.
+    fn page_labels(&mut self) -> Vec<PageLabelRange> {
+        let styles = [
+            PageLabelStyle::None,
+            PageLabelStyle::Decimal,
+            PageLabelStyle::UpperRoman,
+            PageLabelStyle::LowerRoman,
+            PageLabelStyle::UpperLetters,
+            PageLabelStyle::LowerLetters,
+        ];
+        let mut first = 0u32;
+        (0..self.below(6))
+            .map(|_| {
+                first = first.saturating_add(1 + self.below(50) as u32);
+                PageLabelRange {
+                    first_page: PageIndex::new(first),
+                    style: styles[self.below(styles.len())],
+                    prefix: self.string(20),
+                    start: 1 + (self.next() % u64::from(u32::MAX)) as u32,
+                }
+            })
+            .collect()
     }
 
     fn reply(&mut self) -> Reply {
@@ -530,6 +557,7 @@ fn decoders_survive_random_bytes() {
         CMD_TRIM,
         CMD_CANCEL,
         CMD_PAGE_INFOS,
+        CMD_PAGE_LABELS,
         REPLY_READY,
         REPLY_INIT_FAILED,
         REPLY_DONE,
@@ -546,7 +574,7 @@ fn decoders_survive_random_bytes() {
                 // Steer `Done` replies towards the payload decoders.
                 payload.resize(payload.len().max(13), 0);
                 payload[11] = 0;
-                payload[12] = 1 + rng.below(10) as u8;
+                payload[12] = 1 + rng.below(11) as u8;
             }
         }
         check_decoders(&payload);

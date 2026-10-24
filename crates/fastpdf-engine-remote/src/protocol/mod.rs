@@ -20,6 +20,7 @@
 //! clipped at a char boundary, and collections beyond their caps are cut.
 //! Only pathological documents ever hit those caps.
 
+mod labels;
 mod wire;
 
 #[cfg(test)]
@@ -31,16 +32,17 @@ use std::time::Duration;
 
 use fastpdf_engine_api::{
     ColorMode, Destination, DestinationView, DocumentMetadata, EngineCapabilities, EngineError,
-    LimitKind, Link, LinkTarget, MemoryPressure, OutlineItem, PageIndex, PageInfo, PageRect,
-    PageSize, Password, PixelFormat, PixelRect, RenderOutcome, RenderRequest, RenderScale,
-    ResourceLimits, Rgba8, Rotation, TextLayer, TextSpan,
+    LimitKind, Link, LinkTarget, MemoryPressure, OutlineItem, PageIndex, PageInfo, PageLabelRange,
+    PageRect, PageSize, Password, PixelFormat, PixelRect, RenderOutcome, RenderRequest,
+    RenderScale, ResourceLimits, Rgba8, Rotation, TextLayer, TextSpan,
 };
 
 pub(crate) use wire::ProtocolError;
 use wire::{Decoder, Encoder, Result, clip};
 
 /// Bumped on every incompatible change. Each frame carries it.
-pub(crate) const PROTOCOL_VERSION: u16 = 1;
+/// 2: page labels (`PageLabels` command and payload).
+pub(crate) const PROTOCOL_VERSION: u16 = 2;
 
 /// Identifies the code on both ends; parent and host must match exactly
 /// (same executable in production, ADR 0008 §1.2).
@@ -48,7 +50,7 @@ pub(crate) const BUILD_ID: &str = concat!(
     env!("CARGO_PKG_NAME"),
     "/",
     env!("CARGO_PKG_VERSION"),
-    "/protocol-1"
+    "/protocol-2"
 );
 
 /// Largest command frame (parent → host); the biggest command is `Open`
@@ -95,6 +97,7 @@ const CMD_MEMORY_USAGE: u8 = 0x09;
 const CMD_TRIM: u8 = 0x0A;
 const CMD_CANCEL: u8 = 0x0B;
 const CMD_PAGE_INFOS: u8 = 0x0C;
+const CMD_PAGE_LABELS: u8 = 0x0D;
 const REPLY_READY: u8 = 0x81;
 const REPLY_INIT_FAILED: u8 = 0x82;
 const REPLY_DONE: u8 = 0x83;
@@ -110,6 +113,7 @@ const P_LINKS: u8 = 7;
 const P_MEMORY_USAGE: u8 = 8;
 const P_TRIMMED: u8 = 9;
 const P_PAGE_INFOS: u8 = 10;
+const P_PAGE_LABELS: u8 = 11;
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -146,6 +150,9 @@ pub(crate) enum Command {
         id: u64,
         page: PageIndex,
     },
+    PageLabels {
+        id: u64,
+    },
     MemoryUsage {
         id: u64,
     },
@@ -172,6 +179,7 @@ impl Command {
             | Self::TextLayer { id, .. }
             | Self::Outline { id }
             | Self::Links { id, .. }
+            | Self::PageLabels { id }
             | Self::MemoryUsage { id }
             | Self::Trim { id, .. }
             | Self::Cancel { id } => Some(*id),
@@ -296,6 +304,8 @@ pub(crate) enum Payload {
     TextLayer(TextLayer),
     Outline(Vec<OutlineItem>),
     Links(Vec<Link>),
+    /// As the engine gave them; the parent normalizes them again.
+    PageLabels(Vec<PageLabelRange>),
     MemoryUsage(Option<u64>),
     Trimmed,
 }
@@ -467,6 +477,7 @@ pub(crate) fn encode_command(cmd: &Command) -> Result<Vec<u8>> {
         Command::TextLayer { id, page } => id_page(CMD_TEXT_LAYER, *id, *page),
         Command::Outline { id } => id_only(CMD_OUTLINE, *id),
         Command::Links { id, page } => id_page(CMD_LINKS, *id, *page),
+        Command::PageLabels { id } => id_only(CMD_PAGE_LABELS, *id),
         Command::MemoryUsage { id } => id_only(CMD_MEMORY_USAGE, *id),
         Command::Trim { id, pressure } => {
             let mut e = Encoder::new(CMD_TRIM);
@@ -622,6 +633,7 @@ pub(crate) fn decode_command(payload: &[u8]) -> Result<Command> {
             id: d.u64()?,
             page: PageIndex::new(d.u32()?),
         },
+        CMD_PAGE_LABELS => Command::PageLabels { id: d.u64()? },
         CMD_MEMORY_USAGE => Command::MemoryUsage { id: d.u64()? },
         CMD_TRIM => {
             let id = d.u64()?;
@@ -1099,6 +1111,10 @@ fn put_payload(e: &mut Encoder, p: &Payload) {
                 }
             }
         }
+        Payload::PageLabels(ranges) => {
+            e.u8(P_PAGE_LABELS);
+            labels::put_page_labels(e, ranges);
+        }
         Payload::MemoryUsage(bytes) => {
             e.u8(P_MEMORY_USAGE);
             match bytes {
@@ -1183,6 +1199,7 @@ fn get_payload(d: &mut Decoder<'_>) -> Result<Payload> {
             }
             Payload::Links(links)
         }
+        P_PAGE_LABELS => Payload::PageLabels(labels::get_page_labels(d)?),
         P_MEMORY_USAGE => Payload::MemoryUsage(if d.present("memory usage")? {
             Some(d.u64()?)
         } else {

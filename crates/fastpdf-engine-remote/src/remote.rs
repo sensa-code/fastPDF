@@ -31,8 +31,8 @@ use std::time::{Duration, Instant};
 use fastpdf_engine_api::{
     CancelToken, DocumentMetadata, DocumentSource, EngineDocument, EngineError, EngineInfo,
     FileOrigin, HostExit, HostExitReason, HostStatus, Link, MemoryPressure, OpenOptions,
-    OutlineItem, PageIndex, PageInfo, Password, PdfEngine, PixelFormat, PixmapMut, RenderOutcome,
-    RenderRequest, ResourceLimits, TextLayer,
+    OutlineItem, PageIndex, PageInfo, PageLabels, Password, PdfEngine, PixelFormat, PixmapMut,
+    RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
 };
 
 use crate::HostStats;
@@ -469,6 +469,7 @@ fn subject_name(s: Subject) -> String {
         Subject::Page(p) => format!("page {}", PageIndex::new(p).display_number()),
         Subject::Metadata => "the document metadata".to_owned(),
         Subject::Outline => "the outline".to_owned(),
+        Subject::PageLabels => "the page labels".to_owned(),
         Subject::Geometry => "the page geometry".to_owned(),
     }
 }
@@ -1050,6 +1051,20 @@ impl EngineDocument for RemoteDocument {
         })?;
         match payload {
             Payload::Outline(items) => Ok(items),
+            _ => Err(mismatch()),
+        }
+    }
+
+    fn page_labels(&self) -> Result<PageLabels, EngineError> {
+        let (payload, _) = self.shared.call(Some(Subject::PageLabels), None, |_, id| {
+            Ok(Request::new(
+                Command::PageLabels { id },
+                Expect::PageLabels,
+                None,
+            ))
+        })?;
+        match payload {
+            Payload::PageLabels(ranges) => Ok(PageLabels::new(ranges, self.shared.page_count)),
             _ => Err(mismatch()),
         }
     }

@@ -210,6 +210,12 @@ fn remote_results_are_identical_to_in_process() {
     }
     assert_eq!(remote.outline(), local.outline());
     assert_eq!(remote.metadata(), local.metadata());
+    let labels = local.page_labels();
+    assert!(
+        labels.as_ref().is_ok_and(|l| l.ranges().len() == 2),
+        "{labels:?}"
+    );
+    assert_eq!(remote.page_labels(), labels);
     assert_eq!(
         remote.page_info(PageIndex::new(99)),
         local.page_info(PageIndex::new(99))

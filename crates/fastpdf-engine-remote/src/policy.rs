@@ -29,6 +29,7 @@ pub(crate) enum Subject {
     Page(u32),
     Metadata,
     Outline,
+    PageLabels,
     /// Background geometry batches.
     Geometry,
 }

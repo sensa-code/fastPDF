@@ -68,7 +68,8 @@ fastpdf.exe（UI process）                                 render host（每份
 - 兩條**單向** byte-mode pipe，一條送 request、一條收 response。Windows 的同步 I/O 在同一個 handle 上會序列化，duplex pipe 一邊阻塞 `ReadFile` 時另一邊的 `WriteFile` 也會被卡住；拆成兩條就不需要 overlapped I/O 狀態機。parent 端用 overlapped handle，`ConnectNamedPipe` 搭配 `WaitForMultipleObjects([連線事件, host process])`，host 在連線前就死掉時不會卡住。
 - 原型用隨機名稱並設 `FILE_FLAG_FIRST_PIPE_INSTANCE`、`PIPE_REJECT_REMOTE_CLIENTS`。**產品版改用 handle 繼承**：`STARTUPINFOEX` 加上 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`，只讓 host 繼承那幾個 handle。如此沒有全域名稱，不會被搶註（squatting），Low IL 的 host 也不需要開啟有名物件的權限。
 - Frame 格式：`u32 長度 + u8 種類 + little-endian 欄位`，單一 frame 上限 64 MiB。decoder 對所有長度做邊界檢查，並且要有 fuzz target：host 可能已被攻破，它回來的資料一律不信任。parent 還要驗證 `Done` 的 id 與 slot 屬於自己發出的 request、尺寸等於要求的 region。
-- 主要訊息：`Hello { protocol, build_id }`、`Open { file_handle | section_handle, password }`、`Opened { page_count, first_page_info }`、`Render`、`Cancel`、`Done { id, outcome, partial }`、`PageInfo`、`TextLayer`、`Outline`、`Links`、`Metadata`、`Trim`、`Quit`。
+- 主要訊息：`Hello { protocol, build_id }`、`Open { file_handle | section_handle, password }`、`Opened { page_count, first_page_info }`、`Render`、`Cancel`、`Done { id, outcome, partial }`、`PageInfo`、`TextLayer`、`Outline`、`Links`、`Metadata`、`Trim`、`Quit`、`PageLabels`。
+- Protocol 版本：v0.0.2 出貨的是 protocol 1。protocol 2（2026-10）加上 `PageLabels` 命令與回覆（命令 `0x0D`、payload tag 11：每個範圍是起始頁、樣式、起始數字與最多 128 bytes 的前綴；decoder 拒絕超過 4096 個範圍、非遞增的起始頁、起始數字 0 與未知樣式）。`PROTOCOL_VERSION` 與 build id（`…/protocol-2`）一起提高；parent 與 host 是同一個 exe，所以只有混用不同 build 的測試環境會受影響，版本不符的 host 在解析命令列時就拒絕連線。下一次發佈之前新增的訊息沿用 protocol 2；發佈之後再改就提高版本。
 
 #### 1.4 Tile 像素：共享記憶體 slot
 

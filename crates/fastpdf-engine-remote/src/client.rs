@@ -84,6 +84,7 @@ pub(crate) enum Expect {
     TextLayer(PageIndex),
     Outline,
     Links,
+    PageLabels,
     MemoryUsage,
     Trimmed,
 }
@@ -101,6 +102,7 @@ impl Expect {
             | (Self::Rendered, Payload::Rendered(_))
             | (Self::Outline, Payload::Outline(_))
             | (Self::Links, Payload::Links(_))
+            | (Self::PageLabels, Payload::PageLabels(_))
             | (Self::MemoryUsage, Payload::MemoryUsage(_))
             | (Self::Trimmed, Payload::Trimmed) => true,
             _ => false,

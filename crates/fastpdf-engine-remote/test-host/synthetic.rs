@@ -14,8 +14,9 @@ use std::time::{Duration, Instant};
 use fastpdf_engine_api::{
     CancelToken, Destination, DestinationView, DocumentMetadata, DocumentSource,
     EngineCapabilities, EngineDocument, EngineError, EngineInfo, Link, LinkTarget, MemoryPressure,
-    OpenOptions, OutlineItem, PageIndex, PageInfo, PageRect, PageSize, PdfEngine, PixmapMut,
-    RenderOutcome, RenderRequest, Rgba8, Rotation, TextLayer, TextSpan,
+    OpenOptions, OutlineItem, PageIndex, PageInfo, PageLabelRange, PageLabelStyle, PageLabels,
+    PageRect, PageSize, PdfEngine, PixmapMut, RenderOutcome, RenderRequest, Rgba8, Rotation,
+    TextLayer, TextSpan,
 };
 
 pub(crate) const NAME: &str = "synthetic";
@@ -474,6 +475,25 @@ impl EngineDocument for SyntheticDoc {
                 target: LinkTarget::Unsupported,
             },
         ])
+    }
+
+    /// Roman front matter, then prefixed decimal numbers from page 3.
+    fn page_labels(&self) -> Result<PageLabels, EngineError> {
+        let ranges = vec![
+            PageLabelRange {
+                first_page: PageIndex::FIRST,
+                style: PageLabelStyle::LowerRoman,
+                prefix: String::new(),
+                start: 1,
+            },
+            PageLabelRange {
+                first_page: PageIndex::new(2),
+                style: PageLabelStyle::Decimal,
+                prefix: "附-".into(),
+                start: 3,
+            },
+        ];
+        Ok(PageLabels::new(ranges, self.spec.pages))
     }
 
     fn trim_memory(&self, pressure: MemoryPressure) {

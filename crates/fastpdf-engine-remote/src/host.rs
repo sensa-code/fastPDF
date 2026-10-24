@@ -564,6 +564,10 @@ impl State {
                 .map(Payload::TextLayer),
             Command::Outline { .. } => self.document()?.outline().map(Payload::Outline),
             Command::Links { page, .. } => self.document()?.links(page).map(Payload::Links),
+            Command::PageLabels { .. } => self
+                .document()?
+                .page_labels()
+                .map(|labels| Payload::PageLabels(labels.into_ranges())),
             Command::MemoryUsage { .. } => Ok(Payload::MemoryUsage(
                 self.document().ok().and_then(|d| d.memory_usage()),
             )),
@@ -808,13 +812,20 @@ mod tests {
         assert_eq!(parse_args(os(&[])), None);
         assert_eq!(parse_args(os(&["--render-host"])), None);
         assert_eq!(parse_args(os(&[IPC_FLAG])), None);
-        assert_eq!(parse_args(os(&[IPC_FLAG, "1"])), None);
+        let v = PROTOCOL_VERSION;
+        assert_eq!(parse_args(os(&[IPC_FLAG, &v.to_string()])), None);
         assert_eq!(parse_args(os(&[IPC_FLAG, "999:abc"])), None);
-        assert_eq!(parse_args(os(&[IPC_FLAG, "1:..\\x"])), None);
-        assert_eq!(parse_args(os(&[IPC_FLAG, "1:"])), None);
-        assert_eq!(parse_args(os(&[IPC_FLAG, "1:abc", "extra"])), None);
+        assert_eq!(parse_args(os(&[IPC_FLAG, &format!("{v}:..\\x")])), None);
+        assert_eq!(parse_args(os(&[IPC_FLAG, &format!("{v}:")])), None);
         assert_eq!(
-            parse_args(os(&[IPC_FLAG, "1:abc-1"])).as_deref(),
+            parse_args(os(&[IPC_FLAG, &format!("{v}:abc"), "extra"])),
+            None
+        );
+        // A host of another protocol version refuses the channel.
+        let older = format!("{}:abc-1", v - 1);
+        assert_eq!(parse_args(os(&[IPC_FLAG, &older])), None);
+        assert_eq!(
+            parse_args(os(&[IPC_FLAG, &format!("{v}:abc-1")])).as_deref(),
             Some("abc-1")
         );
     }
