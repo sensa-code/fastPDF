@@ -872,6 +872,7 @@ impl Render for ReaderView {
             cx.set_global(ActiveTheme(theme));
         }
         self.apply_language(cx);
+        self.keep_keyboard_in_view(window, cx);
         let view = cx.entity();
 
         let root = div()

@@ -104,7 +104,34 @@ fn anchored(y: f32, rows: usize) -> f32 {
 impl ReaderView {
     /// The Results tab: a header (count, how far a capped search got) and
     /// the rows, or what there is instead (a hint, searching, no results).
+    /// Whatever it shows takes the keyboard focus of the list, so the list
+    /// keeps it while a search starts again or the document closes.
     pub(crate) fn render_search_results(&self, cx: &mut Context<'_, Self>) -> AnyElement {
+        div()
+            .id("search-results")
+            .key_context(keymap::SEARCH_RESULTS)
+            .track_focus(&self.find.results.focus)
+            .size_full()
+            .child(self.results_content(cx))
+            .into_any_element()
+    }
+
+    /// Every frame: a list that holds the keyboard but is not shown (the
+    /// sidebar closed, another tab) gives it back to the document. A focused
+    /// element that is not drawn would leave the keyboard outside the
+    /// reader, where none of its shortcuts work.
+    pub(crate) fn keep_keyboard_in_view(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let shown = self.sidebar.open && self.sidebar.tab == SidebarTab::Results;
+        if !shown && self.find.results.is_focused(window) {
+            window.focus(&self.focus, cx);
+        }
+    }
+
+    fn results_content(&self, cx: &mut Context<'_, Self>) -> AnyElement {
         let theme = self.theme;
         let strings = self.strings();
         let message = |text: String| {
@@ -133,22 +160,15 @@ impl ReaderView {
                 strings.searching().into()
             });
         }
-        let list = div()
-            .id("search-results")
-            .key_context(keymap::SEARCH_RESULTS)
-            .track_focus(&find.results.focus)
-            .size_full()
-            .child(
-                uniform_list(
-                    "search-result-rows",
-                    count,
-                    cx.processor(|this, range: Range<usize>, window, cx| {
-                        this.result_rows(range, window, cx)
-                    }),
-                )
-                .track_scroll(&find.results.scroll)
-                .size_full(),
-            );
+        let list = uniform_list(
+            "search-result-rows",
+            count,
+            cx.processor(|this, range: Range<usize>, window, cx| {
+                this.result_rows(range, window, cx)
+            }),
+        )
+        .track_scroll(&find.results.scroll)
+        .size_full();
         div()
             .size_full()
             .flex()
