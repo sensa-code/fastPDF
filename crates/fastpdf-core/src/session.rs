@@ -13,6 +13,8 @@
 //! made again after a growing delay (`crate::retry`); a retry clock wakes
 //! the UI through the session's wake hook when one is due.
 
+mod navigation;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
@@ -34,6 +36,7 @@ use fastpdf_render::{
     ZoomLevel, plan_tiles,
 };
 
+use crate::history::{HISTORY_CAPACITY, NavigationHistory};
 use crate::retry::{Backoff, RetryClock};
 
 /// Session settings.
@@ -255,6 +258,9 @@ pub struct DocumentSession<V: Clone + Send + 'static> {
     planned: Option<PlanInputs>,
     thumbnails: Option<Thumbnails<V>>,
     thumbnail_evict: Option<ThumbnailEvict<V>>,
+    /// Views Back and Forward return to (`navigation`), dropped with the
+    /// document.
+    history: NavigationHistory,
 }
 
 impl<V: Clone + Send + 'static> fmt::Debug for DocumentSession<V> {
@@ -379,6 +385,7 @@ impl<V: Clone + Send + 'static> DocumentSession<V> {
             planned: None,
             thumbnails: None,
             thumbnail_evict: None,
+            history: NavigationHistory::new(HISTORY_CAPACITY),
         };
         session.apply_zoom_mode();
         session.viewport.clamp_scroll(&session.layout);
@@ -1496,7 +1503,7 @@ mod tests {
         static RENDERS: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
     }
 
-    fn session() -> DocumentSession<Arc<Pixmap>> {
+    pub(super) fn session() -> DocumentSession<Arc<Pixmap>> {
         let doc = open_guarded(
             &Engine,
             DocumentSource::from_bytes(SharedBytes::from_vec(vec![0])),
@@ -1518,7 +1525,7 @@ mod tests {
     }
 
     /// Calls `frame` until no visible tile is pending.
-    fn settle(s: &mut DocumentSession<Arc<Pixmap>>) -> Frame<Arc<Pixmap>> {
+    pub(super) fn settle(s: &mut DocumentSession<Arc<Pixmap>>) -> Frame<Arc<Pixmap>> {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let frame = s.frame();
@@ -2062,7 +2069,7 @@ mod tests {
         assert!(retries.is_empty());
     }
 
-    fn mode(spread: fastpdf_render::Spread, continuous: bool) -> LayoutMode {
+    pub(super) fn mode(spread: fastpdf_render::Spread, continuous: bool) -> LayoutMode {
         LayoutMode { spread, continuous }
     }
 
