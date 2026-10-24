@@ -3,12 +3,14 @@
 //! knows the key names).
 //!
 //! Number trees in hostile files can be cyclic, absurdly deep or huge, and
-//! their entries can point at enormous objects. Resolving a reference costs
-//! up to the size of the object it points at (hayro scans an object of the
-//! wrong type to its end), so every reference is resolved as whatever
-//! object it is and its size is charged to a byte budget before its type
-//! is checked; several object numbers whose xref entries point at the same
-//! bytes are each charged. The walk also never resolves the same object
+//! their entries can point at enormous objects. References are resolved as
+//! the type the tree needs (a dictionary, an array, a string): hayro then
+//! never reads a stream's data or its `/Length` (a stream object answers
+//! with its dictionary), and what it returns is charged to a byte budget by
+//! size. An object of another type is scanned to its end before hayro says
+//! no, at a cost that cannot be measured from here, so every rejected
+//! reference is charged a fixed share of the budget: at most
+//! [`MAX_REJECTED`] per walk. The walk never resolves the same object
 //! twice: kids, arrays and prefix strings are resolved once by identity,
 //! label dictionaries are remembered, and `/S` and `/St` are only read when
 //! they are direct. Kids are resolved one at a time when the walk reaches
@@ -24,6 +26,7 @@ use hayro::hayro_syntax::Pdf;
 use hayro::hayro_syntax::object::{
     Array, Dict, MaybeRef, Name, Object, ObjectIdentifier, String as PdfString,
 };
+use hayro::hayro_syntax::xref::XRef;
 
 use crate::nav::decode_text_string;
 
@@ -36,12 +39,9 @@ const MAX_PAIRS: usize = 131_072;
 /// Bytes of nodes, arrays, value dictionaries and prefix strings looked at
 /// in total. Far above any real number tree.
 const MAX_SCANNED_BYTES: usize = 32 << 20;
-/// What resolving a stream counts against [`MAX_SCANNED_BYTES`] besides its
-/// dictionary: streams never belong in a number tree, and reading one can
-/// make hayro resolve its `/Length` or search for `endstream`, which cannot
-/// be measured from here. Their data is never touched (no decryption).
-/// At most 8 streams per walk.
-const STREAM_COST: usize = MAX_SCANNED_BYTES / 8;
+/// References that resolve to no object of the needed type (or to nothing),
+/// at most; each costs `MAX_SCANNED_BYTES / MAX_REJECTED` of the budget.
+const MAX_REJECTED: usize = 16;
 /// Distinct indirect label dictionaries (and indirect prefixes) read at
 /// most; real documents have a handful. References to further objects are
 /// skipped.
@@ -134,10 +134,17 @@ impl<'p> Walk<'p> {
                     }
                     dict
                 }
-                // Charged by `resolve`; the loop head checks the budget.
-                Pending::Indirect(id) => match self.resolve(id) {
-                    Some(Object::Dict(dict)) => dict,
-                    _ => continue,
+                Pending::Indirect(id) => match self.xref().get::<Dict<'p>>(id) {
+                    Some(dict) => {
+                        if !self.charge(dict.data().len()) {
+                            return;
+                        }
+                        dict
+                    }
+                    None => {
+                        self.reject();
+                        continue;
+                    }
                 },
             };
             if let Some(nums) = self.array(&node, b"Nums") {
@@ -186,22 +193,23 @@ impl<'p> Walk<'p> {
                 if !self.resolved.insert(id) {
                     return None;
                 }
-                match self.resolve(id)? {
-                    Object::Array(array) => Some(array),
-                    _ => None,
+                let array = self.xref().get::<Array<'p>>(id);
+                if array.is_none() {
+                    self.reject();
                 }
+                array
             }
         }
     }
 
-    /// Resolves an indirect object as whatever it is and charges its size.
-    /// Asking hayro for the expected type would cost the same (an object of
-    /// another type is scanned to its end) without telling how much.
-    /// Streams are charged a flat [`STREAM_COST`]. `None` when the object is
-    /// missing or the budget is spent.
-    fn resolve(&mut self, id: ObjectIdentifier) -> Option<Object<'p>> {
-        let object = self.pdf.xref().get::<Object<'p>>(id)?;
-        self.charge(object_bytes(&object)).then_some(object)
+    fn xref(&self) -> &'p XRef {
+        self.pdf.xref()
+    }
+
+    /// A reference resolved to no object of the needed type: charges its
+    /// fixed share of the budget.
+    fn reject(&mut self) {
+        self.charge(MAX_SCANNED_BYTES / MAX_REJECTED);
     }
 
     fn read_nums(&mut self, nums: &Array<'p>) {
@@ -245,9 +253,13 @@ impl<'p> Walk<'p> {
                 if self.values.len() >= MAX_INDIRECT_VALUES {
                     return None;
                 }
-                let entry = match self.resolve(id) {
-                    Some(Object::Dict(dict)) => self.entry(&dict),
-                    _ => None,
+                let entry = match self.xref().get::<Dict<'p>>(id) {
+                    Some(dict) if self.charge(dict.data().len()) => self.entry(&dict),
+                    Some(_) => None,
+                    None => {
+                        self.reject();
+                        None
+                    }
                 };
                 self.values.insert(id, entry.clone());
                 entry
@@ -296,25 +308,16 @@ impl<'p> Walk<'p> {
         if self.prefixes.len() >= MAX_INDIRECT_VALUES {
             return Some(String::new());
         }
-        let text = match self.resolve(id) {
-            Some(Object::String(text)) => prefix_text(&text),
-            _ if self.bytes > MAX_SCANNED_BYTES => return None,
-            _ => String::new(),
+        let text = match self.xref().get::<PdfString<'p>>(id) {
+            Some(text) if self.charge(text.as_bytes().len()) => prefix_text(&text),
+            Some(_) => return None,
+            None => {
+                self.reject();
+                String::new()
+            }
         };
         self.prefixes.insert(id, text.clone());
         Some(text)
-    }
-}
-
-/// Bytes an object spans (its scan cost); scalars count a few bytes.
-fn object_bytes(object: &Object<'_>) -> usize {
-    match object {
-        Object::Dict(dict) => dict.data().len(),
-        Object::Array(array) => array.data().len(),
-        Object::String(text) => text.as_bytes().len(),
-        Object::Name(name) => name.len(),
-        Object::Stream(stream) => stream.dict().data().len().saturating_add(STREAM_COST),
-        Object::Null(_) | Object::Boolean(_) | Object::Number(_) => 8,
     }
 }
 

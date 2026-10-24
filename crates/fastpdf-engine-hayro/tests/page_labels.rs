@@ -258,45 +258,45 @@ fn hostile_number_trees_are_bounded() {
 
 #[test]
 fn rejected_objects_count_against_the_byte_budget() {
-    // Four 9 MB arrays where kid dictionaries belong: rejecting them costs a
-    // scan each, so the walk stops before the real node after them.
-    let big = format!("[({})]", "y".repeat(9 << 20));
-    let mut objects: Vec<(u32, String)> = (0..4).map(|i| (101 + i, big.clone())).collect();
-    objects.push((105, "<< /Nums [0 << /S /r >>] >>".into()));
-    objects.push((
-        100,
-        "<< /Kids [101 0 R 102 0 R 103 0 R 104 0 R 105 0 R] >>".into(),
-    ));
-    let started = Instant::now();
-    let (labels, _) = labels_of(document(2, "/PageLabels 100 0 R", &objects));
-    assert!(labels.is_empty(), "{labels:?}");
-    assert!(started.elapsed() < Duration::from_secs(10));
-
-    // Streams are charged a flat cost: nine of them end the walk too.
-    let mut objects: Vec<(u32, String)> = (0..9)
-        .map(|i| {
-            (
-                101 + i,
-                "<< /Length 3 >>\nstream\nabc\nendstream".to_owned(),
-            )
-        })
-        .collect();
-    objects.push((110, "<< /Nums [0 << /S /r >>] >>".into()));
-    let kids: String = (101..=110).map(|n| format!("{n} 0 R ")).collect();
+    // Rejecting an object of the wrong type costs hayro a scan of it, which
+    // cannot be measured: every rejection takes a fixed share of the
+    // budget, so seventeen arrays where kid dictionaries belong end the
+    // walk before the real node after them, however small they are.
+    let mut objects: Vec<(u32, String)> = (0..17).map(|i| (101 + i, "[1 2 3]".into())).collect();
+    objects.push((118, "<< /Nums [0 << /S /r >>] >>".into()));
+    let kids: String = (101..=118).map(|n| format!("{n} 0 R ")).collect();
     objects.push((100, format!("<< /Kids [{kids}] >>")));
     let (labels, _) = labels_of(document(2, "/PageLabels 100 0 R", &objects));
     assert!(labels.is_empty(), "{labels:?}");
 
-    // Without the big arrays the same node is read.
-    let (_, all) = labels_of(document(
-        2,
-        "/PageLabels 100 0 R",
-        &[
-            (100, "<< /Kids [105 0 R] >>".into()),
-            (105, "<< /Nums [0 << /S /r >>] >>".into()),
-        ],
-    ));
+    // A few large ones are rejected and the walk goes on.
+    let big = format!("[({})]", "y".repeat(4 << 20));
+    let mut objects: Vec<(u32, String)> = (0..3).map(|i| (101 + i, big.clone())).collect();
+    objects.push((104, "<< /Nums [0 << /S /r >>] >>".into()));
+    objects.push((100, "<< /Kids [101 0 R 102 0 R 103 0 R 104 0 R] >>".into()));
+    let started = Instant::now();
+    let (_, all) = labels_of(document(2, "/PageLabels 100 0 R", &objects));
     assert_eq!(all, some(&["i", "ii"]));
+    assert!(started.elapsed() < Duration::from_secs(10));
+
+    // Streams answer with their dictionary: their data and /Length are
+    // never read, so a broken stream (an indirect /Length to a missing
+    // object, no endstream) costs nothing more than its dictionary.
+    let mut objects: Vec<(u32, String)> = (0..20)
+        .map(|i| {
+            let body = if i % 2 == 0 {
+                "<< /Length 999 0 R >>\nstream\nabc".to_owned()
+            } else {
+                "<< /Length 3 >>\nstream\nabc\nendstream".to_owned()
+            };
+            (101 + i, body)
+        })
+        .collect();
+    objects.push((121, "<< /Nums [0 << /S /A >>] >>".into()));
+    let kids: String = (101..=121).map(|n| format!("{n} 0 R ")).collect();
+    objects.push((100, format!("<< /Kids [{kids}] >>")));
+    let (_, all) = labels_of(document(2, "/PageLabels 100 0 R", &objects));
+    assert_eq!(all, some(&["A", "B"]));
 }
 
 #[test]
