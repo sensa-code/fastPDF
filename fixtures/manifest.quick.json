@@ -86,13 +86,13 @@
     "open_error_expected": "Should be rejected with a clean error (no panic, no hang)."
   },
   "summary": {
-    "files": 84,
-    "bytes": 62441046,
+    "files": 87,
+    "bytes": 63942733,
     "skipped": 0,
     "by_category": {
       "small-text": {
-        "files": 3,
-        "bytes": 17259
+        "files": 5,
+        "bytes": 25601
       },
       "large-text": {
         "files": 2,
@@ -139,8 +139,8 @@
         "bytes": 1065631
       },
       "malformed": {
-        "files": 29,
-        "bytes": 1309155
+        "files": 30,
+        "bytes": 2802500
       },
       "large-page-count": {
         "files": 3,
@@ -1296,6 +1296,28 @@
       "producer": "rawpdf"
     },
     {
+      "path": "malformed/page-labels-hostile.pdf",
+      "category": "malformed",
+      "bytes": 1493345,
+      "sha256": "9bd87b2c52ed4c6a452a34f1aacc020ff1d54e119173aedd9590839d64024bdd",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "惡意 /PageLabels：/Kids 循環、200 層鏈、14 萬組 key/value、錯誤的 key（負數、小數、超大、字串）、null 與不存在的 value、/St 負值與超大值、未知 /S、2 萬字含控制字元與 bidi 的 /P。必須正常開檔，標籤有界。",
+      "guardrails": [
+        "§25 infinite recursion",
+        "§25 malformed object tree",
+        "§25 memory exhaustion"
+      ],
+      "features": [
+        "malformed",
+        "page-labels"
+      ],
+      "producer": "rawpdf"
+    },
+    {
       "path": "malformed/page-parent-cycle.pdf",
       "category": "malformed",
       "bytes": 922,
@@ -1529,6 +1551,41 @@
         "reportlab"
       ],
       "producer": "reportlab"
+    },
+    {
+      "path": "small-text/page-labels-mixed.pdf",
+      "category": "small-text",
+      "bytes": 3227,
+      "sha256": "b877ba2df0c440fa498b9810167ddb0fae2a96c9d265814e52c66c1c34e13297",
+      "pages": 8,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "8 頁，頁面標籤 i、ii、iii、1、2、3、App-A、App-B（/Nums 陣列：/S /r、/S /D、/S /A＋/P）；每頁印出實體頁碼與應顯示的標籤。",
+      "guardrails": [],
+      "features": [
+        "page-labels"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "small-text/page-labels-tree-cjk.pdf",
+      "category": "small-text",
+      "bytes": 5115,
+      "sha256": "391df78296a8d3124df0a0aa41d3a9aa5903cbaaff18cacff9ced6886e3b1953",
+      "pages": 12,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "12 頁，/Kids number tree（含 /Limits 與間接 value）：只有前綴的 Cover、I–III、a–b、1–2、UTF-16BE 前綴「附錄-」＋/St 5，最後一段重新從 1 起算（重複標籤）。",
+      "guardrails": [],
+      "features": [
+        "page-labels",
+        "cjk-text-string"
+      ],
+      "producer": "rawpdf"
     },
     {
       "path": "small-text/three-pages-platypus-times.pdf",

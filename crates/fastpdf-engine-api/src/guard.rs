@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::{
     CancelToken, ColorMode, DocumentMetadata, DocumentSource, EngineDocument, EngineError,
     EngineInfo, HostStatus, Link, MemoryPressure, OpenOptions, OutlineItem, PageIndex, PageInfo,
-    PdfEngine, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
+    PageLabels, PdfEngine, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
 };
 
 /// Upper bound for [`EngineDocument::render_queue_depth`]: callers start one
@@ -185,6 +185,13 @@ impl EngineDocument for GuardedDocument {
     fn links(&self, page: PageIndex) -> Result<Vec<Link>, EngineError> {
         self.check_page(page)?;
         self.call(|| self.inner.links(page))
+    }
+
+    /// Normalized again with this document's own page count, whatever the
+    /// engine (or a render host) answered.
+    fn page_labels(&self) -> Result<PageLabels, EngineError> {
+        self.call(|| self.inner.page_labels())
+            .map(|labels| PageLabels::new(labels.into_ranges(), self.page_count))
     }
 
     fn memory_usage(&self) -> Option<u64> {

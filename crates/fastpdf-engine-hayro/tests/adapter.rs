@@ -441,6 +441,19 @@ fn malformed_fixtures_never_panic() {
         let Ok(doc) = open_with(bytes, None, limits.clone()) else {
             continue;
         };
+        // Catalog-level queries walk hostile trees too.
+        let labels = doc.page_labels();
+        assert!(
+            !matches!(labels, Err(EngineError::Panicked(_))),
+            "{}: {labels:?}",
+            path.display()
+        );
+        let outline = doc.outline();
+        assert!(
+            !matches!(outline, Err(EngineError::Panicked(_))),
+            "{}",
+            path.display()
+        );
         for page in 0..doc.page_count().min(10) {
             let Ok(info) = doc.page_info(PageIndex::new(page)) else {
                 continue;

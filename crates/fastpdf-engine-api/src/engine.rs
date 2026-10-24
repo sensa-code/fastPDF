@@ -1,7 +1,7 @@
 use crate::{
     CancelToken, DocumentMetadata, DocumentSource, EngineError, Link, OutlineItem, PageIndex,
-    PageSize, Password, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, Rotation,
-    TextLayer,
+    PageLabels, PageSize, Password, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits,
+    Rotation, TextLayer,
 };
 
 /// Static description of an engine adapter.
@@ -124,6 +124,15 @@ pub trait EngineDocument: Send + Sync {
     fn links(&self, page: PageIndex) -> Result<Vec<Link>, EngineError> {
         let _ = page;
         Err(EngineError::Unsupported("links".into()))
+    }
+
+    /// The document's page labels (its own page numbering). Reads the
+    /// catalog's number tree only, never page objects, and is never called
+    /// while a document opens: the reader asks after the first page is on
+    /// screen. `Unsupported` means the engine cannot read labels; callers
+    /// treat it like a document without labels.
+    fn page_labels(&self) -> Result<PageLabels, EngineError> {
+        Err(EngineError::Unsupported("page labels".into()))
     }
 
     /// Lets the engine drop internal caches (fonts, decoded images) when the

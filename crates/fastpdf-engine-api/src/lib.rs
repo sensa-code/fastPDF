@@ -16,11 +16,13 @@
 //!   (tiles) are expressed in this space.
 
 mod cancel;
+pub mod display;
 mod engine;
 mod error;
 mod geometry;
 mod guard;
 mod ids;
+mod labels;
 mod limits;
 mod metadata;
 mod nav;
@@ -40,6 +42,7 @@ pub use error::{EngineError, HostExit, HostExitReason, LimitKind};
 pub use geometry::{PageRect, PageSize, PixelRect, PixelSize, RenderScale, Rotation};
 pub use guard::{GuardedDocument, open_guarded};
 pub use ids::{DocumentId, PageId, PageIndex};
+pub use labels::{PageLabelRange, PageLabelStyle, PageLabels};
 pub use limits::ResourceLimits;
 pub use metadata::DocumentMetadata;
 pub use nav::{Destination, DestinationView, Link, LinkTarget, OutlineItem};

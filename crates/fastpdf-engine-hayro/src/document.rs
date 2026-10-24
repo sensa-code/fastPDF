@@ -6,19 +6,19 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
 use fastpdf_engine_api::{
     CancelToken, DocumentMetadata, EngineDocument, EngineError, Link, MemoryPressure, OutlineItem,
-    PageIndex, PageInfo, Password, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits,
-    SharedBytes, TextLayer,
+    PageIndex, PageInfo, PageLabels, Password, PixmapMut, RenderOutcome, RenderRequest,
+    ResourceLimits, SharedBytes, TextLayer,
 };
 use hayro::hayro_syntax::object::ObjectIdentifier;
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
 
 use crate::geometry::PageGeom;
-use crate::nav;
 use crate::pool::{Pool, TextJob};
 use crate::preflight::Verdict;
 use crate::render::{self, BlockCache};
 use crate::scan::ScanMemo;
 use crate::stats;
+use crate::{labels, nav};
 
 /// Striped locks that serialize the verdict computation of one page.
 const VERDICT_LOCKS: usize = 16;
@@ -400,6 +400,14 @@ impl EngineDocument for HayroDocument {
     fn links(&self, page: PageIndex) -> Result<Vec<Link>, EngineError> {
         let generation = self.inner.current();
         nav::links(&self.inner, &generation, page)
+    }
+
+    fn page_labels(&self) -> Result<PageLabels, EngineError> {
+        let generation = self.inner.current();
+        Ok(labels::page_labels(
+            &generation.pdf,
+            self.inner.page_count(),
+        ))
     }
 
     fn memory_usage(&self) -> Option<u64> {

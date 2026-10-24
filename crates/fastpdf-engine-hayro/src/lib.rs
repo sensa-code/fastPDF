@@ -28,6 +28,7 @@ mod decode;
 mod document;
 mod fonts;
 mod geometry;
+mod labels;
 mod nav;
 mod pool;
 mod preflight;
