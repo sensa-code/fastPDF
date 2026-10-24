@@ -16,19 +16,20 @@ impl Strings {
         }
     }
 
-    /// The link opens the web page `url` (after a confirmation).
-    pub(crate) fn link_open_web(&self, url: &str) -> String {
+    /// In front of the site a web link opens (after a confirmation); the
+    /// site is shown on its own, so its end is never cut off.
+    pub(crate) fn link_open_web(&self) -> &'static str {
         match self.language {
-            Language::English => format!("Open web page: {url}"),
-            Language::TraditionalChinese => format!("開啟網頁：{url}"),
+            Language::English => "Open web page:",
+            Language::TraditionalChinese => "開啟網頁：",
         }
     }
 
-    /// The link writes an email (`url` is the mailto address).
-    pub(crate) fn link_send_mail(&self, url: &str) -> String {
+    /// In front of the recipients of a mail link.
+    pub(crate) fn link_send_mail(&self) -> &'static str {
         match self.language {
-            Language::English => format!("Send email: {url}"),
-            Language::TraditionalChinese => format!("寄送郵件：{url}"),
+            Language::English => "Send email to:",
+            Language::TraditionalChinese => "寄送郵件給：",
         }
     }
 
@@ -94,12 +95,11 @@ impl Strings {
         }
     }
 
-    /// The web site the link goes to (`host`: punycode for international
-    /// names).
-    pub(crate) fn link_prompt_site(&self, host: &str) -> String {
+    /// In front of the web site the link goes to (shown on its own).
+    pub(crate) fn link_prompt_site(&self) -> &'static str {
         match self.language {
-            Language::English => format!("Site: {host}"),
-            Language::TraditionalChinese => format!("網站：{host}"),
+            Language::English => "Site:",
+            Language::TraditionalChinese => "網站：",
         }
     }
 
@@ -182,11 +182,19 @@ mod tests {
         assert_eq!(zh.link_go_to_page(3), "前往第 3 頁");
         assert_eq!(en.link_go_to_page(3), "Go to page 3");
         for text in [
-            zh.link_open_web("https://example.invalid/"),
-            zh.link_send_mail("mailto:a@example.invalid"),
+            zh.link_open_web().to_owned(),
+            zh.link_send_mail().to_owned(),
+            zh.link_prompt_site().to_owned(),
             zh.link_not_followed("x"),
         ] {
             assert!(han(&text), "{text}");
+        }
+        for text in [
+            en.link_open_web(),
+            en.link_send_mail(),
+            en.link_prompt_site(),
+        ] {
+            assert!(text.ends_with(':') && !han(text), "{text}");
         }
     }
 
@@ -206,10 +214,6 @@ mod tests {
             assert!(!e.is_empty() && !han(e), "{e}");
             assert!(han(z), "{z}");
         }
-        assert_eq!(
-            zh.link_prompt_site("example.invalid"),
-            "網站：example.invalid"
-        );
         for why in [
             OpenError::NoHandler,
             OpenError::Cancelled,

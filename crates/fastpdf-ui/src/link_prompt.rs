@@ -8,7 +8,7 @@
 use fastpdf_core::FramePage;
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_core::links::LinkAction;
-use fastpdf_shell::{UriKind, check_external_uri};
+use fastpdf_shell::{ExternalUri, UriKind, check_external_uri};
 use gpui::{
     AnyElement, BorderStyle, Bounds, ClickEvent, Context, Div, FontWeight, InteractiveElement,
     IntoElement, ParentElement, Pixels, Point, StatefulInteractiveElement, Styled, Window, div,
@@ -24,6 +24,8 @@ use crate::toolbar::styled_button;
 
 /// Room for the write notice chip (and a gap) when it shows.
 const NOTICE_HEIGHT: f32 = 48.0;
+/// Widest a chip gets.
+const MAX_CHIP_WIDTH: f32 = 560.0;
 
 impl ReaderView {
     /// The chip for the link under the pointer.
@@ -35,28 +37,34 @@ impl ReaderView {
         }
         let strings = self.strings();
         let theme = self.theme;
+        let chip = self.link_chip().px_2().py_1();
         let (text, color) = match &hover.target {
             HoverTarget::Page(destination) => (
                 strings.link_go_to_page(destination.page.display_number()),
                 theme.text,
             ),
-            HoverTarget::External(uri) => (
-                match uri.kind() {
-                    UriKind::Web => strings.link_open_web(uri.as_str()),
-                    UriKind::Mail => strings.link_send_mail(uri.as_str()),
-                },
-                theme.text,
-            ),
+            // Where it goes, with the end kept: a host is read from its end
+            // (`login.example.com.evil.example` belongs to evil.example).
+            HoverTarget::External(uri) => {
+                let label = match uri.kind() {
+                    UriKind::Web => strings.link_open_web(),
+                    UriKind::Mail => strings.link_send_mail(),
+                };
+                return Some(
+                    chip.flex()
+                        .flex_row()
+                        .gap_1()
+                        .text_color(theme.text)
+                        .child(label_and_value(label, external_target(uri).to_owned())),
+                );
+            }
             HoverTarget::Blocked(why) => (
                 strings.link_not_followed(&strings.link_block_reason(why)),
                 theme.error_text,
             ),
         };
         Some(
-            self.link_chip()
-                .px_2()
-                .py_1()
-                .text_color(color)
+            chip.text_color(color)
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
@@ -71,11 +79,16 @@ impl ReaderView {
         } else {
             0.0
         };
+        // Never wider than the document area: its right side, where a
+        // host's end is shown, must not be clipped in a narrow window.
+        let room = self.viewport_bounds.map_or(MAX_CHIP_WIDTH, |b| {
+            f32::from(b.size.width) - 16.0 - crate::scrollbar::THICKNESS
+        });
         div()
             .absolute()
             .bottom(px(8.0 + crate::scrollbar::THICKNESS + lift))
             .left(px(8.0))
-            .max_w(px(560.0))
+            .max_w(px(room.clamp(48.0, MAX_CHIP_WIDTH)))
             .rounded(px(6.0))
             .bg(self.theme.toolbar_bg)
             .border_1()
@@ -137,11 +150,11 @@ impl ReaderView {
             .when_some(uri.host(), |body, host| {
                 body.child(
                     div()
+                        .flex()
+                        .flex_row()
+                        .gap_1()
                         .font_weight(FontWeight::BOLD)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .child(strings.link_prompt_site(host)),
+                        .child(label_and_value(strings.link_prompt_site(), host.to_owned())),
                 )
             })
             .child(
@@ -247,5 +260,79 @@ impl ReaderView {
                 window.paint_quad(outline(bounds, color, BorderStyle::Solid));
             }
         }
+    }
+}
+
+/// What a chip names for an external link: the host of a web address, the
+/// recipients of a mail link (the whole address when it has them only in
+/// its query).
+fn external_target(uri: &ExternalUri) -> &str {
+    match uri.kind() {
+        UriKind::Web => uri.host().unwrap_or(uri.as_str()),
+        UriKind::Mail => {
+            let recipients = uri
+                .as_str()
+                .strip_prefix("mailto:")
+                .and_then(|rest| rest.split('?').next())
+                .unwrap_or_default();
+            if recipients.is_empty() {
+                uri.as_str()
+            } else {
+                recipients
+            }
+        }
+    }
+}
+
+/// A label and a value on one line; a value too long for it loses its
+/// start, never its end (where a host says whose it is).
+fn label_and_value(label: &'static str, value: String) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_row()
+        .gap_1()
+        .min_w_0()
+        .child(div().flex_none().whitespace_nowrap().child(label))
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis_start()
+                .child(value),
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use fastpdf_shell::check_external_uri;
+
+    use super::*;
+
+    fn target(raw: &str) -> String {
+        match check_external_uri(raw) {
+            Ok(uri) => external_target(&uri).to_owned(),
+            Err(why) => panic!("{raw}: {why:?}"),
+        }
+    }
+
+    #[test]
+    fn chips_name_the_host_or_the_recipients() {
+        assert_eq!(
+            target("https://login.microsoftonline.com.oauth2-authorize-session.evil.example/a?b"),
+            "login.microsoftonline.com.oauth2-authorize-session.evil.example"
+        );
+        assert_eq!(
+            target("https://b\u{fc}cher.example/"),
+            "xn--bcher-kva.example"
+        );
+        assert_eq!(
+            target("mailto:a@example.invalid,b@example.invalid?subject=x"),
+            "a@example.invalid,b@example.invalid"
+        );
+        assert_eq!(
+            target("mailto:?to=a@example.invalid"),
+            "mailto:?to=a@example.invalid"
+        );
     }
 }
