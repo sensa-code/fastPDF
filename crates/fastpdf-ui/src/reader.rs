@@ -878,7 +878,7 @@ impl Render for ReaderView {
             cx.set_global(ActiveTheme(theme));
         }
         self.apply_language(cx);
-        self.keep_keyboard_in_view(window, cx);
+        self.prepare_search_results(window, cx);
         if self.overlay.visible {
             self.prefetch_visible_links(cx);
         }

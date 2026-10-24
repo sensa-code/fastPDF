@@ -30,7 +30,8 @@ use crate::reader::ReaderView;
 use crate::sidebar::SidebarTab;
 use crate::theme::{PageHighlights, Theme};
 
-/// Height of a row: the page line and two lines of context.
+/// Height of a row: the page line and two lines of context. Laid out in
+/// whole device pixels, so rows are [`row_pitch`] apart.
 pub(crate) const ROW_HEIGHT: f32 = 58.0;
 /// Line heights in a row: 4 + 15 + 2 x 17 + 4 = 57 of [`ROW_HEIGHT`].
 const CAPTION_LINE: f32 = 15.0;
@@ -40,6 +41,9 @@ const CONTEXT_LINE: f32 = 17.0;
 pub(crate) struct ResultsList {
     pub scroll: UniformListScrollHandle,
     pub focus: FocusHandle,
+    /// The window's scale factor at the last frame: rows are laid out in
+    /// whole device pixels, so their logical pitch depends on it.
+    scale: f32,
 }
 
 impl ResultsList {
@@ -47,7 +51,13 @@ impl ResultsList {
         Self {
             scroll: UniformListScrollHandle::new(),
             focus,
+            scale: 1.0,
         }
+    }
+
+    /// The distance between the tops of two rows, in logical pixels.
+    pub(crate) fn pitch(&self) -> f32 {
+        row_pitch(self.scale)
     }
 
     /// A new search starts at the top.
@@ -72,10 +82,10 @@ impl ResultsList {
         }
         let offset = state.base_handle.offset();
         let y = f32::from(offset.y);
-        if rows_before > 0 && inserted.at <= top_row(y) {
+        if rows_before > 0 && inserted.at <= top_row(y, self.pitch()) {
             state
                 .base_handle
-                .set_offset(point(offset.x, px(anchored(y, inserted.count))));
+                .set_offset(point(offset.x, px(anchored(y, inserted.count, self.scale))));
         }
     }
 
@@ -84,10 +94,29 @@ impl ResultsList {
     }
 }
 
-/// The first row at least partly in view at scroll offset `y` (zero or
-/// negative, as GPUI keeps it).
-fn top_row(y: f32) -> usize {
-    let scrolled = -y / ROW_HEIGHT;
+/// The logical distance between rows at `scale`: GPUI lays lengths out in
+/// whole device pixels, rounding halves toward zero (58 px at 125% is 72
+/// device pixels, 57.6 logical), and the list places rows one measured
+/// row apart. The anchoring arithmetic must use the same pitch, or every
+/// row added above the view would scroll it by the difference.
+fn row_pitch(scale: f32) -> f32 {
+    if !(scale.is_finite() && scale > 0.0) {
+        return ROW_HEIGHT;
+    }
+    let device = ((ROW_HEIGHT * scale).abs() - 0.5).ceil().max(1.0);
+    device / scale
+}
+
+/// Part of a row that may show above the top row without counting: the
+/// offset is kept in `f32`, so after many anchors in a long list the top
+/// row may sit a fraction of a pixel below the edge.
+const SLIVER: f32 = 0.02;
+
+/// The first row in view at scroll offset `y` (zero or negative, as GPUI
+/// keeps it), rows `pitch` apart; a row whose top is less than a
+/// [`SLIVER`] below the edge counts as on top.
+fn top_row(y: f32, pitch: f32) -> usize {
+    let scrolled = -y / pitch + SLIVER;
     if scrolled.is_finite() && scrolled > 0.0 {
         scrolled.floor() as usize
     } else {
@@ -96,9 +125,21 @@ fn top_row(y: f32) -> usize {
 }
 
 /// The offset that keeps the rows in view where they are after `rows` rows
-/// were added above them.
-fn anchored(y: f32, rows: usize) -> f32 {
-    y - rows as f32 * ROW_HEIGHT
+/// were added above them, at `scale`. It is made from the top row and how
+/// far into it the view starts, in whole device pixels, not by moving the
+/// old offset: the offset is an `f32`, and a pitch such as 57.6 px rounds
+/// the same way on every insert, which would add up to rows in a long list.
+fn anchored(y: f32, rows: usize, scale: f32) -> f32 {
+    let pitch = row_pitch(scale);
+    let top = top_row(y, pitch) as f64;
+    let pitch = f64::from(pitch);
+    let scale = if scale.is_finite() && scale > 0.0 {
+        f64::from(scale)
+    } else {
+        1.0
+    };
+    let into_row = ((-f64::from(y) - top * pitch) * scale).round() / scale;
+    (-((top + rows as f64) * pitch + into_row)) as f32
 }
 
 impl ReaderView {
@@ -124,11 +165,13 @@ impl ReaderView {
     /// the prompt's field while a prompt waits. A focused element that is
     /// not drawn would leave the keyboard outside the reader, where none of
     /// its shortcuts work.
-    pub(crate) fn keep_keyboard_in_view(
+    /// Also notes the window's scale, which sets the rows' pitch.
+    pub(crate) fn prepare_search_results(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        self.find.results.scale = window.scale_factor();
         let shown = self.sidebar.open
             && self.sidebar.tab == SidebarTab::Results
             && self.active_prompt().is_none();
@@ -228,6 +271,7 @@ impl ReaderView {
         let theme = self.theme;
         let active = self.find.hits.active_index();
         let focused = self.find.results.is_focused(window);
+        let pitch = self.find.results.pitch();
         let marks = PageHighlights::for_mode(if theme == Theme::DARK {
             ColorMode::Inverted
         } else {
@@ -250,7 +294,7 @@ impl ReaderView {
                 Some(
                     div()
                         .id(("search-result", ix))
-                        .h(px(ROW_HEIGHT))
+                        .h(px(pitch))
                         .w_full()
                         .overflow_hidden()
                         .flex()
@@ -364,19 +408,73 @@ mod tests {
 
     #[test]
     fn rows_above_the_view_keep_the_view() {
-        assert_eq!(top_row(0.0), 0);
-        assert_eq!(top_row(-57.0), 0);
-        assert_eq!(top_row(-58.0), 1);
-        assert_eq!(top_row(-600.0), 10);
+        let pitch = row_pitch(1.0);
+        assert_eq!(pitch, ROW_HEIGHT);
+        assert_eq!(top_row(0.0, pitch), 0);
+        assert_eq!(top_row(-56.0, pitch), 0);
+        // A sliver of a pixel of the row above does not count.
+        assert_eq!(top_row(-57.0, pitch), 1);
+        assert_eq!(top_row(-58.0, pitch), 1);
+        assert_eq!(top_row(-600.0, pitch), 10);
         // Never negative or nonsense.
-        assert_eq!(top_row(30.0), 0);
-        assert_eq!(top_row(f32::NAN), 0);
-        assert_eq!(top_row(f32::NEG_INFINITY), 0);
+        assert_eq!(top_row(30.0, pitch), 0);
+        assert_eq!(top_row(f32::NAN, pitch), 0);
+        assert_eq!(top_row(f32::NEG_INFINITY, pitch), 0);
         // Three rows added above row 10: row 10 is now row 13, still on top.
-        let y = anchored(-600.0, 3);
+        let y = anchored(-600.0, 3, 1.0);
         assert_eq!(y, -600.0 - 3.0 * ROW_HEIGHT);
-        assert_eq!(top_row(y), 13);
-        assert_eq!(anchored(0.0, 0), 0.0);
+        assert_eq!(top_row(y, pitch), 13);
+        assert_eq!(anchored(0.0, 0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn rows_are_whole_device_pixels_apart() {
+        // GPUI rounds 72.5 and 101.5 device pixels toward zero.
+        assert!((row_pitch(1.25) - 57.6).abs() < 1e-4);
+        assert!((row_pitch(1.75) - 101.0 / 1.75).abs() < 1e-4);
+        for scale in [1.0, 1.5, 2.0] {
+            assert_eq!(row_pitch(scale), ROW_HEIGHT, "{scale}");
+        }
+        for scale in [1.0_f32, 1.25, 1.5, 1.75, 2.0, 2.25, 3.0] {
+            let device = row_pitch(scale) * scale;
+            assert!((device - device.round()).abs() < 1e-3, "{scale}: {device}");
+            assert!(device <= ROW_HEIGHT * scale + 0.5, "{scale}: {device}");
+        }
+        assert_eq!(row_pitch(0.0), ROW_HEIGHT);
+        assert_eq!(row_pitch(f32::NAN), ROW_HEIGHT);
+    }
+
+    /// The streaming case: a search from page 20 of the search fixture adds
+    /// 1,624 rows above the first page's rows, 30 at a time; the longest
+    /// lists hold 20,000 rows. The row that was on top stays on top, where
+    /// the list draws it (rows a measured pitch apart, `f32` as GPUI keeps
+    /// them), within a fraction of a pixel.
+    #[test]
+    fn many_rows_added_above_keep_the_top_row_at_any_scale() {
+        for scale in [1.0_f32, 1.25, 1.5, 1.75, 2.0] {
+            let pitch = row_pitch(scale);
+            for (batches, size) in [(54, 30), (689, 29)] {
+                // Scrolled so that row 3 is on top.
+                let mut y = -3.0 * pitch;
+                let mut top = 3;
+                for _ in 0..batches {
+                    assert_eq!(top_row(y, pitch), top, "{scale}");
+                    y = anchored(y, size, scale);
+                    top += size;
+                }
+                assert_eq!(top_row(y, pitch), top, "{scale} after {top} rows");
+                let drawn = y + top as f32 * pitch;
+                assert!(drawn.abs() < 0.5, "{scale} after {top} rows: {drawn}");
+            }
+        }
+        // The pitch the list was laid out with matters: anchoring 1,624 rows
+        // with 58 px where rows are 57.6 px apart moves the top row 11 rows.
+        let y = -1624.0 * ROW_HEIGHT;
+        assert_eq!(top_row(y, row_pitch(1.25)), 1635);
+        // The view may start partway into the top row; it still does after.
+        let y = anchored(-3.0 * row_pitch(1.25) - 20.0, 29, 1.25);
+        let drawn = y + 32.0 * row_pitch(1.25);
+        assert!((drawn + 20.0).abs() < 0.5, "{drawn}");
     }
 
     #[test]
