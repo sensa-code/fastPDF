@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fastpdf_core::keymap::ReaderCommand;
-use fastpdf_engine_api::write::WriteError;
 use gpui::{
     App, AppContext, ClickEvent, Context, Entity, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder,
@@ -142,6 +141,7 @@ impl ReaderView {
         match result {
             Ok(opened) => {
                 window.focus(&self.focus, cx);
+                self.close_write_panels(cx);
                 self.doc = DocState::Loading { path: path.clone() };
                 self.finish_open(path, Ok(opened.into()), window, cx);
             }
@@ -280,17 +280,35 @@ impl ReaderView {
         matches!(&self.doc, DocState::Open(open) if open.protected)
     }
 
-    /// Refuses a write of a document opened with a password, with the
-    /// encrypted-document notice; true when refused.
+    /// Refuses a write of a document opened with a password, saying so in
+    /// the write notice; true when refused.
     pub(crate) fn refuse_protected_write(&mut self, cx: &mut Context<'_, Self>) -> bool {
         if !self.document_protected() {
             return false;
         }
         log::info!("writing refused: the document was opened with a password");
         self.menus.open = None;
-        self.tools.notice = Some(WriteNotice::Failed(WriteError::Encrypted { index: 0 }));
+        // A write of another document may still run: its notice stays, its
+        // button is the only way to cancel it.
+        if !self.tools.writing() {
+            self.tools.notice = Some(WriteNotice::Protected);
+        }
         cx.notify();
         true
+    }
+
+    /// The panels that write (page tools, stamps, text edits, signature)
+    /// close when a document opens with a password: they were left open
+    /// from the previous document and would only lead to a refusal.
+    fn close_write_panels(&mut self, cx: &mut Context<'_, Self>) {
+        self.tools.open = false;
+        if self.stamps.open {
+            self.toggle_stamp_panel(cx);
+        }
+        if self.text_edits.open {
+            self.hide_text_edit_panel(cx);
+        }
+        self.signing.open = false;
     }
 
     /// Development scripts: types `password` into the prompt's field and,

@@ -37,6 +37,14 @@ impl Strings {
             Language::TraditionalChinese => "正在確認密碼\u{2026}",
         }
     }
+
+    /// Why a write of a document opened with a password is refused.
+    pub(crate) fn write_protected(&self) -> &'static str {
+        match self.language {
+            Language::English => "Documents opened with a password cannot be saved or edited.",
+            Language::TraditionalChinese => "用密碼開啟的文件無法另存或編輯。",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -53,6 +61,7 @@ mod tests {
             (en.password_placeholder(), zh.password_placeholder()),
             (en.password_wrong(), zh.password_wrong()),
             (en.password_checking(), zh.password_checking()),
+            (en.write_protected(), zh.write_protected()),
         ] {
             assert!(!en.is_empty());
             assert!(

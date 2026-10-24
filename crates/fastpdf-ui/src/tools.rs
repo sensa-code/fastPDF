@@ -283,6 +283,8 @@ pub(crate) enum WriteNotice {
     Saved(WriteReport),
     Failed(WriteError),
     Cancelled,
+    /// Refused: the document was opened with a password (ADR 0014).
+    Protected,
 }
 
 /// The page tools panel and the write in progress.
@@ -514,7 +516,7 @@ impl ReaderView {
         cx: &mut Context<'_, Self>,
         make: impl FnOnce(PathBuf, PathBuf) -> Result<WriteJob, SpecError> + 'static,
     ) {
-        if self.tools.writing() {
+        if self.tools.writing() || self.refuse_protected_write(cx) {
             return;
         }
         if let Some(path) = target.preset {
@@ -574,7 +576,7 @@ impl ReaderView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.tools.writing() {
+        if self.tools.writing() || self.refuse_protected_write(cx) {
             return;
         }
         let answer = cx.prompt_for_paths(PathPromptOptions {
@@ -905,6 +907,7 @@ impl ReaderView {
             WriteNotice::Saved(report) => (saved_text(strings, report), theme.text),
             WriteNotice::Failed(e) => (write_error_text(strings, e), theme.error_text),
             WriteNotice::Cancelled => (strings.write_cancelled.to_string(), theme.text_muted),
+            WriteNotice::Protected => (strings.write_protected().to_string(), theme.error_text),
         };
         let open_target = match notice {
             WriteNotice::Saved(report) if report.outputs.len() == 1 => {
