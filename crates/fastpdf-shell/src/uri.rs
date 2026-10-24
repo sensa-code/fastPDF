@@ -137,6 +137,13 @@ pub fn check_external_uri(raw: &str) -> Result<ExternalUri, UriRejection> {
             if url.path().is_empty() && url.query().is_none_or(str::is_empty) {
                 return Err(UriRejection::Malformed);
             }
+            // Mail apps parse the address themselves, some only by `?` and
+            // `&`: a fragment (`?subject=x#&attach=...`) or a second `?`
+            // would hide fields from the check below while they still
+            // reach the app. Neither means anything in a mail link.
+            if url.fragment().is_some() || url.query().is_some_and(|q| q.contains('?')) {
+                return Err(UriRejection::Malformed);
+            }
             if let Some(field) = url.query().and_then(mailto::refused_field) {
                 return Err(UriRejection::MailField(field));
             }
@@ -305,6 +312,15 @@ mod tests {
             (
                 "mailto:?Attachment=%5C%5Cserver%5Cshare%5Cf",
                 R::MailField("attachment".into()),
+            ),
+            (
+                "mailto:a@example.invalid?subject=x#&attach=C:%5Cwin.ini",
+                R::Malformed,
+            ),
+            ("mailto:a@example.invalid#x", R::Malformed),
+            (
+                "mailto:a@example.invalid?subject=x?attach=C:%5Cwin.ini",
+                R::Malformed,
             ),
             (long.as_str(), R::TooLong),
             (grows.as_str(), R::TooLong),
