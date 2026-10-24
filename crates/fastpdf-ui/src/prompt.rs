@@ -41,14 +41,26 @@ impl PromptKind {
             _ => None,
         }
     }
+
+    /// Whether Enter answers the prompt. A link opens only on a click on
+    /// its Open button: Enter, typed on and on, must not open what a
+    /// document suggests.
+    pub(crate) fn answered_by_enter(self) -> bool {
+        match self {
+            Self::Password => true,
+            Self::OpenLink => false,
+        }
+    }
 }
 
 /// Where the card sits in the document area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CardPlacement {
     Center,
-    /// Near the top or the bottom: away from where the pointer was, so a
-    /// second click of the click that opened it cannot land on a button.
+    /// Near the top or the bottom: away from where the pointer was, so the
+    /// card does not cover what was clicked (unless the window is too small
+    /// for that; the link card's Open button has its own guard,
+    /// `crate::link_open::opens_link`).
     Top,
     Bottom,
 }
@@ -161,10 +173,10 @@ impl ReaderView {
         }
     }
 
-    /// Enter in a prompt. A link opens only on a click on its Open button:
-    /// Enter, typed on and on, must not open what a document suggests.
+    /// Enter in a prompt: only the prompts [`PromptKind::answered_by_enter`]
+    /// names answer it; the link card stays as it is.
     pub(crate) fn confirm_prompt(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        match self.active_prompt() {
+        match self.active_prompt().filter(|kind| kind.answered_by_enter()) {
             Some(PromptKind::Password) => self.unlock_document(window, cx),
             Some(PromptKind::OpenLink) | None => {}
         }
@@ -219,5 +231,16 @@ impl ReaderView {
                 .render_link_prompt(cx)
                 .map(IntoElement::into_any_element),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enter_answers_the_password_prompt_and_leaves_the_link_card() {
+        assert!(PromptKind::Password.answered_by_enter());
+        assert!(!PromptKind::OpenLink.answered_by_enter());
     }
 }

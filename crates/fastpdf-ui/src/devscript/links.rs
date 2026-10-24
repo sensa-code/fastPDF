@@ -4,12 +4,16 @@
 //! view first if the point is not visible (not a jump: Back does not
 //! return from it). The steps drive the same handlers as the mouse and
 //! wait while the page's links are read. `link-prompt` answers the card of
-//! an external link like its buttons; scripts run dry (`LinkLayer::dry_run`):
-//! Open logs what would open, Copy what would be copied.
+//! an external link like its buttons (Open as a single click, through the
+//! button's own check); scripts run dry (`LinkLayer::dry_run`): Open logs
+//! what would open, Copy what would be copied.
 
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_engine_api::{PageIndex, PageRect};
-use gpui::{Context, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, Window, point, px};
+use gpui::{
+    ClickEvent, Context, MouseButton, MouseClickEvent, MouseDownEvent, MouseUpEvent, Pixels, Point,
+    Window, point, px,
+};
 
 use super::StepState;
 use crate::reader::ReaderView;
@@ -188,7 +192,10 @@ impl ReaderView {
         }
         log::info!("link prompt: {answer:?}");
         match answer {
-            PromptAnswer::Open => self.answer_link_prompt(true, window, cx),
+            // Ignored while the card is new, as a real click would be.
+            PromptAnswer::Open => {
+                self.click_link_open(&ClickEvent::Mouse(MouseClickEvent::default()), window, cx);
+            }
             PromptAnswer::Copy => self.copy_link_address(window, cx),
             // Like Esc or the Cancel button.
             PromptAnswer::Cancel => self.run_command(ReaderCommand::Cancel, window, cx),

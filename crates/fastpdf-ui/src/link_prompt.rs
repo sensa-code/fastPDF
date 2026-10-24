@@ -5,6 +5,8 @@
 //! every link of the visible pages (blue: a page of the document, green:
 //! an address that may be opened, red: not followed).
 
+use std::time::Instant;
+
 use fastpdf_core::FramePage;
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_core::links::LinkAction;
@@ -143,6 +145,10 @@ impl ReaderView {
     /// note. The card has the keyboard: Esc cancels, Enter does nothing.
     pub(crate) fn render_link_prompt(&self, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
         let prompt = self.links.prompt.as_ref()?;
+        // Open ignores clicks for a moment after this first drawing.
+        if prompt.shown_at.get().is_none() {
+            prompt.shown_at.set(Some(Instant::now()));
+        }
         let theme = self.theme;
         let strings = self.strings();
         let uri = &prompt.uri;
@@ -211,16 +217,7 @@ impl ReaderView {
             .child(
                 styled_button("link-open", strings.link_open(), true, false, &theme).on_click(
                     cx.listener(|this, event: &ClickEvent, window, cx| {
-                        // Only a deliberate single click opens: not the
-                        // second click of a double-click, not a key.
-                        let single = match event {
-                            ClickEvent::Mouse(click) => click.up.click_count <= 1,
-                            ClickEvent::Touch(_) => true,
-                            ClickEvent::Keyboard(_) => false,
-                        };
-                        if single {
-                            this.answer_link_prompt(true, window, cx);
-                        }
+                        this.click_link_open(event, window, cx);
                     }),
                 ),
             );

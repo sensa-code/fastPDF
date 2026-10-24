@@ -77,7 +77,7 @@
 //! | `link-hover=P,X,Y`, `link-click=P,X,Y` | moves the pointer to (or clicks) page-space point (X, Y) of page P, waiting for the page's links; a click stops the script unless a link is there (`links.rs`) |
 //! | `link-drag=P,X0,Y0,X1,Y1[,X2,Y2]` | presses at the first point of page P, drags to the second (and on to the third) and releases there (`links.rs`) |
 //! | `wait-prompt=link` | stops the script unless the card of an external link shows (`checks.rs`) |
-//! | `link-prompt=open`, `=copy`, `=cancel` | answers that card like its buttons; scripts only log what would open or be copied (`links.rs`) |
+//! | `link-prompt=open`, `=copy`, `=cancel` | answers that card like its buttons (Open is ignored in the card's first 500 ms, wait first); scripts only log what would open or be copied (`links.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
