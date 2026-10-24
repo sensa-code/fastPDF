@@ -74,11 +74,14 @@
 //! | `find-case=on`, `=off`, `find-word=on`, `=off` | sets the find options match case and whole word, like their toggles (`search.rs`) |
 //! | `find-result=N` | shows search result N (one-based) as a click on its row does; waits while the search runs, stops if it found fewer (`search.rs`) |
 //! | `focus=results` | gives the keyboard focus to the search result list (`search.rs`) |
+//! | `link-hover=P,X,Y`, `link-click=P,X,Y` | moves the pointer to (or clicks) page-space point (X, Y) of page P, waiting for the page's links; a click stops the script unless a link is there (`links.rs`) |
+//! | `link-drag=P,X0,Y0,X1,Y1` | presses at the first point of page P and drags to the second (`links.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
 mod checks;
 mod labels;
+mod links;
 mod search;
 
 use std::path::PathBuf;
@@ -158,6 +161,7 @@ pub(crate) enum Step {
     Check(checks::Check),
     Labels(labels::LabelStep),
     Search(search::SearchStep),
+    Link(links::LinkStep),
 }
 
 /// What a step reports after one poll.
@@ -269,14 +273,17 @@ fn parse_step(step: &str) -> Option<Step> {
         ("smooth", Some("on")) => Step::Smooth(true),
         ("smooth", Some("off")) => Step::Smooth(false),
         ("wheel", Some(n)) => Step::Wheel(n.parse().ok().filter(|n: &i32| *n != 0)?),
-        _ => match (
-            labels::LabelStep::parse(name, value),
-            search::SearchStep::parse(name, value),
-        ) {
-            (Some(step), _) => Step::Labels(step),
-            (None, Some(step)) => Step::Search(step),
-            (None, None) => Step::Check(checks::Check::parse(name, value)?),
-        },
+        _ => {
+            if let Some(step) = labels::LabelStep::parse(name, value) {
+                Step::Labels(step)
+            } else if let Some(step) = search::SearchStep::parse(name, value) {
+                Step::Search(step)
+            } else if let Some(step) = links::LinkStep::parse(name, value) {
+                Step::Link(step)
+            } else {
+                Step::Check(checks::Check::parse(name, value)?)
+            }
+        }
     })
 }
 
@@ -700,6 +707,7 @@ impl ReaderView {
             Step::Check(check) => self.run_check_step(check, window, cx),
             Step::Labels(step) => self.run_label_step(step, window, cx),
             Step::Search(step) => self.run_search_step(step, window, cx),
+            Step::Link(step) => self.run_link_step(step, window, cx),
         }
     }
 }

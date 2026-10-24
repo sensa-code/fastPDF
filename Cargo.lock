@@ -1749,6 +1749,7 @@ dependencies = [
  "fastpdf-print",
  "fastpdf-render",
  "fastpdf-search",
+ "fastpdf-shell",
  "fastpdf-sign",
  "futures",
  "gpui",

@@ -133,6 +133,8 @@ impl ReaderView {
     fn stop_view_motion(&mut self) {
         self.smooth_scroll.stop();
         self.page_turn.reset();
+        // The link under the pointer is another one after the jump.
+        self.links.forget_hover();
     }
 }
 

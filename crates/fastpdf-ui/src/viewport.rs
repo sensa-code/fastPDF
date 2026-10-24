@@ -138,6 +138,10 @@ impl ReaderView {
                 }
             }
         }
+        // The view may have moved under a still pointer.
+        if self.refresh_link_hover() {
+            window.request_animation_frame();
+        }
         Some(ViewportFrame {
             content,
             frame,
@@ -194,6 +198,9 @@ impl ReaderView {
                         HighlightKind::Selection => marks.selection,
                     };
                     window.paint_quad(fill(view_bounds(origin, *rect), color));
+                }
+                if self.overlay.visible {
+                    self.paint_link_outlines(origin, &frame.pages, window);
                 }
                 self.paint_text_edits(origin, paper, mode, window, cx);
                 self.paint_stamps(origin, window);
@@ -349,9 +356,9 @@ pub(crate) fn track_selection_drag(view: Entity<ReaderView>, window: &mut Window
             move_view.update(cx, |this, cx| this.on_selection_drag(event.position, cx));
         }
     });
-    window.on_mouse_event(move |_: &MouseUpEvent, phase, _window, cx| {
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
         if phase == DispatchPhase::Bubble {
-            view.update(cx, |this, cx| this.on_selection_end(cx));
+            view.update(cx, |this, cx| this.on_selection_end(event, cx));
         }
     });
 }

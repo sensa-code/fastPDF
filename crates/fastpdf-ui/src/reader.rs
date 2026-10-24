@@ -263,6 +263,8 @@ pub struct ReaderView {
     pub(crate) text_edits: TextEditPanel,
     /// The signature panel.
     pub(crate) signing: SignaturePanel,
+    /// Links of the pages the pointer visited, the hover and clicks.
+    pub(crate) links: crate::links::LinkLayer,
     pub(crate) open_task: Option<Task<()>>,
     pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
@@ -329,6 +331,8 @@ impl ReaderView {
         let memory = MemoryMonitor::new(Arc::new(MemoryBudgetManager::new(options.memory)));
         let texts = Arc::new(TextCache::new(TextCache::DEFAULT_BUDGET));
         memory.manager().register(texts.budgeted());
+        let links = crate::links::LinkLayer::new();
+        memory.manager().register(links.cache.budgeted());
         let system_language = options
             .system_ui_language
             .map(Language::from_langid)
@@ -372,6 +376,7 @@ impl ReaderView {
             stamps: StampPanel::default(),
             text_edits: TextEditPanel::new(cx),
             signing: SignaturePanel::new(cx),
+            links,
             open_task: None,
             dev_script: None,
             _wake_task: wake_task,
@@ -873,6 +878,9 @@ impl Render for ReaderView {
         }
         self.apply_language(cx);
         self.keep_keyboard_in_view(window, cx);
+        if self.overlay.visible {
+            self.prefetch_visible_links(cx);
+        }
         let view = cx.entity();
 
         let root = div()
@@ -980,6 +988,11 @@ impl ReaderView {
                 self.text_edits.open && self.text_edits.hover.is_some(),
                 |area| area.cursor_text(),
             )
+            .when(
+                self.links.hover.is_some() && !self.selection.dragging,
+                |area| area.cursor_pointer(),
+            )
+            .when_some(self.render_link_status(), |area, chip| area.child(chip))
             .when_some(self.render_write_notice(cx), |area, notice| {
                 area.child(notice)
             })

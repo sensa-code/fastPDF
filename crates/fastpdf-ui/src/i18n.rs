@@ -11,6 +11,7 @@
 //! as `Strings` methods that match on the language.
 
 mod labels;
+mod links;
 mod navigation;
 mod password;
 mod search;

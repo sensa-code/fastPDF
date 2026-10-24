@@ -1,13 +1,14 @@
 //! Pointer input on the document area: a press works the scroll bars,
-//! places a stamp, starts a line edit or a text selection; the wheel
+//! places a stamp, starts a line edit or a text selection (a click on a
+//! link follows it, `crate::links`); the wheel
 //! scrolls (with Ctrl it zooms), a pinch zooms and a dropped file opens.
 
 use std::time::Instant;
 
 use fastpdf_core::ScrollAxis;
 use gpui::{
-    Context, ExternalPaths, MouseDownEvent, MouseMoveEvent, PinchEvent, Pixels, ScrollWheelEvent,
-    Window, px,
+    Context, ExternalPaths, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels,
+    ScrollWheelEvent, Window, px,
 };
 
 use crate::navigation::LINE_SCROLL_PX;
@@ -39,6 +40,7 @@ impl ReaderView {
             cx.notify();
             return;
         }
+        self.link_press(event);
         match self.page_point(event.position) {
             Some(point) => {
                 let missing = self.selection.begin(point);
@@ -62,10 +64,12 @@ impl ReaderView {
         }
     }
 
-    pub(crate) fn on_selection_end(&mut self, cx: &mut Context<'_, Self>) {
+    /// The release ending a selection drag: a click (not a drag) clears
+    /// the selection, and on a link follows it.
+    pub(crate) fn on_selection_end(&mut self, event: &MouseUpEvent, cx: &mut Context<'_, Self>) {
         self.selection.end();
-        if self.selection.anchor == self.selection.focus {
-            // A click, not a drag.
+        let followed = self.link_release(event, cx);
+        if followed || self.selection.anchor == self.selection.focus {
             self.selection.clear();
         }
         cx.notify();
@@ -142,6 +146,7 @@ impl ReaderView {
             cx.notify();
         }
         self.text_edit_hover(event.position, cx);
+        self.link_hover(event.position, cx);
     }
 
     pub(crate) fn on_document_hover(
@@ -152,6 +157,9 @@ impl ReaderView {
     ) {
         if !*hovered && self.scrollbars.hover.take().is_some() {
             cx.notify();
+        }
+        if !*hovered {
+            self.clear_link_hover(cx);
         }
     }
 

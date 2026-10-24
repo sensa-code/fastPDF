@@ -5,11 +5,13 @@
 //! benchmark harness so both measure the same path; [`DocumentSession`] is
 //! the toolkit-independent heart of the viewer. [`ViewState`] and
 //! [`SavedView`] say where its view is; [`NavigationHistory`] keeps the
-//! views Back and Forward return to.
+//! views Back and Forward return to; [`links`] checks and caches the links
+//! of the pages the pointer visits.
 
 pub mod go_to;
 pub mod history;
 pub mod keymap;
+pub mod links;
 pub mod loader;
 pub mod memory;
 pub mod paths;

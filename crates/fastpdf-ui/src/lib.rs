@@ -35,6 +35,8 @@
 //! * Text is English or Traditional Chinese (`i18n.rs`), after the Windows
 //!   UI language unless the settings choose; mouse-wheel notches scroll
 //!   with a short ease-out (`smooth_scroll.rs`).
+//! * Links on the pages are read when the pointer first moves over a page
+//!   (`links.rs`); a click follows an internal link, a drag still selects.
 //! * Chrome follows the Windows light/dark app mode unless the user picks
 //!   one; night mode inverts the pages (`ColorMode::Inverted`). Both, the
 //!   sidebar, the default zoom and the window placement persist in a small
@@ -52,6 +54,8 @@ mod go_to_page;
 mod hit_list;
 mod i18n;
 mod input;
+mod link_prompt;
+mod links;
 mod navigation;
 mod opening;
 mod overlay;

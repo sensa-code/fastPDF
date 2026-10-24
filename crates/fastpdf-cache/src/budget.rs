@@ -8,6 +8,9 @@ use crate::{CacheStats, MemoryPressure};
 pub mod retention {
     /// Thumbnails are cheap to regenerate and rarely critical.
     pub const THUMBNAILS: u8 = 10;
+    /// Link annotations of pages the pointer visited: small, read again on
+    /// the next hover.
+    pub const LINKS: u8 = 15;
     /// Text layers kept for search / selection of off-screen pages.
     pub const TEXT: u8 = 20;
     /// Tiles prefetched for pages that are not visible.
