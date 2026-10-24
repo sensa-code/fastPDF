@@ -76,24 +76,25 @@ impl<'p> Iterator for Items<'p> {
     }
 }
 
-/// The entries of `dict` sorted by key, like `Dict::entries`; a value that
-/// does not parse as an object is taken as the dictionary hayro would read
-/// for that key, or left out.
-pub(crate) fn entries<'p>(dict: &Dict<'p>) -> Vec<(Name<'p>, MaybeRef<Object<'p>>)> {
+/// The entries of `dict` sorted by key, like `Dict::entries`, parsed one
+/// at a time as the caller takes them; a value that does not parse as an
+/// object is taken as the dictionary hayro would read for that key, or
+/// left out.
+pub(crate) fn entries<'d, 'p>(
+    dict: &'d Dict<'p>,
+) -> impl Iterator<Item = (Name<'p>, MaybeRef<Object<'p>>)> + 'd {
     let mut keys: Vec<Name<'p>> = dict.keys().collect();
     keys.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
-    keys.into_iter()
-        .filter_map(|key| {
-            let value = match dict.get_raw::<Object<'p>>(key.as_ref()) {
-                Some(value) => value,
-                None => match dict.get_raw::<Dict<'p>>(key.as_ref())? {
-                    MaybeRef::Ref(r) => MaybeRef::Ref(r),
-                    MaybeRef::NotRef(d) => MaybeRef::NotRef(Object::Dict(d)),
-                },
-            };
-            Some((key, value))
-        })
-        .collect()
+    keys.into_iter().filter_map(move |key| {
+        let value = match dict.get_raw::<Object<'p>>(key.as_ref()) {
+            Some(value) => value,
+            None => match dict.get_raw::<Dict<'p>>(key.as_ref())? {
+                MaybeRef::Ref(r) => MaybeRef::Ref(r),
+                MaybeRef::NotRef(d) => MaybeRef::NotRef(Object::Dict(d)),
+            },
+        };
+        Some((key, value))
+    })
 }
 
 #[cfg(test)]
@@ -151,7 +152,7 @@ mod tests {
         else {
             panic!("the dictionary reads");
         };
-        let entries = entries(&dict);
+        let entries: Vec<_> = entries(&dict).collect();
         let keys: Vec<&[u8]> = entries.iter().map(|(k, _)| k.as_ref()).collect();
         assert_eq!(keys, [b"A".as_slice(), b"B", b"C"]);
         // /A does not parse as an object; hayro would read it as the
