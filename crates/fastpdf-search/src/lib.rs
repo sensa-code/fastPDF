@@ -30,6 +30,7 @@
 
 mod fold;
 mod matcher;
+mod occurrences;
 mod order;
 mod page_text;
 mod session;

@@ -91,6 +91,12 @@ fn whole_words_stay_linear_on_pathological_pages() {
     let page = "a".repeat(100_000);
     let started = Instant::now();
     assert!(find("aaa", &page, false, true).is_empty());
+    // 40,000 overlapping candidates of a 30,001-character query, each
+    // rejected for the letter after it: one pass, not one per candidate.
+    let page = "ab-".repeat(50_000);
+    let query = format!("{}a", "ab-".repeat(10_000));
+    assert!(find(&query, &page, false, true).is_empty());
+    assert_eq!(find(&query, &page, false, false).len(), 4);
     assert!(
         started.elapsed() < Duration::from_secs(2),
         "{:?}",

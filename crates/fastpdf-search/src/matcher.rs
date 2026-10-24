@@ -3,6 +3,7 @@ use std::ops::Range;
 use fastpdf_engine_api::{TextLayer, is_cjk};
 
 use crate::fold::{fold, is_word_char};
+use crate::occurrences::{Overlapping, Starts, accepted, borders};
 
 /// One occurrence of the query, as a range of `char` indices into the
 /// searched text.
@@ -53,6 +54,9 @@ pub struct Matcher {
     /// The needle ends with a word character: with `whole_word`, the token
     /// after a match must not be one.
     word_end: bool,
+    /// With `whole_word`: the needle's KMP table, to find every candidate
+    /// in one pass (`crate::occurrences`).
+    borders: Vec<u32>,
 }
 
 impl Matcher {
@@ -83,12 +87,18 @@ impl Matcher {
             whole_word: false,
             word_start,
             word_end,
+            borders: Vec::new(),
         })
     }
 
     /// Matches whole words only (see [`Matcher`]).
     pub fn whole_word(mut self, on: bool) -> Self {
         self.whole_word = on;
+        self.borders = if on {
+            borders(self.needle.as_bytes())
+        } else {
+            Vec::new()
+        };
         self
     }
 
@@ -137,53 +147,37 @@ impl Matcher {
     /// Non-overlapping matches in normalized `tokens`, from left to right,
     /// as byte ranges.
     ///
-    /// Whole words: a candidate with a word character next to it is
-    /// skipped and the search goes on inside it, so `ab-ab` is found in
-    /// `xab-ab-ab` (at 4..9). A needle starting with a word character can
-    /// only start after a token that is not one, so the search goes on
-    /// after the next such token: a page of `aaaa…` is scanned once.
+    /// Whole words: every occurrence is a candidate, overlapping ones
+    /// included, so a candidate rejected for a letter next to it does not
+    /// hide a valid one inside it (`ab-ab` is found in `xab-ab-ab`, at
+    /// 4..9). They are found in one pass, linear in the page and the query
+    /// whatever their overlap.
     pub(crate) fn find_in<'a>(
         &'a self,
         tokens: &'a str,
     ) -> impl Iterator<Item = Range<usize>> + 'a {
-        let mut from = 0;
-        std::iter::from_fn(move || {
-            loop {
-                let start = from + tokens.get(from..)?.find(self.needle.as_str())?;
-                let end = start + self.needle.len();
-                if self.is_whole(tokens, start, end) {
-                    from = end;
-                    return Some(start..end);
-                }
-                from = self.retry_from(tokens, start)?;
-            }
+        let starts = if self.whole_word {
+            Starts::All(Overlapping::new(tokens, &self.needle, &self.borders))
+        } else {
+            Starts::Apart(tokens.match_indices(self.needle.as_str()))
+        };
+        accepted(starts, self.needle.len(), move |range| {
+            self.is_whole(tokens, range)
         })
     }
 
-    /// Whether the match at `start..end` of `tokens` stands as the query
-    /// asks (always, unless whole words are asked for).
-    fn is_whole(&self, tokens: &str, start: usize, end: usize) -> bool {
+    /// Whether the match at `range` of `tokens` stands as the query asks
+    /// (always, unless whole words are asked for).
+    fn is_whole(&self, tokens: &str, range: Range<usize>) -> bool {
         if !self.whole_word {
             return true;
         }
-        let before = tokens.get(..start).and_then(|t| t.chars().next_back());
-        let after = tokens.get(end..).and_then(|t| t.chars().next());
+        let before = tokens
+            .get(..range.start)
+            .and_then(|t| t.chars().next_back());
+        let after = tokens.get(range.end..).and_then(|t| t.chars().next());
         !(self.word_start && before.is_some_and(is_word_char))
             && !(self.word_end && after.is_some_and(is_word_char))
-    }
-
-    /// Where to look again after the candidate at `start` was rejected.
-    fn retry_from(&self, tokens: &str, start: usize) -> Option<usize> {
-        let rest = tokens.get(start..)?;
-        if self.word_start {
-            // The next valid start follows a token that is not a word
-            // character; there is none inside the run of word characters
-            // the candidate starts in.
-            let (offset, c) = rest.char_indices().find(|&(_, c)| !is_word_char(c))?;
-            Some(start + offset + c.len_utf8())
-        } else {
-            Some(start + rest.chars().next()?.len_utf8())
-        }
     }
 
     /// Whether every character of the query occurs on the page. A page
