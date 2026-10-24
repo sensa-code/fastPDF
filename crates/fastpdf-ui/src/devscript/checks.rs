@@ -21,9 +21,12 @@ pub(crate) enum Check {
     ExpectZoom(u32),
     /// `expect-history=B,F`: Back and Forward hold B and F views.
     ExpectHistory(usize, usize),
-    /// `expect-focus=find` or `=document`: the find field, or the reader
-    /// itself, has the keyboard focus.
+    /// `expect-focus=find`, `=document` or `=prompt`: the find field, the
+    /// reader itself or the password prompt's field has the keyboard focus.
     ExpectFocus(FocusTarget),
+    /// `focus=document`: gives the keyboard focus to the reader itself, as
+    /// GPUI does on a mouse press on the toolbar or the sidebar.
+    FocusDocument,
     /// `outline=N`: activates outline row N (one-based, as listed), waiting
     /// while the outline loads.
     Outline(usize),
@@ -42,6 +45,7 @@ pub(crate) enum Check {
 pub(crate) enum FocusTarget {
     Find,
     Document,
+    Prompt,
 }
 
 impl Check {
@@ -61,6 +65,8 @@ impl Check {
             ("outline", n) => Self::Outline(n.parse().ok().filter(|&n: &usize| n >= 1)?),
             ("expect-focus", "find") => Self::ExpectFocus(FocusTarget::Find),
             ("expect-focus", "document") => Self::ExpectFocus(FocusTarget::Document),
+            ("expect-focus", "prompt") => Self::ExpectFocus(FocusTarget::Prompt),
+            ("focus", "document") => Self::FocusDocument,
             ("wait-prompt", kind) => Self::WaitPrompt(PromptKind::from_name(kind)?),
             ("password" | "password-text", text) if !text.is_empty() => Self::Password {
                 text: Password::from(text),
@@ -85,12 +91,17 @@ impl ReaderView {
                 let focused = match target {
                     FocusTarget::Find => self.find.input.read(cx).focus_handle().is_focused(window),
                     FocusTarget::Document => self.focus.is_focused(window),
+                    FocusTarget::Prompt => self.password_field_focused(window, cx),
                 };
                 return if focused {
                     StepState::Done
                 } else {
                     StepState::Abort(format!("{target:?} does not have the keyboard focus"))
                 };
+            }
+            Check::FocusDocument => {
+                window.focus(&self.focus, cx);
+                return StepState::Done;
             }
             Check::WaitPrompt(kind) => return self.prompt_waiting(*kind),
             Check::PromptCancel => {
@@ -132,6 +143,7 @@ impl ReaderView {
             }
             Check::Outline(_)
             | Check::ExpectFocus(_)
+            | Check::FocusDocument
             | Check::WaitPrompt(_)
             | Check::PromptCancel
             | Check::Password { .. } => None,
@@ -188,7 +200,8 @@ mod tests {
             parse(
                 "expect-page=3; expect-zoom=250%; expect-zoom=80; cmd=NavigateBack; \
                  expect-history=2,0; expect-history= 0 , 12 ; outline=5; \
-                 expect-focus=find; expect-focus=document"
+                 expect-focus=find; expect-focus=document; expect-focus=prompt; \
+                 focus=document"
             )
             .unwrap(),
             vec![
@@ -201,6 +214,8 @@ mod tests {
                 Step::Check(Check::Outline(5)),
                 Step::Check(Check::ExpectFocus(super::FocusTarget::Find)),
                 Step::Check(Check::ExpectFocus(super::FocusTarget::Document)),
+                Step::Check(Check::ExpectFocus(super::FocusTarget::Prompt)),
+                Step::Check(Check::FocusDocument),
             ]
         );
         for bad in [
@@ -217,6 +232,8 @@ mod tests {
             "outline",
             "expect-focus",
             "expect-focus=sidebar",
+            "focus",
+            "focus=find",
             "wait-prompt",
             "wait-prompt=nothing",
             "prompt-cancel=1",

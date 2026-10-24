@@ -14,7 +14,7 @@ use std::sync::Arc;
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_engine_api::write::WriteError;
 use gpui::{
-    AppContext, ClickEvent, Context, Entity, IntoElement, ParentElement, SharedString,
+    App, AppContext, ClickEvent, Context, Entity, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder,
     px,
 };
@@ -44,6 +44,7 @@ pub(crate) struct LockedDoc {
     pub wrong: bool,
     _attempt: Option<Task<()>>,
     _changes: Subscription,
+    _refocus: Subscription,
 }
 
 impl ReaderView {
@@ -67,6 +68,13 @@ impl ReaderView {
             }
             cx.notify();
         });
+        // GPUI gives the keyboard to the reader itself on any mouse press
+        // outside the prompt (the toolbar, the sidebar) or when the file
+        // dialog of Open closes: hand it back to the field, or typing and
+        // Enter would go nowhere.
+        let refocus = cx.on_focus(&self.focus, window, |view: &mut Self, window, cx| {
+            view.refocus_password_field(window, cx);
+        });
         let name: SharedString = display_name(&locked.path).into();
         window.set_window_title(&format!("{name} - {APP_TITLE}"));
         let focus = field.read(cx).focus_handle().clone();
@@ -82,6 +90,7 @@ impl ReaderView {
             checking: false,
             _attempt: None,
             _changes: changes,
+            _refocus: refocus,
         }));
         cx.notify();
     }
@@ -154,6 +163,21 @@ impl ReaderView {
             }
         }
         cx.notify();
+    }
+
+    fn refocus_password_field(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if let DocState::Locked(locked) = &self.doc {
+            let focus = locked.field.read(cx).focus_handle().clone();
+            window.focus(&focus, cx);
+        }
+    }
+
+    /// The prompt's field has the keyboard focus (development scripts).
+    pub(crate) fn password_field_focused(&self, window: &Window, cx: &App) -> bool {
+        match &self.doc {
+            DocState::Locked(locked) => locked.field.read(cx).focus_handle().is_focused(window),
+            _ => false,
+        }
     }
 
     pub(crate) fn render_password_prompt(
