@@ -66,10 +66,13 @@
 //! | `password=TEXT` | types TEXT into the password prompt and confirms it; fixture passwords only, never logged (`checks.rs`) |
 //! | `password-text=TEXT` | only types TEXT into the password prompt (to see the masked field) (`checks.rs`) |
 //! | `prompt-cancel` | cancels the prompt, like Esc (`checks.rs`) |
+//! | `wait-labels` | asks for the page labels and waits for the answer (`labels.rs`) |
+//! | `expect-label=TEXT` | stops the script unless the current page is labeled TEXT (`labels.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
 mod checks;
+mod labels;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -146,6 +149,7 @@ pub(crate) enum Step {
     /// Wheel notches over the document (positive: down).
     Wheel(i32),
     Check(checks::Check),
+    Labels(labels::LabelStep),
 }
 
 /// What a step reports after one poll.
@@ -256,7 +260,10 @@ fn parse_step(step: &str) -> Option<Step> {
         ("smooth", Some("on")) => Step::Smooth(true),
         ("smooth", Some("off")) => Step::Smooth(false),
         ("wheel", Some(n)) => Step::Wheel(n.parse().ok().filter(|n: &i32| *n != 0)?),
-        _ => Step::Check(checks::Check::parse(name, value)?),
+        _ => match labels::LabelStep::parse(name, value) {
+            Some(step) => Step::Labels(step),
+            None => Step::Check(checks::Check::parse(name, value)?),
+        },
     })
 }
 
@@ -678,6 +685,7 @@ impl ReaderView {
                 Done
             }
             Step::Check(check) => self.run_check_step(check, window, cx),
+            Step::Labels(step) => self.run_label_step(step, cx),
         }
     }
 }

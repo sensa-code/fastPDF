@@ -570,7 +570,6 @@ impl ReaderView {
         let list = self.sidebar.thumbs.clone();
         let box_height = list.row_height - ROW_PAD - LABEL_HEIGHT - ROW_PAD / 2.0;
         let label_font = font(self.language().ui_font());
-        let strings = self.strings();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for item in &frame.items {
                 let row = item.page.get() as f32;
@@ -594,11 +593,7 @@ impl ReaderView {
                 if let Some(image) = &item.image {
                     self.textures.paint(image, rect, None, window);
                 }
-                let label = if item.failed {
-                    strings.thumbnail_failed(item.page.display_number())
-                } else {
-                    item.page.display_number().to_string()
-                };
+                let label = self.thumbnail_caption(item.page, item.failed);
                 let color = if item.failed {
                     theme.error_text
                 } else {

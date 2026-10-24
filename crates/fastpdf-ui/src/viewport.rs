@@ -227,13 +227,13 @@ impl ReaderView {
     }
 
     /// While the vertical thumb is dragged: the page it points at, next to
-    /// the thumb ("12 / 340").
+    /// the thumb ("12 / 340", or "xii (12 / 340)" with page labels).
     fn paint_drag_page_label(&self, window: &mut Window, cx: &mut App) {
         let dragging = self
             .scrollbars
             .drag
             .is_some_and(|d| d.axis == ScrollAxis::Vertical);
-        let (Some(bar), Some((page, count))) = (
+        let (Some(bar), Some(_)) = (
             self.scrollbars
                 .bar(ScrollAxis::Vertical)
                 .filter(|_| dragging),
@@ -241,7 +241,7 @@ impl ReaderView {
         ) else {
             return;
         };
-        let text = format!("{} / {}", page.display_number(), count);
+        let text = self.page_position_text();
         let font = window.text_style().font();
         let run = TextRun {
             len: text.len(),
@@ -297,6 +297,8 @@ impl ReaderView {
             && deferred == 0
         {
             open.exact_reported = true;
+            // `on_wake` asks for the page labels now, after the first page.
+            self.waker.wake();
             let since_open = open.opened_at.elapsed();
             log::info!(
                 "first page fully rendered {:.1} ms after the session started",

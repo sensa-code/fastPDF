@@ -27,12 +27,9 @@ pub(crate) fn render(
     let font = view.language().ui_font();
     let session = view.session();
     let has_doc = session.is_some();
-    let (page_text, zoom_text) = match (view.page_indicator(), session) {
-        (Some((page, count)), Some(s)) => (
-            format!("{} / {}", page.display_number(), count),
-            format!("{}%", s.zoom().percent()),
-        ),
-        _ => ("- / -".to_string(), "-".to_string()),
+    let zoom_text = match session {
+        Some(s) => format!("{}%", s.zoom().percent()),
+        None => "-".to_string(),
     };
     let title = match &view.doc {
         crate::reader::DocState::Open(open) => open.name.clone(),
@@ -101,7 +98,7 @@ pub(crate) fn render(
             has_doc,
             cx,
         ))
-        .child(label(page_text, 56.0))
+        .child(crate::page_labels::indicator(view))
         .child(tools.button(
             "next",
             "\u{203a}",
@@ -138,33 +135,46 @@ pub(crate) fn render(
             cx,
         ))
         .child(layout_control(view, tools, cx))
-        .child(separator(&theme))
-        .child(tools.button(
-            "rotate-ccw",
-            "\u{21ba}",
-            strings.tip_rotate_left,
-            C::RotateCounterClockwise,
-            has_doc,
-            cx,
-        ))
-        .child(tools.button(
-            "rotate-cw",
-            "\u{21bb}",
-            strings.tip_rotate_right,
-            C::RotateClockwise,
-            has_doc,
-            cx,
-        ))
-        .child(div().flex_1())
         .child(
+            // The end of the row gives way first, long before a page label
+            // (crate::page_labels::indicator) and the buttons before it.
             div()
-                .text_color(theme.text_muted)
-                .text_size(px(13.0))
+                .flex()
+                .flex_row()
+                .flex_grow(1.0)
+                .flex_shrink(1000.0)
+                .min_w_0()
                 .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
-                .max_w(px(360.0))
-                .child(title),
+                .items_center()
+                .gap_1()
+                .child(separator(&theme))
+                .child(tools.button(
+                    "rotate-ccw",
+                    "\u{21ba}",
+                    strings.tip_rotate_left,
+                    C::RotateCounterClockwise,
+                    has_doc,
+                    cx,
+                ))
+                .child(tools.button(
+                    "rotate-cw",
+                    "\u{21bb}",
+                    strings.tip_rotate_right,
+                    C::RotateClockwise,
+                    has_doc,
+                    cx,
+                ))
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .text_color(theme.text_muted)
+                        .text_size(px(13.0))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .max_w(px(360.0))
+                        .child(title),
+                ),
         );
     div()
         .flex()

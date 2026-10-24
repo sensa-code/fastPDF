@@ -723,11 +723,12 @@ impl Strings {
         }
     }
 
-    pub(crate) fn thumbnail_failed(&self, page: u32) -> String {
+    /// A thumbnail caption (`3`, `iii (3)`) marked as failed.
+    pub(crate) fn thumbnail_failed(&self, caption: &str) -> String {
         if self.zh() {
-            format!("{page}（錯誤）")
+            format!("{caption}（錯誤）")
         } else {
-            format!("{page} (error)")
+            format!("{caption} (error)")
         }
     }
 

@@ -43,6 +43,7 @@
 mod actions;
 mod bench;
 mod devscript;
+mod doc_queries;
 mod document;
 mod empty_state;
 mod find;
@@ -51,6 +52,7 @@ mod input;
 mod navigation;
 mod opening;
 mod overlay;
+mod page_labels;
 mod password;
 mod print;
 mod prompt;

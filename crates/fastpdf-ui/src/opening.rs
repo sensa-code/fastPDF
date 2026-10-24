@@ -121,6 +121,7 @@ impl ReaderView {
             opened_at: Instant::now(),
             exact_reported: false,
             protected: opened.password_protected,
+            queries: Default::default(),
         }));
         self.report(BenchEvent::DocumentOpened);
         // Panels that were open carry over to the new document.

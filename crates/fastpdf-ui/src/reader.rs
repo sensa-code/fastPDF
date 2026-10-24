@@ -168,6 +168,8 @@ pub(crate) struct OpenDoc {
     pub exact_reported: bool,
     /// Opened with a password: never written (ADR 0014).
     pub protected: bool,
+    /// Page labels and other answers loaded after opening.
+    pub queries: crate::doc_queries::DocQueries,
 }
 
 /// A toolbar drop-down menu.
@@ -451,6 +453,7 @@ impl ReaderView {
         }
         self.print.drain();
         self.tools.drain();
+        self.poll_page_labels(cx);
         cx.notify();
     }
 
