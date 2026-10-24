@@ -63,8 +63,9 @@ pub(crate) struct PromptStatus {
 /// `buttons`, placed on a scrim that covers the document area. With
 /// `focus`, the card itself takes the keyboard (a prompt without a text
 /// field); otherwise `field` holds it. In a small window the card is as
-/// tall as the document area at most: `body` scrolls, while the title, the
-/// field and the buttons stay in view.
+/// tall as the document area at most: `body` gives way first (it scrolls),
+/// then the whole card scrolls, so the title, the field and the buttons
+/// come in that order and none of them is cut off.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prompt_card(
     id: &'static str,
@@ -95,6 +96,9 @@ pub(crate) fn prompt_card(
         .w(px(CARD_WIDTH))
         .max_w_full()
         .max_h_full()
+        // When even the title, the field and the buttons do not fit, the
+        // whole card scrolls rather than losing any of them.
+        .overflow_y_scroll()
         .flex()
         .flex_col()
         .gap_2()

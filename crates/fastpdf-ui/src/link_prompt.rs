@@ -26,6 +26,8 @@ use crate::toolbar::styled_button;
 const NOTICE_HEIGHT: f32 = 48.0;
 /// Widest a chip gets.
 const MAX_CHIP_WIDTH: f32 = 560.0;
+/// The address box shows at least two lines of the address.
+const ADDRESS_MIN_HEIGHT: f32 = 52.0;
 
 impl ReaderView {
     /// The chip for the link under the pointer.
@@ -143,12 +145,18 @@ impl ReaderView {
         let theme = self.theme;
         let strings = self.strings();
         let uri = &prompt.uri;
+        // The note may scroll out of a small window; the site and the
+        // address stay with the buttons (and the card scrolls when even
+        // they do not fit), so Open is never in view without the address.
         let body = div()
+            .text_color(theme.text_muted)
+            .child(strings.link_prompt_note());
+        let field = div()
             .flex()
             .flex_col()
             .gap_2()
-            .when_some(uri.host(), |body, host| {
-                body.child(
+            .when_some(uri.host(), |field, host| {
+                field.child(
                     div()
                         .flex()
                         .flex_row()
@@ -160,6 +168,7 @@ impl ReaderView {
             .child(
                 div()
                     .id("link-prompt-address")
+                    .min_h(px(ADDRESS_MIN_HEIGHT))
                     .max_h(px(160.0))
                     .overflow_y_scroll()
                     .p_2()
@@ -170,11 +179,6 @@ impl ReaderView {
                     .font_family(MONO_FONT)
                     .text_size(px(12.0))
                     .child(uri.as_str().to_owned()),
-            )
-            .child(
-                div()
-                    .text_color(theme.text_muted)
-                    .child(strings.link_prompt_note()),
             );
         let buttons = div()
             .flex()
@@ -222,7 +226,7 @@ impl ReaderView {
             Some(&prompt.focus),
             strings.link_prompt_title(uri.kind()).into(),
             body,
-            None,
+            Some(field.into_any_element()),
             None,
             buttons,
         );
