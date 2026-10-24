@@ -19,7 +19,7 @@ use std::ops::Range;
 use fastpdf_core::keymap::{self, ReaderCommand, keystrokes_for};
 use fastpdf_engine_api::{ColorMode, PageIndex};
 use gpui::{
-    AnyElement, ClickEvent, Context, Div, FocusHandle, FontWeight, HighlightStyle,
+    AnyElement, ClickEvent, Context, Div, ElementId, FocusHandle, FontWeight, HighlightStyle,
     InteractiveElement, IntoElement, ParentElement, ScrollStrategy, SharedString,
     StatefulInteractiveElement, Styled, StyledText, UniformListScrollHandle, Window, div, point,
     prelude::FluentBuilder, px, uniform_list,
@@ -140,6 +140,15 @@ fn anchored(y: f32, rows: usize, scale: f32) -> f32 {
     };
     let into_row = ((-f64::from(y) - top * pitch) * scale).round() / scale;
     (-((top + rows as f64) * pitch + into_row)) as f32
+}
+
+/// A row's element id: its hit (page and byte offset in the page's search
+/// text), not its place in the list.
+fn row_key(page: PageIndex, start: usize) -> ElementId {
+    let mut key = [0u8; 20];
+    key[..4].copy_from_slice(&page.get().to_le_bytes());
+    key[4..12].copy_from_slice(&(start as u64).to_le_bytes());
+    ElementId::OpaqueId(key)
 }
 
 impl ReaderView {
@@ -285,6 +294,9 @@ impl ReaderView {
         range
             .filter_map(|ix| {
                 let hit = self.find.hits.get(ix)?;
+                // The row is the hit, not its place: hits of earlier pages
+                // come in above it while the search runs.
+                let (page, start) = (hit.page, hit.start);
                 let caption = self.result_caption(hit.page);
                 let context = &hit.context;
                 let text = StyledText::new(SharedString::from(context.text.clone()))
@@ -293,7 +305,7 @@ impl ReaderView {
                 let hover = theme.button_hover;
                 Some(
                     div()
-                        .id(("search-result", ix))
+                        .id(row_key(page, start))
                         .h(px(pitch))
                         .w_full()
                         .overflow_hidden()
@@ -308,7 +320,7 @@ impl ReaderView {
                         .cursor_pointer()
                         .hover(move |style| style.bg(hover))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.open_result(ix, cx);
+                            this.open_hit(page, start, cx);
                         }))
                         .child(
                             div()
@@ -383,6 +395,14 @@ impl ReaderView {
     pub(crate) fn open_active_result(&mut self, cx: &mut Context<'_, Self>) {
         let row = self.find.hits.active_index().unwrap_or(0);
         self.open_result(row, cx);
+    }
+
+    /// Shows the hit at byte `start` of `page`'s search text, wherever its
+    /// row is now (a click on its row).
+    pub(crate) fn open_hit(&mut self, page: PageIndex, start: usize, cx: &mut Context<'_, Self>) {
+        if let Some(row) = self.find.hits.index_of(page, start) {
+            self.open_result(row, cx);
+        }
     }
 
     /// Shows result `row` (zero-based) in the document, as a search-hit
@@ -475,6 +495,16 @@ mod tests {
         let y = anchored(-3.0 * row_pitch(1.25) - 20.0, 29, 1.25);
         let drawn = y + 32.0 * row_pitch(1.25);
         assert!((drawn + 20.0).abs() < 0.5, "{drawn}");
+    }
+
+    #[test]
+    fn rows_are_keyed_by_their_hit() {
+        let key = |page, start| row_key(PageIndex::new(page), start);
+        assert_ne!(key(1, 0), key(0, 1));
+        assert_ne!(key(20, 9), key(20, 10));
+        assert_eq!(key(20, 9), key(20, 9));
+        assert_ne!(key(u32::MAX, 0), key(u32::MAX - 1, 0));
+        assert_ne!(key(0, usize::MAX), key(0, usize::MAX - 1));
     }
 
     #[test]

@@ -160,6 +160,18 @@ impl HitList {
         self.get(next)
     }
 
+    /// Where the hit at byte `start` of `page`'s search text is now (hits
+    /// move down as earlier pages come in).
+    pub(crate) fn index_of(&self, page: PageIndex, start: usize) -> Option<usize> {
+        let bucket = self
+            .pages
+            .binary_search_by_key(&page, |p| p.page)
+            .ok()
+            .and_then(|i| self.pages.get(i))?;
+        let i = bucket.hits.binary_search_by_key(&start, |h| h.start).ok()?;
+        Some(bucket.first + i)
+    }
+
     /// Makes hit `index` (clamped to the list) the active one.
     pub(crate) fn select(&mut self, index: usize) -> Option<&SearchHit> {
         let index = index.min(self.len.checked_sub(1)?);
@@ -386,6 +398,24 @@ mod tests {
         assert_eq!(list.len(), MAX_HITS);
         assert_eq!(list.insert(vec![hit(1, 0)]), None);
         assert_eq!(list.len(), MAX_HITS);
+    }
+
+    #[test]
+    fn hits_are_found_again_after_earlier_pages_came_in() {
+        let mut list = HitList::default();
+        list.insert(vec![hit(20, 4), hit(20, 9)]);
+        assert_eq!(list.index_of(PageIndex::new(20), 9), Some(1));
+        list.insert(vec![hit(19, 0), hit(19, 5), hit(19, 7)]);
+        list.insert(vec![hit(21, 3)]);
+        assert_eq!(list.index_of(PageIndex::new(20), 9), Some(4));
+        for i in 0..list.len() {
+            let h = list.get(i).map(|h| (h.page, h.start));
+            let found = h.and_then(|(page, start)| list.index_of(page, start));
+            assert_eq!(found, Some(i));
+        }
+        assert_eq!(list.index_of(PageIndex::new(20), 5), None);
+        assert_eq!(list.index_of(PageIndex::new(3), 0), None);
+        assert_eq!(HitList::default().index_of(PageIndex::FIRST, 0), None);
     }
 
     #[test]

@@ -58,8 +58,10 @@ impl ReaderView {
             }
             SearchStep::OpenResult(n) => {
                 let found = self.find.hits.len();
-                if found >= n {
-                    self.open_result(n - 1, cx);
+                // Through the hit, as a click on its row.
+                if let Some(hit) = self.find.hits.get(n - 1) {
+                    let (page, start) = (hit.page, hit.start);
+                    self.open_hit(page, start, cx);
                     StepState::Done
                 } else if self.find.progress.finished || self.find.query.is_empty() {
                     StepState::Abort(format!("the search found {found} results, not {n}"))
