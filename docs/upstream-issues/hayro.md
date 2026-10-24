@@ -37,6 +37,7 @@
 | 7 | Knockout transparency groups (`/K true`) are composited like normal groups | Feature | 中 | README 已列為未支援 | **patch 0002**（PR #1395；部分支援，見該節） |
 | 8 | Non-embedded CJK fonts silently fall back to Helvetica, so the text disappears | Docs／Feature | 中高（CJK 使用者） | README 已列為未支援 | adapter 的 font resolver 依 character collection 對應 Windows 字型 |
 | 9 | Tiled rendering: images are decoded again on every `render_into` call, and `RenderCache` has no size bound | Feature（效能／記憶體） | 中 | #1375 | adapter：block 合併、decode budget、閒置 5 s 釋放執行緒 |
+| 10 | `Array::raw_iter` and `Dict::entries` panic on an item that skipping accepts but parsing rejects | Bug（robustness） | 中 | — | adapter 改用 `crates/fastpdf-engine-hayro/src/items.rs`：逐項先以 plain context 解析，讀不了就停（scan 拒絕該頁） |
 
 第 1、7 點對應 M4 比對中 `transparency/softmask-groups.pdf` 的差異（Hayro 把「Alpha soft mask (group ca 0.4)」畫成不透明方塊、knockout group 當成一般 group）。追查後發現第 1 點的原因不是 alpha mask 本身，而是 mask group 沒有 `/CS`；FastPDF fixture 的產生方式見 `tools/fixtures/fxlib/cat_vector.py` 的 `tr_softmask_groups`（`uv run tools/fixtures/generate.py --only transparency --out <暫存目錄>`；不加 `--out` 會覆寫共用的 `fixtures/generated/manifest.json`）。issue 裡改用下面的最小重現檔。
 
@@ -578,6 +579,50 @@ expensive for a tiled viewer:
 Reproduction of the tile timing: render 512x512 tiles with
 `render_into(page, &cache, &settings, &RenderSettings::default(), &mut ctx, Affine::translate((-x, -y)) * Affine::scale(4.0) * page.initial_transform(true).to_kurbo())`,
 reusing one `RenderCache` and `RenderContext`.
+~~~
+
+---
+
+## 10. `Array::raw_iter` and `Dict::entries` panic on an item that skipping accepts but parsing rejects
+
+- **Type**：Bug（robustness）
+- **Version**：`14410d75`（FastPDF 目前的 pin）
+- 備註：2026-10-25 在 FastPDF 的 adapter 測試中確認（`crates/fastpdf-engine-hayro/tests/unreadable_items.rs`，修正前 panic 在 `hayro-syntax/src/object/array.rs:153`）。FastPDF 的對策：adapter 不再呼叫這兩個 API，改用 `items.rs` 的 `items()`（每一項先用 plain context 解析，解析不了就停在那裡；`/Length` 是 reference 的 stream 也停，因為兩邊讀到的範圍可能不同）與 `entries()`（逐 key 呼叫 `get_raw`，讀不了的值改讀成 dictionary 或略過）。頁面的靜態掃描遇到讀不完的 array 會拒絕該頁，避免 hayro 讀到掃描沒看過的內容。panic 雖然會被 `catch_unwind` 接住，但會累計到文件的 panic 次數。
+
+~~~markdown
+### Summary
+
+`Array::raw_iter()` and `Dict::entries()` call `unwrap()` on the parse of each item
+("Objects are already guaranteed to be valid"). The guarantee comes from `skip`, which
+is more lenient than `read`: a dictionary followed by `stream` inside an array or a
+dictionary is skipped as a dictionary plus stray tokens, but `Object::read` sees the
+`stream` keyword, tries `Stream::read`, and that can fail (for example with an `/F`
+key, which `Stream::read` rejects). The unwrap then panics on input from the file.
+
+### Reproduction
+
+```rust
+use hayro_syntax::object::{Array, Dict, FromBytes};
+
+let a = Array::from_bytes(b"[1 0 R << /F 1 >> stream
+abc
+endstream 2 0 R]").unwrap();
+for _ in a.raw_iter() {} // panics: called `Option::unwrap()` on a `None` value (array.rs:153)
+
+let d = Dict::from_bytes(b"<< /A << /F 1 >> stream
+abc
+endstream >>").unwrap();
+for _ in d.entries() {} // panics the same way (dict.rs:103)
+```
+
+Inside a page's `/Annots`, a name tree's `/Names` or `/Kids`, a number tree's `/Nums`,
+or a resource array, this takes down whatever walks the structure.
+
+### Expected
+
+No panic: end the iteration (or skip the item) when an item does not parse, like
+`FlexArrayIter::next` does by returning `None`, and leave unreadable values out of
+`entries()` (`filter_map` instead of `unwrap`).
 ~~~
 
 ---

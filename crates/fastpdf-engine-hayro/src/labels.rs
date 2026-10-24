@@ -27,6 +27,8 @@ use hayro::hayro_syntax::Pdf;
 use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, Object, ObjectIdentifier};
 use hayro::hayro_syntax::xref::XRef;
 
+use crate::items::items;
+
 /// Tree nodes visited at most (the per-lookup budget of name trees,
 /// nametree.rs).
 const MAX_NODES: usize = 10_000;
@@ -164,7 +166,7 @@ impl<'p> Walk<'p> {
             }
             let room = MAX_NODES.saturating_sub(self.nodes + stack.len());
             let queued = stack.len();
-            for kid in kids.raw_iter().take(room) {
+            for kid in items(&kids).take(room) {
                 let pending = match kid {
                     MaybeRef::Ref(r) => {
                         let id: ObjectIdentifier = r.into();
@@ -213,9 +215,9 @@ impl<'p> Walk<'p> {
     }
 
     fn read_nums(&mut self, nums: &Array<'p>) {
-        let mut items = nums.raw_iter();
+        let mut pairs = items(nums);
         while self.pairs < MAX_PAIRS && self.bytes <= MAX_SCANNED_BYTES {
-            let (Some(key), Some(value)) = (items.next(), items.next()) else {
+            let (Some(key), Some(value)) = (pairs.next(), pairs.next()) else {
                 return;
             };
             self.pairs += 1;

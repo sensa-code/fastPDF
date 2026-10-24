@@ -29,6 +29,8 @@ use hayro::hayro_syntax::Filter;
 use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, Name, Object, ObjectIdentifier, Stream};
 use hayro::hayro_syntax::page::Page;
 
+use crate::items::{entries, items};
+
 /// Objects visited for one page before the scan gives up. A page whose
 /// resources reach more objects than this is refused rather than rendered
 /// unchecked (padding the resources must not disable the guardrail).
@@ -157,26 +159,33 @@ fn push_value<'a>(out: &mut Vec<Child<'a>>, value: MaybeRef<Object<'a>>) {
 }
 
 fn dict_children<'a>(dict: &Dict<'a>, out: &mut Vec<Child<'a>>) {
-    for (key, value) in dict.entries() {
+    for (key, value) in entries(dict) {
         if !skip_key(&key) {
             push_value(out, value);
         }
     }
 }
 
-fn children<'a>(obj: &Object<'a>) -> Vec<Child<'a>> {
+/// The objects below `obj`. An array with an item that cannot be read
+/// (`crate::items`) is refused: hayro may read past that item while the
+/// scan could not, so what follows it would go unchecked.
+fn children<'a>(obj: &Object<'a>) -> Result<Vec<Child<'a>>, ScanError> {
     let mut out = Vec::new();
     match obj {
         Object::Dict(d) => dict_children(d, &mut out),
         Object::Stream(s) => dict_children(s.dict(), &mut out),
         Object::Array(a) => {
-            for item in a.raw_iter() {
+            let mut it = items(a);
+            for item in it.by_ref() {
                 push_value(&mut out, item);
+            }
+            if it.stopped() {
+                return Err(ScanError::Limit(LimitKind::ObjectSize));
             }
         }
         _ => {}
     }
-    out
+    Ok(out)
 }
 
 /// Root objects of a page: its (inherited) resources, content streams and
@@ -317,7 +326,7 @@ pub(crate) fn scan_page(
             on_stack.insert(id);
         }
         stack.push(Frame {
-            children: children(&obj),
+            children: children(&obj)?,
             next: 0,
             max_child: 0,
             nested: is_nested_content(&obj),
@@ -437,7 +446,10 @@ fn color_components(dict: &Dict<'_>) -> Option<u64> {
                 },
                 b"DeviceN" => match items.next() {
                     Some(Object::Array(names)) => {
-                        Some(names.raw_iter().count() as u64).filter(|n| *n <= 32)
+                        let mut it = crate::items::items(&names);
+                        let count = it.by_ref().count() as u64;
+                        // Unknown when a name cannot be read.
+                        (!it.stopped() && count <= 32).then_some(count)
                     }
                     _ => None,
                 },
