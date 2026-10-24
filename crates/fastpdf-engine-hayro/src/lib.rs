@@ -25,10 +25,14 @@
 //! remaining defense.
 
 mod decode;
+mod dest;
 mod document;
 mod fonts;
 mod geometry;
+mod items;
 mod labels;
+mod links;
+mod nametree;
 mod nav;
 mod pool;
 mod preflight;

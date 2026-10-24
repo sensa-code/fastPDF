@@ -18,7 +18,7 @@ use crate::preflight::Verdict;
 use crate::render::{self, BlockCache};
 use crate::scan::ScanMemo;
 use crate::stats;
-use crate::{labels, nav};
+use crate::{labels, links, nav};
 
 /// Striped locks that serialize the verdict computation of one page.
 const VERDICT_LOCKS: usize = 16;
@@ -399,7 +399,7 @@ impl EngineDocument for HayroDocument {
 
     fn links(&self, page: PageIndex) -> Result<Vec<Link>, EngineError> {
         let generation = self.inner.current();
-        nav::links(&self.inner, &generation, page)
+        links::links(&self.inner, &generation, page)
     }
 
     fn page_labels(&self) -> Result<PageLabels, EngineError> {

@@ -1,32 +1,22 @@
-//! Document outline, link annotations and metadata, read directly with
-//! hayro-syntax's object API (hayro itself does not interpret them).
-//! Everything is iterative and bounded: outlines and name trees in hostile
-//! files can be cyclic or absurdly large.
+//! Document outline and metadata, read directly with hayro-syntax's object
+//! API (hayro itself does not interpret them). Everything is iterative and
+//! bounded: outlines in hostile files can be cyclic or absurdly large.
+//! Link annotations are read in `crate::links`, the targets of both in
+//! `crate::dest`.
 
 use std::collections::HashSet;
 
-use fastpdf_engine_api::{
-    Destination, DestinationView, DocumentMetadata, EngineError, Link, LinkTarget, OutlineItem,
-    PageIndex,
-};
-use hayro::hayro_syntax::object::{
-    Array, DateTime, Dict, MaybeRef, Name, Object, ObjectIdentifier, Rect as PdfRect,
-    String as PdfString,
-};
+use fastpdf_engine_api::{DocumentMetadata, LinkTarget, OutlineItem};
+use hayro::hayro_syntax::object::{DateTime, Dict, ObjectIdentifier, String as PdfString};
 use hayro::hayro_syntax::{Pdf, PdfVersion};
-use hayro::kurbo::Rect;
 
+use crate::dest::DestResolver;
 use crate::document::{DocInner, Generation};
-use crate::geometry::PageGeom;
 
 /// Outline entries returned at most.
 const MAX_OUTLINE_ITEMS: usize = 50_000;
 /// Deepest outline nesting followed.
 const MAX_OUTLINE_DEPTH: usize = 64;
-/// Name-tree nodes visited for one named destination.
-const MAX_NAME_TREE_NODES: usize = 10_000;
-/// Link annotations returned per page.
-const MAX_LINKS: usize = 10_000;
 
 pub(crate) fn metadata(pdf: &Pdf, encrypted: bool) -> DocumentMetadata {
     let m = pdf.metadata();
@@ -116,178 +106,8 @@ fn pdf_doc_char(b: u8) -> char {
     }
 }
 
-/// Converts PDF destinations to FastPDF destinations.
-struct DestResolver<'a, 'p> {
-    doc: &'a DocInner,
-    generation: &'p Generation,
-    catalog: Option<Dict<'p>>,
-}
-
-impl<'a, 'p> DestResolver<'a, 'p> {
-    fn new(doc: &'a DocInner, generation: &'p Generation) -> Self {
-        let xref = generation.pdf.xref();
-        Self {
-            doc,
-            generation,
-            catalog: xref.get::<Dict<'p>>(xref.root_id()),
-        }
-    }
-
-    fn page_geom(&self, page: u32) -> Option<PageGeom> {
-        let pages = self.generation.pdf.pages();
-        pages.get(page as usize).map(PageGeom::from_page)
-    }
-
-    /// A destination value: an explicit array, or a name/string to look up.
-    fn resolve(&self, value: &Object<'p>) -> Option<Destination> {
-        match value {
-            Object::Array(a) => self.explicit(a),
-            Object::Name(n) => self.named(n.as_ref()),
-            Object::String(s) => self.named(s.as_bytes()),
-            // `<< /D [...] >>` form found in /Dests dictionaries.
-            Object::Dict(d) => d.get::<Array<'p>>(b"D").and_then(|a| self.explicit(&a)),
-            _ => None,
-        }
-    }
-
-    fn explicit(&self, array: &Array<'p>) -> Option<Destination> {
-        let mut items = array.raw_iter();
-        let page = match items.next()? {
-            MaybeRef::Ref(r) => {
-                let id: ObjectIdentifier = r.into();
-                *self.doc.page_ids(self.generation).get(&id)?
-            }
-            // Remote-style destinations use a page number.
-            MaybeRef::NotRef(Object::Number(n)) => {
-                let i = n.as_f64();
-                if !(0.0..f64::from(self.doc.page_count())).contains(&i) {
-                    return None;
-                }
-                i as u32
-            }
-            MaybeRef::NotRef(_) => return None,
-        };
-        let geom = self.page_geom(page)?;
-        let kind = match items.next() {
-            Some(MaybeRef::NotRef(Object::Name(n))) => n.as_str().to_owned(),
-            _ => "Fit".to_owned(),
-        };
-        let nums: Vec<Option<f64>> = items
-            .map(|item| match item {
-                MaybeRef::NotRef(Object::Number(n)) => Some(n.as_f64()),
-                _ => None,
-            })
-            .collect();
-        let num = |i: usize| nums.get(i).copied().flatten().filter(|v| v.is_finite());
-        let x = |v: f64| geom.page_point(v, 0.0).0;
-        let y = |v: f64| geom.page_point(0.0, v).1;
-        let view = match kind.as_str() {
-            "XYZ" => DestinationView::Xyz {
-                left: num(0).map(x),
-                top: num(1).map(y),
-                zoom: num(2).filter(|z| *z > 0.0).map(|z| z as f32),
-            },
-            "FitH" | "FitBH" => DestinationView::FitWidth { top: num(0).map(y) },
-            "FitV" | "FitBV" => DestinationView::FitHeight {
-                left: num(0).map(x),
-            },
-            "FitR" => match (num(0), num(1), num(2), num(3)) {
-                (Some(l), Some(b), Some(r), Some(t)) => {
-                    DestinationView::FitRect(geom.page_rect(Rect::new(l, b, r, t)))
-                }
-                _ => DestinationView::Fit,
-            },
-            _ => DestinationView::Fit,
-        };
-        Some(Destination {
-            page: PageIndex::new(page),
-            view,
-        })
-    }
-
-    fn named(&self, name: &[u8]) -> Option<Destination> {
-        let catalog = self.catalog.as_ref()?;
-        // PDF 1.1 style: /Dests dictionary in the catalog.
-        if let Some(dests) = catalog.get::<Dict<'p>>(b"Dests")
-            && let Some(value) = dests.get::<Object<'p>>(name)
-            && let Some(d) = self.resolve_direct(&value)
-        {
-            return Some(d);
-        }
-        // PDF 1.2+: /Names /Dests name tree.
-        let tree = catalog
-            .get::<Dict<'p>>(b"Names")?
-            .get::<Dict<'p>>(b"Dests")?;
-        let value = name_tree_lookup(&tree, name)?;
-        self.resolve_direct(&value)
-    }
-
-    /// Like `resolve` but never follows another name (no lookup loops).
-    fn resolve_direct(&self, value: &Object<'p>) -> Option<Destination> {
-        match value {
-            Object::Array(a) => self.explicit(a),
-            Object::Dict(d) => d.get::<Array<'p>>(b"D").and_then(|a| self.explicit(&a)),
-            _ => None,
-        }
-    }
-
-    /// Target of an action dictionary.
-    fn action(&self, action: &Dict<'p>) -> Option<LinkTarget> {
-        let kind = action.get::<Name<'p>>(b"S")?;
-        match kind.as_str() {
-            "GoTo" => {
-                let d = action.get::<Object<'p>>(b"D")?;
-                self.resolve(&d).map(LinkTarget::Internal)
-            }
-            "URI" => action
-                .get::<PdfString<'p>>(b"URI")
-                .map(|u| LinkTarget::Uri(String::from_utf8_lossy(u.as_bytes()).into_owned())),
-            _ => Some(LinkTarget::Unsupported),
-        }
-    }
-}
-
-/// Looks `key` up in a name tree, iteratively and with a node budget.
-fn name_tree_lookup<'p>(root: &Dict<'p>, key: &[u8]) -> Option<Object<'p>> {
-    let mut stack = vec![root.clone()];
-    let mut seen: HashSet<ObjectIdentifier> = HashSet::new();
-    let mut visited = 0;
-    while let Some(node) = stack.pop() {
-        visited += 1;
-        if visited > MAX_NAME_TREE_NODES {
-            return None;
-        }
-        if let Some(id) = node.obj_id()
-            && !seen.insert(id)
-        {
-            continue;
-        }
-        if let Some(limits) = node.get::<Array<'p>>(b"Limits") {
-            let mut it = limits.iter::<PdfString<'p>>();
-            if let (Some(lo), Some(hi)) = (it.next(), it.next())
-                && (key < lo.as_bytes() || key > hi.as_bytes())
-            {
-                continue;
-            }
-        }
-        if let Some(names) = node.get::<Array<'p>>(b"Names") {
-            let mut it = names.flex_iter();
-            while let Some(k) = it.next::<PdfString<'p>>() {
-                let value = it.next::<Object<'p>>();
-                if k.as_bytes() == key {
-                    return value;
-                }
-            }
-        }
-        if let Some(kids) = node.get::<Array<'p>>(b"Kids") {
-            stack.extend(kids.iter::<Dict<'p>>());
-        }
-    }
-    None
-}
-
 pub(crate) fn outline(doc: &DocInner, generation: &Generation) -> Vec<OutlineItem> {
-    let resolver = DestResolver::new(doc, generation);
+    let mut resolver = DestResolver::new(doc, generation);
     let Some(first) = resolver
         .catalog
         .as_ref()
@@ -323,7 +143,7 @@ pub(crate) fn outline(doc: &DocInner, generation: &Generation) -> Vec<OutlineIte
             Some(node) if count < MAX_OUTLINE_ITEMS => {
                 count += 1;
                 level.next = node.get::<Dict<'_>>(b"Next");
-                let item = outline_item(&resolver, &node);
+                let item = outline_item(&mut resolver, &node);
                 match node.get::<Dict<'_>>(b"First") {
                     Some(child) if depth < MAX_OUTLINE_DEPTH => {
                         levels.push(Level {
@@ -352,7 +172,7 @@ pub(crate) fn outline(doc: &DocInner, generation: &Generation) -> Vec<OutlineIte
     Vec::new()
 }
 
-fn outline_item(resolver: &DestResolver<'_, '_>, node: &Dict<'_>) -> OutlineItem {
+fn outline_item<'p>(resolver: &mut DestResolver<'_, 'p>, node: &Dict<'p>) -> OutlineItem {
     let title = node
         .get::<PdfString<'_>>(b"Title")
         .map(|t| decode_text_string(t.as_bytes()))
@@ -362,59 +182,12 @@ fn outline_item(resolver: &DestResolver<'_, '_>, node: &Dict<'_>) -> OutlineItem
         open: node.get::<i64>(b"Count").is_some_and(|c| c > 0),
         ..OutlineItem::default()
     };
-    if let Some(dest) = node.get::<Object<'_>>(b"Dest") {
-        item.destination = resolver.resolve(&dest);
-    } else if let Some(action) = node.get::<Dict<'_>>(b"A") {
-        match resolver.action(&action) {
-            Some(LinkTarget::Internal(d)) => item.destination = Some(d),
-            Some(LinkTarget::Uri(u)) => item.uri = Some(u),
-            _ => {}
-        }
+    match resolver.target(node) {
+        Some(LinkTarget::Internal(d)) => item.destination = Some(d),
+        Some(LinkTarget::Uri(u)) => item.uri = Some(u),
+        _ => {}
     }
     item
-}
-
-pub(crate) fn links(
-    doc: &DocInner,
-    generation: &Generation,
-    page: PageIndex,
-) -> Result<Vec<Link>, EngineError> {
-    let pages = generation.pdf.pages();
-    let p = pages
-        .get(page.as_usize())
-        .ok_or(EngineError::PageOutOfRange {
-            page,
-            page_count: doc.page_count(),
-        })?;
-    let geom = PageGeom::from_page(p);
-    let resolver = DestResolver::new(doc, generation);
-    let mut out = Vec::new();
-    let Some(annots) = p.raw().get::<Array<'_>>(b"Annots") else {
-        return Ok(out);
-    };
-    for annot in annots.iter::<Dict<'_>>().take(MAX_LINKS) {
-        if annot
-            .get::<Name<'_>>(b"Subtype")
-            .is_none_or(|s| s.as_str() != "Link")
-        {
-            continue;
-        }
-        let Some(rect) = annot.get::<PdfRect>(b"Rect") else {
-            continue;
-        };
-        let target = if let Some(dest) = annot.get::<Object<'_>>(b"Dest") {
-            resolver.resolve(&dest).map(LinkTarget::Internal)
-        } else if let Some(action) = annot.get::<Dict<'_>>(b"A") {
-            resolver.action(&action)
-        } else {
-            None
-        };
-        out.push(Link {
-            bounds: geom.page_rect(Rect::new(rect.x0, rect.y0, rect.x1, rect.y1)),
-            target: target.unwrap_or(LinkTarget::Unsupported),
-        });
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

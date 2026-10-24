@@ -481,6 +481,12 @@ fn malformed_fixtures_never_panic() {
                 "{}",
                 path.display()
             );
+            let l = doc.links(PageIndex::new(page));
+            assert!(
+                !matches!(l, Err(EngineError::Panicked(_))),
+                "{}",
+                path.display()
+            );
         }
         assert!(
             started.elapsed() < Duration::from_secs(60),

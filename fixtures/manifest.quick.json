@@ -86,13 +86,13 @@
     "open_error_expected": "Should be rejected with a clean error (no panic, no hang)."
   },
   "summary": {
-    "files": 88,
-    "bytes": 63990550,
+    "files": 90,
+    "bytes": 66996921,
     "skipped": 0,
     "by_category": {
       "small-text": {
-        "files": 5,
-        "bytes": 25601
+        "files": 6,
+        "bytes": 34810
       },
       "large-text": {
         "files": 2,
@@ -139,8 +139,8 @@
         "bytes": 1065631
       },
       "malformed": {
-        "files": 30,
-        "bytes": 2802500
+        "files": 31,
+        "bytes": 5799662
       },
       "large-page-count": {
         "files": 3,
@@ -1199,6 +1199,28 @@
       "producer": "rawpdf"
     },
     {
+      "path": "malformed/links-flood.pdf",
+      "category": "malformed",
+      "bytes": 2997162,
+      "sha256": "7eac7d6fd5aa261a0d7e1177cdd7955337206eab92d8d090e3aac79161a7a44d",
+      "pages": 1,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "惡意連結：一頁 12,000 個 link annotation（另有 2,000 個重複參照）、名稱樹有循環、200 層鏈與 5 萬個名稱的扁平 leaf（無 /Limits）、10 KiB 網址、共用的 Launch action、1e30 的座標。讀取連結必須有界且快速。",
+      "guardrails": [
+        "§25 infinite recursion",
+        "§25 malformed object tree",
+        "§25 memory exhaustion"
+      ],
+      "features": [
+        "malformed",
+        "link-annotations"
+      ],
+      "producer": "rawpdf"
+    },
+    {
       "path": "malformed/missing-object.pdf",
       "category": "malformed",
       "bytes": 1816,
@@ -1531,6 +1553,25 @@
         "invisible-text",
         "Tr3",
         "searchable-scan"
+      ],
+      "producer": "rawpdf"
+    },
+    {
+      "path": "small-text/links-actions.pdf",
+      "category": "small-text",
+      "bytes": 9209,
+      "sha256": "fe7ffbc493d07157bbe5d444d56d219f96f79fb9e5342f7daa2133126483a41f",
+      "pages": 3,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "3 頁，第 1 頁有 22 個標示框的連結（座標見 fixtures/README.md）：GoTo XYZ、/Names 與 /Dests 的具名目的地、https（query＋fragment）、mailto、IDN 主機、file:、javascript:、data:、Launch、GoToR、JavaScript action、隱藏（/F 2、/F 32）、重疊、反向 /Rect、帳密、引號、bidi、3000 bytes 網址、不存在的具名目的地；第 3 頁 /Rotate 90 有回第 1 頁的連結。",
+      "guardrails": [],
+      "features": [
+        "link-annotations",
+        "uri-links",
+        "named-destinations"
       ],
       "producer": "rawpdf"
     },

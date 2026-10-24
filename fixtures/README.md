@@ -43,7 +43,7 @@ uv run tools/fixtures/verify.py
 
 | 參數 | 說明 |
 | --- | --- |
-| `--profile quick\|full` | quick：84 個檔案、約 62 MB；full：再加 `large-file/` |
+| `--profile quick\|full` | quick：90 個檔案、約 67 MB；full：再加 `large-file/` |
 | `--out DIR` | 輸出目錄，預設 `fixtures/generated` |
 | `--large-file-mb N` | large-file 目標大小（MiB），只在 full 生效，預設 800 |
 | `--jobs N` | 平行 worker 數，預設 CPU 數 |
@@ -62,7 +62,7 @@ uv run tools/fixtures/verify.py
 
 | 分類 | 檔案 | 主要測試點 |
 | --- | --- | --- |
-| `small-text` | 1 頁 Helvetica、3 頁 platypus（Times，含表格、outline、連結）、2 頁 Courier Letter；頁面標籤：8 頁 `/Nums` 陣列（i–iii、1–3、App-A–B）、12 頁 `/Kids` tree（只有前綴、I–III、a–b、UTF-16BE 前綴「附錄-」＋`/St`、重複標籤），每頁印出實體頁碼與應顯示的標籤 | 最基本的開檔與首頁渲染 baseline；頁面標籤與依標籤跳頁 |
+| `small-text` | 1 頁 Helvetica、3 頁 platypus（Times，含表格、outline、連結）、2 頁 Courier Letter；頁面標籤：8 頁 `/Nums` 陣列（i–iii、1–3、App-A–B）、12 頁 `/Kids` tree（只有前綴、I–III、a–b、UTF-16BE 前綴「附錄-」＋`/St`、重複標籤），每頁印出實體頁碼與應顯示的標籤；3 頁連結 fixture（見下節） | 最基本的開檔與首頁渲染 baseline；頁面標籤與依標籤跳頁；連結 |
 | `large-text` | 300 頁單欄 Times 9pt、300 頁雙欄 Helvetica 8pt | 大量 `Tj`、文字抽取順序、outline |
 | `scanned` | 20 頁 300 dpi 灰階 JPEG（雜訊、傾斜、模糊、灰塵、掃描器陰影）；5 頁同類掃描＋隱形 OCR 文字層（`Tr 3`）；10 頁 1-bit CCITT G4 | 每頁一張大圖的 decode、可搜尋掃描檔、CCITT |
 | `image-heavy` | 6 張 3000x2000 照片 JPEG；800 張小縮圖；Flate＋PNG predictor／SMask／16-bit／Indexed 8 與 4-bit／ImageMask／color-key mask／`/Decode`／`/Interpolate`／ICCBased；24 MP JPEG、Adobe CMYK、progressive、灰階、4:4:4、restart markers | 影像 decode 路徑與記憶體 |
@@ -74,9 +74,31 @@ uv run tools/fixtures/verify.py
 | `traditional-chinese` | 模擬公文「函」與醫院檢驗報告，各有 TrueType subset、Type0／Identity-H、非嵌入 MSung-Light 三種版本；掃描版公文（200 dpi 彩色 JPEG＋紅色印章、300 dpi CCITT G4）；Big5 第一字面 5401 字（TrueType subset 與 Type0 各一）；40 頁搜尋選項文件（全形ＰＤＦ與數字、全字陷阱、跨行全形代碼，Type0） | 台灣使用情境（見下節）；搜尋選項與結果清單 |
 | `transparency` | 常數 alpha 重疊、3000 個半透明矩形、半透明文字、RGBA 影像；16 種 blend mode；luminosity／alpha soft mask、isolated／knockout group、巢狀 group、page group | 透明度合成 |
 | `encrypted` | AES-256 R6／R5、AES-128、RC4-128、RC4-40（空 user password＋owner password，限制權限）；AES-256 與 AES-128 需 user password；中文 user password | Standard security handler |
-| `malformed` | 30 個損壞或惡意檔案（見下表） | §24／§25 guardrails |
+| `malformed` | 31 個損壞或惡意檔案（見下表） | §24／§25 guardrails |
 | `large-page-count` | 2000 頁扁平 page tree（reportlab）；2000 頁平衡 page tree＋屬性繼承；2000 頁 object stream＋xref stream＋混合頁面尺寸 | 開檔時間、頁面索引、page tree 走訪 |
 | `large-file` | （僅 full）約 2000 頁、每頁一張獨立 JPEG XObject，總大小約 `--large-file-mb` | §11：2000 頁／800 MB 也要立即可用 |
+
+### 連結（`small-text/links-actions.pdf`）
+
+Letter 尺寸 3 頁。座標是 page space（未旋轉的頁面，以左上角為原點、y 向下，單位 pt），開發腳本的 `link-hover=PAGE,X,Y` 等步驟就用這個座標。第 1 頁每個連結是一個標示框，寬 218 pt、高 36 pt：左欄 x 72–290，右欄 x 322–540；表中的 y 是框的中心（框在 y−18 到 y+18 之間）。
+
+| y | 左欄（x 取 100） | 右欄（x 取 350） |
+| --- | --- | --- |
+| 100 | GoTo 第 3 頁（`/XYZ 0 792 0`） | 隱藏連結（`/F 2`），不應有任何反應 |
+| 160 | `https://example.invalid/path?q=1#frag` | 重疊：整框到第 3 頁，右半（x ≥ 431）在上層到第 2 頁 |
+| 220 | IDN 主機 `https://bücher.example/`（UTF-8） | 反向 `/Rect`，到第 2 頁 |
+| 280 | `file:///C:/Windows/System32/calc.exe` | 網址含帳號密碼 `https://user:secret@example.invalid/` |
+| 340 | `javascript:alert(1)` | 網址含引號 `https://example.invalid/a"b` |
+| 400 | Launch action（`calc.exe`） | 不存在的具名目的地 `nowhere` |
+| 460 | GoToR action（`other.pdf`） | 沒有 scheme 的 `www.example.invalid` |
+| 520 | JavaScript action | 含 U+202E 的網址 |
+| 580 | `mailto:someone@example.invalid?subject=FastPDF%20test` | 3000 bytes 的網址 |
+| 640 | `/Names` 名稱樹的 `chapter-2`（第 2 頁，`/XYZ 72 752`） | NoView 連結（`/F 32`），不應有任何反應 |
+| 700 | catalog `/Dests` 的 `appendix`（第 3 頁，`/FitH`） | `data:text/html,...` |
+
+第 2 頁 (100, 100) 是回第 1 頁的連結（`/Fit`）；第 3 頁 `/Rotate 90`，回第 1 頁的連結（GoTo action）在未旋轉的 page space (100, 100)。
+
+`malformed/links-flood.pdf` 只有 1 頁，12,000 個小連結（其中 2,000 個在 `/Annots` 重複列出）：不存在的具名目的地、指向同一個 10 KiB 字串的 URI、共用的 Launch action、隱藏連結、1e30 的座標與反向 `/Rect`；名稱樹有循環、200 層鏈與 5 萬個名稱的扁平 leaf（沒有 `/Limits`）。
 
 ### 台灣使用情境（`traditional-chinese/`）
 
@@ -119,6 +141,7 @@ uv run tools/fixtures/verify.py
 | `broken-embedded-fonts` | render_partial_ok | 隨機資料或截斷的字型程式、壞掉的 `W` 與 ToUnicode |
 | `content-syntax-errors` | render_partial_ok | 未知運算子、operand 不足、未配對 BT/ET、q/Q 等 |
 | `page-labels-hostile` | open_ok | `/PageLabels` number tree：`/Kids` 循環、200 層鏈、14 萬組 pair、錯誤的 key 與 value、`/St` 超出範圍、未知 `/S`、2 萬字含控制字元與 bidi 的 `/P`（標籤必須有界） |
+| `links-flood` | open_ok | 一頁 12,000 個 link annotation、重複參照、循環與 200 層的名稱樹、5 萬個名稱的扁平 leaf、10 KiB 網址、1e30 座標（讀取連結必須有界且快速） |
 
 bomb 在產生時是逐 MiB 串流壓縮，不會在記憶體中展開。
 

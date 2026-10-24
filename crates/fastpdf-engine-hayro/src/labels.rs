@@ -27,7 +27,8 @@ use hayro::hayro_syntax::Pdf;
 use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, Object, ObjectIdentifier};
 use hayro::hayro_syntax::xref::XRef;
 
-/// Tree nodes visited at most (the same budget as name trees, nav.rs).
+/// Tree nodes visited at most (the per-lookup budget of name trees,
+/// nametree.rs).
 const MAX_NODES: usize = 10_000;
 /// Deepest node visited; real trees are a few levels deep.
 const MAX_DEPTH: usize = 32;
