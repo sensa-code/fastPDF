@@ -77,14 +77,21 @@ impl GoToPage {
 impl ReaderView {
     /// Ctrl+G or a click on the page indicator: the field opens with the
     /// current page's label (or number) selected, so typing replaces it.
+    /// Enter on that text stays on the page: when another page has the same
+    /// label (chapters that restart at 1), or the number is another page's
+    /// label, the field holds `#N` instead.
     pub(crate) fn start_go_to(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let Some(page) = self.session().map(|s| s.current_page()) else {
+        let Some((page, count)) = self.session().map(|s| (s.current_page(), s.page_count())) else {
             return;
         };
         self.ensure_page_labels(cx);
-        let text = self
-            .page_label(page)
-            .unwrap_or_else(|| page.display_number().to_string());
+        let number = page.display_number();
+        let text = self.page_label(page).unwrap_or_else(|| number.to_string());
+        let text = if resolve_page_input(&text, self.page_labels(), count) == Ok(page) {
+            text
+        } else {
+            format!("#{number}")
+        };
         self.go_to.editing = true;
         self.go_to.invalid = None;
         let field = self.go_to.field.clone();
@@ -142,7 +149,9 @@ impl ReaderView {
         }
         self.go_to.editing = false;
         self.go_to.invalid = None;
-        if refocus {
+        // A field that goes away must not keep the keyboard (the reader's
+        // shortcuts would stop working); focus that moved elsewhere stays.
+        if refocus || self.go_to.field.read(cx).focus_handle().is_focused(window) {
             window.focus(&self.focus, cx);
         }
         cx.notify();

@@ -4,7 +4,8 @@
 //! A label wins over a number (as in other readers): in a book whose front
 //! matter is numbered i–x, `5` is the page labeled 5, and `#5` the fifth
 //! page. Full-width forms typed with a CJK input method (`１２`, `＃３`)
-//! count as their ASCII counterparts.
+//! count as their ASCII counterparts, after a label written with them
+//! (`Ａ-1`) had its chance as typed.
 
 use fastpdf_engine_api::display::fold_full_width;
 use fastpdf_engine_api::{PageIndex, PageLabels};
@@ -25,7 +26,8 @@ pub fn resolve_page_input(
     labels: Option<&PageLabels>,
     page_count: u32,
 ) -> Result<PageIndex, PageInputError> {
-    let folded: String = input.chars().map(fold_full_width).collect();
+    let typed = input.trim();
+    let folded: String = typed.chars().map(fold_full_width).collect();
     let text = folded.trim();
     if text.is_empty() {
         return Err(PageInputError::Empty);
@@ -33,9 +35,8 @@ pub fn resolve_page_input(
     if let Some(number) = text.strip_prefix('#') {
         return page_number(number.trim(), page_count).ok_or(PageInputError::NoSuchPage);
     }
-    if let Some(page) = labels
-        .filter(|labels| !labels.is_plain_numbers())
-        .and_then(|labels| labels.find(text))
+    if let Some(labels) = labels.filter(|labels| !labels.is_plain_numbers())
+        && let Some(page) = labels.find(typed).or_else(|| labels.find(text))
     {
         return Ok(page);
     }
@@ -122,6 +123,32 @@ mod tests {
             120,
         );
         assert_eq!(resolve_page_input("12", Some(&plain), 120), page(12));
+    }
+
+    #[test]
+    fn full_width_labels_match_as_written() {
+        let labels = PageLabels::new(
+            vec![
+                PageLabelRange {
+                    first_page: PageIndex::FIRST,
+                    style: PageLabelStyle::Decimal,
+                    prefix: "Ａ-".into(),
+                    start: 1,
+                },
+                PageLabelRange {
+                    first_page: PageIndex::new(2),
+                    style: PageLabelStyle::Decimal,
+                    prefix: "A-".into(),
+                    start: 1,
+                },
+            ],
+            4,
+        );
+        let resolve = |text| resolve_page_input(text, Some(&labels), 4);
+        assert_eq!(resolve("Ａ-2"), page(2));
+        assert_eq!(resolve("A-2"), page(4));
+        // Typed full width, found folded.
+        assert_eq!(resolve("Ａ－２"), page(4));
     }
 
     #[test]
