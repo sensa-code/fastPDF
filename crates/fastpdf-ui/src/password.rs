@@ -219,24 +219,22 @@ impl ReaderView {
                     .whitespace_nowrap()
                     .child(locked.name.clone()),
             )
-            .child(strings.password_hint())
-            .child(
-                div()
-                    .w(px(320.0))
-                    .max_w_full()
-                    .h(px(32.0))
-                    .px_2()
-                    .rounded(px(4.0))
-                    .bg(theme.input_bg)
-                    .border_1()
-                    .border_color(if locked.wrong {
-                        theme.error_text
-                    } else {
-                        theme.toolbar_border
-                    })
-                    .text_size(px(14.0))
-                    .child(locked.field.clone()),
-            );
+            .child(strings.password_hint());
+        let field = div()
+            .w(px(320.0))
+            .max_w_full()
+            .h(px(32.0))
+            .px_2()
+            .rounded(px(4.0))
+            .bg(theme.input_bg)
+            .border_1()
+            .border_color(if locked.wrong {
+                theme.error_text
+            } else {
+                theme.toolbar_border
+            })
+            .text_size(px(14.0))
+            .child(locked.field.clone());
         let buttons = div()
             .flex()
             .flex_row()
@@ -265,6 +263,7 @@ impl ReaderView {
             None,
             strings.password_required().into(),
             body,
+            Some(field.into_any_element()),
             status,
             buttons,
         ))

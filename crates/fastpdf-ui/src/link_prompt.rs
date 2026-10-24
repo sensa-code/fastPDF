@@ -210,6 +210,7 @@ impl ReaderView {
             strings.link_prompt_title(uri.kind()).into(),
             body,
             None,
+            None,
             buttons,
         );
         Some(card.into_any_element())

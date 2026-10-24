@@ -59,10 +59,12 @@ pub(crate) struct PromptStatus {
     pub error: bool,
 }
 
-/// The card with `title`, `body`, a status line and `buttons`, placed on a
-/// scrim that covers the document area. With `focus`, the card itself
-/// takes the keyboard (a prompt without a text field); otherwise a field in
-/// `body` holds it.
+/// The card with `title`, `body`, an optional `field`, a status line and
+/// `buttons`, placed on a scrim that covers the document area. With
+/// `focus`, the card itself takes the keyboard (a prompt without a text
+/// field); otherwise `field` holds it. In a small window the card is as
+/// tall as the document area at most: `body` scrolls, while the title, the
+/// field and the buttons stay in view.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prompt_card(
     id: &'static str,
@@ -71,6 +73,7 @@ pub(crate) fn prompt_card(
     focus: Option<&FocusHandle>,
     title: SharedString,
     body: impl IntoElement,
+    field: Option<AnyElement>,
     status: Option<PromptStatus>,
     buttons: impl IntoElement,
 ) -> impl IntoElement {
@@ -91,8 +94,6 @@ pub(crate) fn prompt_card(
         .when_some(focus, |card, focus| card.track_focus(focus))
         .w(px(CARD_WIDTH))
         .max_w_full()
-        // A small window: the card fits the document area, the body
-        // scrolls and the title and buttons stay.
         .max_h_full()
         .flex()
         .flex_col()
@@ -112,6 +113,9 @@ pub(crate) fn prompt_card(
                 .overflow_y_scroll()
                 .child(body),
         )
+        .when_some(field, |card, field| {
+            card.child(div().flex_none().child(field))
+        })
         .child(status_line)
         .child(
             div()
