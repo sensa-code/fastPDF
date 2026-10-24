@@ -11,7 +11,7 @@
 //! | `open=PATH` | opens a document (replacing the current one) |
 //! | `wait-open` | waits for the document to open (stops if it fails) |
 //! | `wait=MS` | sleeps MS milliseconds |
-//! | `idle` | waits until no tile render is queued or running |
+//! | `idle` | waits for a frame painted after the step started (it plans the tiles), then until no tile render is queued or running |
 //! | `cmd=NAME` | runs a command by name (`ZoomIn`, `Print`, `LayoutTwoPage`, `ToggleDevOverlay`, `CloseDocument`, `Quit`, ...) |
 //! | `find=TEXT` | opens the find bar and searches for TEXT |
 //! | `wait-find` | waits until the search finished |
@@ -351,6 +351,13 @@ impl ReaderView {
                 } else {
                     Pending
                 }
+            }
+            // A command only asks for a frame; the frame schedules the tiles.
+            Step::Idle if !self.render_started.is_some_and(|at| at > started) => {
+                if first {
+                    cx.notify();
+                }
+                Pending
             }
             Step::Idle => match self.session() {
                 Some(session) => {
