@@ -270,7 +270,7 @@ mod tests {
         let text = PageText::new(layer, false);
         let mut originals = Originals::new(layer);
         matcher
-            .find_in(text.text())
+            .find_in(text.text(), text.splits())
             .map(|hit| {
                 let s = snippet(&text, &mut originals, hit);
                 let found = s.hit().map(|r| s.text[r].to_string()).unwrap_or_default();

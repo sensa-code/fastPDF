@@ -388,7 +388,7 @@ fn search_layer(
     room: usize,
 ) -> (Vec<SearchHit>, bool) {
     let mut originals = Originals::new(layer);
-    let mut matches = matcher.find_in(text.text());
+    let mut matches = matcher.find_in(text.text(), text.splits());
     let hits: Vec<SearchHit> = matches
         .by_ref()
         .take(room)

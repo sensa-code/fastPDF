@@ -15,6 +15,9 @@ pub(crate) struct PageText {
     text: String,
     /// Where the tokens come from, in `text` order.
     runs: Vec<Run>,
+    /// Byte offsets in `text` where a gap the CJK rule left out separates
+    /// two words (whole-word boundaries; usually none).
+    splits: Vec<usize>,
 }
 
 /// Tokens from one span on one line whose characters follow each other in
@@ -44,6 +47,9 @@ impl PageText {
         layer.lay_out_lines(CharPos::START..CharPos::END, |piece| match piece {
             LaidText::Char { ch, at } if !ch.is_whitespace() => {
                 let (space, token) = norm.next(ch);
+                if norm.splits_words(&out.text, token) {
+                    out.splits.push(out.text.len());
+                }
                 if space {
                     out.text.push(SPACE);
                     run_len += 1;
@@ -71,6 +77,7 @@ impl PageText {
         });
         out.text.shrink_to_fit();
         out.runs.shrink_to_fit();
+        out.splits.shrink_to_fit();
         out
     }
 
@@ -78,9 +85,16 @@ impl PageText {
         &self.text
     }
 
+    /// Word boundaries without a [`SPACE`] (see [`crate::Matcher`]).
+    pub(crate) fn splits(&self) -> &[usize] {
+        &self.splits
+    }
+
     /// Bytes on the heap (the text cache weighs entries with it).
     pub(crate) fn heap_bytes(&self) -> usize {
-        self.text.capacity() + self.runs.capacity() * std::mem::size_of::<Run>()
+        self.text.capacity()
+            + self.runs.capacity() * std::mem::size_of::<Run>()
+            + self.splits.capacity() * std::mem::size_of::<usize>()
     }
 
     /// Where the tokens at bytes `range` of [`PageText::text`] come from,
@@ -234,7 +248,7 @@ mod tests {
         let t = PageText::new(&l, false);
         assert_eq!(t.text(), "第12條");
         let matcher = crate::Matcher::new("12", false).unwrap();
-        let hit = matcher.find_in(t.text()).next().unwrap();
+        let hit = matcher.find_in(t.text(), t.splits()).next().unwrap();
         // The full-width digits as drawn: the second and third cells.
         assert_eq!(t.rects(&l, hit), vec![PageRect::new(10.0, 0.0, 30.0, 10.0)]);
         let sources: Vec<_> = t

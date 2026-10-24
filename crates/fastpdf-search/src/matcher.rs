@@ -35,7 +35,9 @@ pub(crate) const SPACE: char = ' ';
 ///   single-char lowercase mappings only.
 /// * With [`Matcher::whole_word`], a match that starts (or ends) with a
 ///   word character ([`crate::is_word_char`]) must not have one right
-///   before (or after) it.
+///   before (or after) it, unless a gap the CJK rule left out separates
+///   them (「ＩＳＯ　９００１」, 「Adobe ＰＤＦ」: full-width letters count
+///   as CJK for spacing, yet they are words).
 ///
 /// Hyphens are kept: a word hyphenated at a line end only matches with the
 /// hyphen and a space (「inter- national」).
@@ -117,12 +119,16 @@ impl Matcher {
         // Byte offset in `tokens` and `char` index in `text` of each token.
         let mut at: Vec<(usize, usize)> = Vec::with_capacity(text.len());
         let mut norm = Normalizer::new(self.case_sensitive);
+        let mut splits = Vec::new();
         for (i, c) in text.chars().enumerate() {
             if c.is_whitespace() {
                 norm.gap();
                 continue;
             }
             let (space, token) = norm.next(c);
+            if norm.splits_words(&tokens, token) {
+                splits.push(tokens.len());
+            }
             if space {
                 at.push((tokens.len(), i));
                 tokens.push(SPACE);
@@ -134,7 +140,7 @@ impl Matcher {
             let i = at.partition_point(|&(b, _)| b <= byte).checked_sub(1)?;
             at.get(i).map(|&(_, c)| c)
         };
-        self.find_in(&tokens)
+        self.find_in(&tokens, &splits)
             .filter_map(|r| {
                 Some(Match {
                     start: char_at(r.start)?,
@@ -151,10 +157,12 @@ impl Matcher {
     /// included, so a candidate rejected for a letter next to it does not
     /// hide a valid one inside it (`ab-ab` is found in `xab-ab-ab`, at
     /// 4..9). They are found in one pass, linear in the page and the query
-    /// whatever their overlap.
+    /// whatever their overlap. `splits` are the byte offsets of `tokens`
+    /// where a left-out gap separates two words (sorted).
     pub(crate) fn find_in<'a>(
         &'a self,
         tokens: &'a str,
+        splits: &'a [usize],
     ) -> impl Iterator<Item = Range<usize>> + 'a {
         let starts = if self.whole_word {
             Starts::All(Overlapping::new(tokens, &self.needle, &self.borders))
@@ -162,22 +170,25 @@ impl Matcher {
             Starts::Apart(tokens.match_indices(self.needle.as_str()))
         };
         accepted(starts, self.needle.len(), move |range| {
-            self.is_whole(tokens, range)
+            self.is_whole(tokens, splits, range)
         })
     }
 
     /// Whether the match at `range` of `tokens` stands as the query asks
     /// (always, unless whole words are asked for).
-    fn is_whole(&self, tokens: &str, range: Range<usize>) -> bool {
+    fn is_whole(&self, tokens: &str, splits: &[usize], range: Range<usize>) -> bool {
         if !self.whole_word {
             return true;
         }
+        let joined = |at: usize, next: Option<char>| {
+            next.is_some_and(is_word_char) && splits.binary_search(&at).is_err()
+        };
         let before = tokens
             .get(..range.start)
             .and_then(|t| t.chars().next_back());
         let after = tokens.get(range.end..).and_then(|t| t.chars().next());
-        !(self.word_start && before.is_some_and(is_word_char))
-            && !(self.word_end && after.is_some_and(is_word_char))
+        !(self.word_start && joined(range.start, before))
+            && !(self.word_end && joined(range.end, after))
     }
 
     /// Whether every character of the query occurs on the page. A page
@@ -217,6 +228,8 @@ pub(crate) struct Normalizer {
     gap: bool,
     /// The last character (not folded).
     prev: Option<char>,
+    /// The last character came after a gap that left no [`SPACE`].
+    dropped: bool,
 }
 
 impl Normalizer {
@@ -225,6 +238,7 @@ impl Normalizer {
             case_sensitive,
             gap: false,
             prev: None,
+            dropped: false,
         }
     }
 
@@ -237,9 +251,17 @@ impl Normalizer {
     /// before it, and its own token.
     pub(crate) fn next(&mut self, c: char) -> (bool, char) {
         let space = self.gap && self.prev.is_some_and(|p| !is_cjk(p) && !is_cjk(c));
+        self.dropped = self.gap && !space && self.prev.is_some();
         self.gap = false;
         self.prev = Some(c);
         (space, fold(c, self.case_sensitive))
+    }
+
+    /// Whether `token`, just returned by [`Normalizer::next`] and about to
+    /// follow `tokens`, starts a new word although no [`SPACE`] goes
+    /// between: a gap was left out next to a full-width letter or digit.
+    pub(crate) fn splits_words(&self, tokens: &str, token: char) -> bool {
+        self.dropped && is_word_char(token) && tokens.chars().next_back().is_some_and(is_word_char)
     }
 }
 

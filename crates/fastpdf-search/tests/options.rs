@@ -77,6 +77,24 @@ fn cjk_neighbours_are_word_boundaries() {
 }
 
 #[test]
+fn full_width_words_next_to_a_gap_are_whole_words() {
+    // The CJK spacing rule leaves these gaps out, yet they part words.
+    assert_eq!(find("ISO", "ＩＳＯ　９００１", false, true), vec![(0, 3)]);
+    assert_eq!(find("9001", "ＩＳＯ　９００１", false, true), vec![(4, 8)]);
+    assert_eq!(find("ISO", "ＩＳＯ\n９００１", false, true), vec![(0, 3)]);
+    assert_eq!(find("PDF", "Adobe ＰＤＦ", false, true), vec![(6, 9)]);
+    assert_eq!(find("adobe", "Adobe ＰＤＦ", false, true), vec![(0, 5)]);
+    // Phrases still match without the gap (documented trade-off)...
+    assert_eq!(count("ISO9001", "ＩＳＯ　９００１"), 1);
+    assert_eq!(count("AdobePDF", "Adobe ＰＤＦ"), 1);
+    // ...and words written together stay one word.
+    assert!(find("PDF", "ＦａｓｔＰＤＦ", false, true).is_empty());
+    assert!(find("ISO", "ＩＳＯ９００１", false, true).is_empty());
+    // A gap next to CJK text was never a question: CJK is no word.
+    assert_eq!(find("PDF", "使用 ＰＤＦ 格式", false, true), vec![(3, 6)]);
+}
+
+#[test]
 fn rejected_candidates_are_searched_inside() {
     // The first candidate (1..6) has a letter before it; the whole word
     // overlaps it.
@@ -181,6 +199,16 @@ fn sessions_apply_the_options_and_the_cap() {
         ..SearchQuery::new("pdf")
     };
     assert_eq!(search(doc(1), &whole).0.len(), 3);
+    // Through a page's layout: the gap before full-width letters parts words.
+    let adobe = Lines {
+        text: "Adobe ＰＤＦ reader, ＦａｓｔＰＤＦ".into(),
+        pages: 1,
+    };
+    let whole_pdf = SearchQuery {
+        whole_word: true,
+        ..SearchQuery::new("PDF")
+    };
+    assert_eq!(search(adobe, &whole_pdf).0.len(), 1);
     let cased = SearchQuery {
         case_sensitive: true,
         ..SearchQuery::new("PDF")
