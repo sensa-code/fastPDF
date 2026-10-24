@@ -617,9 +617,16 @@ impl ReaderView {
         let closed_by_this_click =
             matches!(event, ClickEvent::Mouse(m) if dismissed == Some((menu, m.down.position)));
         if !closed_by_this_click {
-            self.menus.open = (!self.menus.is_open(menu)).then_some(menu);
+            self.flip_menu(menu);
         }
         cx.notify();
+    }
+
+    /// Opens `menu`, or closes it when open; nothing opens behind a prompt.
+    pub(crate) fn flip_menu(&mut self, menu: Menu) {
+        if self.active_prompt().is_none() {
+            self.menus.open = (!self.menus.is_open(menu)).then_some(menu);
+        }
     }
 
     /// A press outside the open menu closes it.

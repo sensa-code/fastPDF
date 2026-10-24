@@ -82,6 +82,11 @@ impl ReaderView {
     /// thumbnails, Home/End, search hits and the dev script's `page=` (and
     /// later go-to-page and links) all go through here.
     pub(crate) fn jump(&mut self, kind: Jump, go: impl FnOnce(&mut DocumentSession<TileImage>)) {
+        // Nothing moves behind a prompt card (sidebar clicks and search
+        // hits do not pass through run_command's guard).
+        if self.active_prompt().is_some() {
+            return;
+        }
         self.stop_view_motion();
         if let Some(session) = self.session_mut() {
             session.jump(kind, go);

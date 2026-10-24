@@ -333,6 +333,8 @@ impl ReaderView {
         let theme = self.theme;
         let strings = self.strings();
         let tab = self.sidebar.tab;
+        // Nothing changes behind a prompt card.
+        let free = self.active_prompt().is_none();
         let tabs = div()
             .flex()
             .flex_row()
@@ -346,25 +348,29 @@ impl ReaderView {
                 styled_button(
                     "tab-outline",
                     strings.outline,
-                    true,
+                    free,
                     tab == SidebarTab::Outline,
                     &theme,
                 )
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.set_sidebar_tab(SidebarTab::Outline, window, cx);
-                })),
+                .when(free, |tab| {
+                    tab.on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.set_sidebar_tab(SidebarTab::Outline, window, cx);
+                    }))
+                }),
             )
             .child(
                 styled_button(
                     "tab-pages",
                     strings.pages,
-                    true,
+                    free,
                     tab == SidebarTab::Pages,
                     &theme,
                 )
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.set_sidebar_tab(SidebarTab::Pages, window, cx);
-                })),
+                .when(free, |tab| {
+                    tab.on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.set_sidebar_tab(SidebarTab::Pages, window, cx);
+                    }))
+                }),
             );
         let body = match tab {
             SidebarTab::Outline => self.render_outline(view).into_any_element(),

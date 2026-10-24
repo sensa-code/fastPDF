@@ -6,7 +6,8 @@ use fastpdf_core::keymap::{ReaderCommand, keystrokes_for};
 use gpui::{
     AnyElement, AnyView, App, AppContext, ClickEvent, Context, Div, ElementId, InteractiveElement,
     IntoElement, MouseDownEvent, ParentElement, Render, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, px,
+    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, prelude::FluentBuilder,
+    px,
 };
 
 use crate::i18n::Strings;
@@ -37,15 +38,19 @@ pub(crate) fn render(
         crate::reader::DocState::Open(open) => open.name.clone(),
         _ => SharedString::default(),
     };
+    // While a prompt card blocks the window, only what answers or leaves it
+    // stays clickable; nothing may open behind it.
+    let blocked = view.active_prompt().is_some();
     let tools = Tools {
         theme,
         strings,
         font,
+        blocked,
     };
 
     use ReaderCommand as C;
-    // In a narrow window the end of this row is cut off, never the
-    // settings button after it.
+    // In a narrow window the end of this row (rotation, the title) is cut
+    // off, never the find, night, edit and settings buttons after it.
     let row = div()
         .flex()
         .flex_row()
@@ -150,25 +155,6 @@ pub(crate) fn render(
             has_doc,
             cx,
         ))
-        .child(separator(&theme))
-        .child(tools.toggle(
-            "find",
-            strings.find,
-            strings.tip_find,
-            C::Find,
-            view.find.open,
-            cx,
-        ))
-        // Night mode (inverted pages) is a setting, so it works without a
-        // document too.
-        .child(tools.toggle(
-            "night",
-            strings.night,
-            strings.tip_night,
-            C::ToggleNightMode,
-            view.settings.night_mode,
-            cx,
-        ))
         .child(div().flex_1())
         .child(
             div()
@@ -193,14 +179,35 @@ pub(crate) fn render(
         .border_color(theme.toolbar_border)
         .text_size(px(14.0))
         .child(row)
+        .child(separator(&theme))
+        .child(tools.toggle(
+            "find",
+            strings.find,
+            strings.tip_find,
+            C::Find,
+            view.find.open,
+            cx,
+        ))
+        // Night mode (inverted pages) is a setting, so it works without a
+        // document too.
+        .child(tools.toggle(
+            "night",
+            strings.night,
+            strings.tip_night,
+            C::ToggleNightMode,
+            view.settings.night_mode,
+            cx,
+        ))
         .child(edit_control(view, tools, cx))
         .child(
-            styled_button("settings", "\u{2699}", true, view.settings_open, &theme)
+            styled_button("settings", "\u{2699}", !blocked, view.settings_open, &theme)
                 .text_size(px(16.0))
                 .tooltip(tooltip(strings.tip_settings.into(), theme, font))
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.toggle_settings_panel(cx);
-                })),
+                .when(!blocked, |button| {
+                    button.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.toggle_settings_panel(cx);
+                    }))
+                }),
         )
 }
 
@@ -300,16 +307,18 @@ fn menu_control(
     items: impl FnOnce(&mut Context<'_, ReaderView>) -> Vec<AnyElement>,
 ) -> Div {
     let theme = tools.theme;
-    let open = view.menus.is_open(menu);
+    let open = view.menus.is_open(menu) && !tools.blocked;
     let id = match menu {
         Menu::Layout => "layout",
         Menu::Edit => "edit",
     };
-    let button = styled_button(id, label, true, open, &theme)
+    let button = styled_button(id, label, !tools.blocked, open, &theme)
         .tooltip(tooltip(tip.into(), theme, tools.font))
-        .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-            this.toggle_menu(menu, event, cx);
-        }));
+        .when(!tools.blocked, |button| {
+            button.on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                this.toggle_menu(menu, event, cx);
+            }))
+        });
     let control = div().relative().flex_none().child(button);
     if !open {
         return control;
@@ -502,6 +511,8 @@ struct Tools {
     theme: Theme,
     strings: &'static Strings,
     font: &'static str,
+    /// A prompt card blocks the window (`ReaderView::active_prompt`).
+    blocked: bool,
 }
 
 impl Tools {
@@ -510,6 +521,12 @@ impl Tools {
         self.strings
             .with_shortcut(tip, keystrokes_for(command).next())
             .into()
+    }
+
+    /// Whether `command` may run now: not while a prompt blocks the window,
+    /// unless it answers or leaves the prompt.
+    fn allows(&self, command: ReaderCommand) -> bool {
+        !self.blocked || command.allowed_during_prompt()
     }
 
     /// A button that runs `command`, like its keyboard shortcut.
@@ -522,6 +539,7 @@ impl Tools {
         enabled: bool,
         cx: &mut Context<'_, ReaderView>,
     ) -> Stateful<Div> {
+        let enabled = enabled && self.allows(command);
         let base = styled_button(id, label, enabled, false, &self.theme).tooltip(tooltip(
             self.tip(tip, command),
             self.theme,
@@ -546,11 +564,14 @@ impl Tools {
         on: bool,
         cx: &mut Context<'_, ReaderView>,
     ) -> Stateful<Div> {
-        styled_button(id, label, true, on, &self.theme)
+        let enabled = self.allows(command);
+        styled_button(id, label, enabled, on, &self.theme)
             .tooltip(tooltip(self.tip(tip, command), self.theme, self.font))
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.run_command(command, window, cx);
-            }))
+            .when(enabled, |button| {
+                button.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.run_command(command, window, cx);
+                }))
+            })
     }
 }
 

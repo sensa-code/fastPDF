@@ -20,6 +20,10 @@ const LABEL_WIDTH: f32 = 120.0;
 
 impl ReaderView {
     pub(crate) fn toggle_settings_panel(&mut self, cx: &mut Context<'_, Self>) {
+        // Nothing opens behind a prompt card.
+        if self.active_prompt().is_some() {
+            return;
+        }
         self.settings_open = !self.settings_open;
         cx.notify();
     }

@@ -71,6 +71,8 @@ impl ReaderView {
         window.set_window_title(&format!("{name} - {APP_TITLE}"));
         let focus = field.read(cx).focus_handle().clone();
         window.focus(&focus, cx);
+        // A toolbar menu would float over the prompt.
+        self.menus.open = None;
         self.doc = DocState::Locked(Box::new(LockedDoc {
             path: locked.path.clone(),
             name,

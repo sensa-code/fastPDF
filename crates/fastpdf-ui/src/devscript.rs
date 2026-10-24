@@ -656,14 +656,12 @@ impl ReaderView {
                 Done
             }
             Step::EditMenu => {
-                use crate::reader::Menu;
-                self.menus.open = (!self.menus.is_open(Menu::Edit)).then_some(Menu::Edit);
+                self.flip_menu(crate::reader::Menu::Edit);
                 cx.notify();
                 Done
             }
             Step::LayoutMenu => {
-                use crate::reader::Menu;
-                self.menus.open = (!self.menus.is_open(Menu::Layout)).then_some(Menu::Layout);
+                self.flip_menu(crate::reader::Menu::Layout);
                 cx.notify();
                 Done
             }
