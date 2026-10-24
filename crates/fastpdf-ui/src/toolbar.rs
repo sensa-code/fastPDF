@@ -20,6 +20,7 @@ pub(crate) const HEIGHT: f32 = 40.0;
 
 pub(crate) fn render(
     view: &ReaderView,
+    window: &Window,
     cx: &mut Context<'_, ReaderView>,
 ) -> impl IntoElement + use<> {
     let theme = view.theme;
@@ -98,7 +99,7 @@ pub(crate) fn render(
             has_doc,
             cx,
         ))
-        .child(crate::page_labels::indicator(view))
+        .child(crate::page_labels::indicator(view, window))
         .child(tools.button(
             "next",
             "\u{203a}",

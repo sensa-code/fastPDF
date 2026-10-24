@@ -593,7 +593,14 @@ impl ReaderView {
                 if let Some(image) = &item.image {
                     self.textures.paint(image, rect, None, window);
                 }
-                let label = self.thumbnail_caption(item.page, item.failed);
+                let label = self.thumbnail_caption(
+                    item.page,
+                    item.failed,
+                    &label_font,
+                    px(12.0),
+                    bounds.size.width - px(8.0),
+                    window,
+                );
                 let color = if item.failed {
                     theme.error_text
                 } else {

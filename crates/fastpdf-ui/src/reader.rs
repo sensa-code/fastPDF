@@ -863,7 +863,7 @@ impl Render for ReaderView {
             .font_family(self.language().ui_font())
             .text_color(theme.text)
             .bg(theme.canvas_bg)
-            .child(toolbar::render(self, cx))
+            .child(toolbar::render(self, window, cx))
             .child(
                 div()
                     .flex()
