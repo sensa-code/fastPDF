@@ -24,7 +24,7 @@
 ### 2. 密碼的通道與在記憶體中的時間
 
 - 型別：`fastpdf_engine_api::Password`。`Debug` 只顯示 `Password(<redacted>)`，沒有 `Display`，drop 時以 0 覆寫整個 buffer（含未使用的容量；只用 std：`fill(0)` 加 `std::hint::black_box`）。`OpenOptions.password`、render host 的 `Open` 指令與開發腳本的 step 都用這個型別，所以它們自動產生的 `Debug` 也不會洩漏。
-- 唯一的通道：密碼欄 → `OpenOptions` → reader 行程的 `RemoteEngine`（保留一份，供 host 重啟時重開）→ named pipe 上的 `Open` frame（隨機名稱、first instance、拒絕遠端連線、檢查 client PID）→ host 的 `OpenOptions` → hayro（保留一份，供記憶體壓力時重開）。送出與收到的 `Open` frame 用完即清除；encoder 先預留空間，buffer 不會在寫入密碼後搬移而留下副本。wire format 不變，`PROTOCOL_VERSION` 仍是 1。
+- 唯一的通道：密碼欄 → `OpenOptions` → reader 行程的 `RemoteEngine`（保留一份，供 host 重啟時重開）→ named pipe 上的 `Open` frame（隨機名稱、first instance、拒絕遠端連線、檢查 client PID）→ host 的 `OpenOptions` → hayro（保留一份，供記憶體壓力時重開）。送出與收到的 `Open` frame 用完即清除；encoder 先檢查密碼之後的欄位並預留空間，buffer 不會在寫入密碼後被拒絕丟棄或搬移而留下副本。`Open` 的 wire format 沒有因為密碼而改變（之後 page labels 把 `PROTOCOL_VERSION` 升為 2，與本 ADR 無關）。
 - 不經過：命令列參數、環境變數、檔案、剪貼簿、設定檔、最近開啟的檔案、log、開發腳本的 log、write job。
 - 密碼欄（`TextInput` 的 secret 模式）：
   - 每個字顯示一個 •，GPUI 的文字排版與 line layout cache 只看得到 •；
@@ -33,7 +33,7 @@
   - 上限 1024 bytes，buffer 事先保留，打字時不會搬移；欄位被丟棄時清除。
 - 輸入法維持開啟，才能輸入中文密碼（例如 fixture 的 `測試密碼2026`）；組字中的文字也顯示成 •。代價：有些輸入法會學習輸入過的詞。
 - 文件關閉後，reader 與 host 的兩份副本隨文件一起丟棄並清除。密碼不保存、不重用。
-- 清除只是 best effort，以下不在範圍內：hayro 由密碼推導出的金鑰、host 讀取指令用的 `BufReader`、kernel 的 pipe buffer、輸入法與 GPUI 的事件傳遞、GPUI 讀取剪貼簿時的暫存（FastPDF 自己拿到的副本會清除；系統剪貼簿本身仍保有使用者複製的內容）、WER crash dump。同一個使用者執行的其他程式本來就能讀取這些記憶體。
+- 清除只是 best effort，以下不在範圍內：hayro 由密碼推導出的金鑰、host 讀取指令用的 `BufReader`（之後的指令不一定會覆寫到 `Open` frame 所在的位置）、kernel 的 pipe buffer、輸入法與 GPUI 的事件傳遞、GPUI 讀取剪貼簿時的暫存（FastPDF 自己拿到的副本會清除；系統剪貼簿本身仍保有使用者複製的內容）、WER crash dump。同一個使用者執行的其他程式本來就能讀取這些記憶體。
 
 ### 3. 用密碼開啟的文件不寫入
 
@@ -53,7 +53,9 @@ hayro 不提供權限資訊。列印與複製和現在的 owner-only 文件一�
 
 ### 6. 開發腳本
 
-`password=TEXT`（輸入並確認）與 `password-text=TEXT`（只輸入，用來截圖遮罩後的欄位）只能用 fixture 的密碼。開發腳本只在 debug build 或開啟 dev overlay 時執行；每個 step 的 log 都顯示 `Password(<redacted>)`。
+`password=TEXT`（輸入並確認）、`password-text=TEXT`（只輸入，用來截圖遮罩後的欄位）與 `password-compose=TEXT`（留下未完成的輸入法組字）只能用 fixture 的密碼。開發腳本只在 debug build 或開啟 dev overlay 時執行；每個 step 的 log 都顯示 `Password(<redacted>)`。
+
+`FASTPDF_DEV_SCRIPT` 是環境變數：render host 與 `--write-job` 子行程會繼承 reader 的環境（建立子行程時沒有另給環境區塊），所以腳本裡的 fixture 密碼也在它們的環境裡。子行程不讀這個變數；這也是只能用 fixture 密碼的原因之一。
 
 ## Consequences
 

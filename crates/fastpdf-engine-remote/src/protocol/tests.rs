@@ -862,9 +862,21 @@ fn unencodable_commands_fail_instead_of_truncating() {
         document: None,
         path: None,
         password: None,
-        limits,
+        limits: limits.clone(),
     });
     assert!(encode_command(&open).is_err());
+    // Refused before the password is written (nothing unwiped is dropped).
+    let open = Command::Open(Open {
+        id: 1,
+        document: None,
+        path: None,
+        password: Some(Password::from("pw")),
+        limits,
+    });
+    assert_eq!(
+        encode_command(&open),
+        Err(ProtocolError::Unencodable("page dimension limit"))
+    );
 }
 
 #[test]

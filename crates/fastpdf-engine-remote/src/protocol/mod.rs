@@ -434,6 +434,9 @@ pub(crate) fn encode_command(cmd: &Command) -> Result<Vec<u8>> {
                 }
                 None => e.u8(0),
             }
+            // Everything after the password is checked first: a frame
+            // refused once the password is in it would be dropped unwiped.
+            check_limits(&open.limits)?;
             match &open.password {
                 Some(p) => {
                     // Room for the rest of the frame, so the buffer is not
@@ -696,10 +699,17 @@ fn get_section(d: &mut Decoder<'_>) -> Result<SectionRef> {
     Ok(SectionRef { handle, len })
 }
 
-fn put_limits(e: &mut Encoder, l: &ResourceLimits) -> Result<()> {
-    if !(l.max_page_dimension_pt.is_finite() && l.max_page_dimension_pt > 0.0) {
-        return Err(ProtocolError::Unencodable("page dimension limit"));
+/// Fails for limits the wire cannot carry.
+fn check_limits(l: &ResourceLimits) -> Result<()> {
+    if l.max_page_dimension_pt.is_finite() && l.max_page_dimension_pt > 0.0 {
+        Ok(())
+    } else {
+        Err(ProtocolError::Unencodable("page dimension limit"))
     }
+}
+
+fn put_limits(e: &mut Encoder, l: &ResourceLimits) -> Result<()> {
+    check_limits(l)?;
     e.u64(l.max_bitmap_bytes);
     e.u32(l.max_bitmap_dimension);
     e.f32(l.max_page_dimension_pt);

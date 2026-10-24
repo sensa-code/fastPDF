@@ -202,8 +202,9 @@ fn next_command(pipe: &mut impl Read) -> Result<Option<Command>, NextError> {
         Ok(Some(mut payload)) => {
             let command = decode_command(&payload);
             // An Open frame carries the password, and a frame that does not
-            // decode may be one (ADR 0014). The pipe's read buffer is
-            // overwritten by later commands.
+            // decode may be one (ADR 0014). The copy in the command pipe's
+            // `BufReader` is not wiped: later commands need not reach it
+            // (best effort, ADR 0014 section 2).
             if matches!(command, Ok(Command::Open(_)) | Err(_)) {
                 wipe_vec(&mut payload);
             }
