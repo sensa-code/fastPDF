@@ -37,7 +37,7 @@
 - 以 WHATWG URL parser（`url` crate，本來就在 GPUI 的依賴樹中）正規化：國際化網域轉成 punycode（`bücher.example` → `xn--bcher-kva.example`），不安全的字元 percent-encode。不是絕對網址的（`www.example.com`、檔案路徑、UNC）拒絕。
 - 網址含帳號或密碼的拒絕（`https://bank.example@evil.example/` 看起來像銀行）。
 - 正規化後必須仍不超過 2048 bytes，而且只含可列印的 ASCII、沒有 `"`：無法在處理程式的命令列夾帶參數。
-- `mailto:` 的收件人可以在 path 或只在 query（RFC 6068）；空的 `mailto:` 拒絕。
+- `mailto:` 的收件人可以在 path 或只在 query（RFC 6068）；空的 `mailto:` 拒絕。query 只允許 `to`、`cc`、`bcc`、`subject`、`body`、`in-reply-to`（大小寫不拘），其他欄位一律拒絕並說明是哪個欄位：有些郵件程式會依 `attach`／`attachment` 夾帶本機檔案，指向 UNC 路徑時還可能送出使用者的 NTLM 認證。
 
 ### 4. 每次點擊都要確認
 

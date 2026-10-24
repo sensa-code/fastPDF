@@ -70,6 +70,15 @@ impl Strings {
                 "網址含有不安全的字元",
             ),
             LinkBlock::Uri(UriRejection::Empty) => text("the address is empty", "網址是空的"),
+            LinkBlock::Uri(UriRejection::MailField(field)) => {
+                if zh {
+                    format!("郵件連結設定了 FastPDF 不允許的欄位「{field}」")
+                } else {
+                    format!(
+                        "the email link sets \u{201c}{field}\u{201d}, which FastPDF does not allow"
+                    )
+                }
+            }
             // A reason a later fastpdf-shell adds.
             LinkBlock::Uri(_) => text("the address is not supported", "不支援這個網址"),
         }
@@ -159,6 +168,7 @@ mod tests {
             LinkBlock::Uri(UriRejection::Scheme("file".into())),
             LinkBlock::Uri(UriRejection::Credentials),
             LinkBlock::Uri(UriRejection::UnsafeCharacters),
+            LinkBlock::Uri(UriRejection::MailField("attach".into())),
         ];
         for why in &reasons {
             let (e, z) = (en.link_block_reason(why), zh.link_block_reason(why));

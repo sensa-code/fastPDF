@@ -12,6 +12,8 @@
 //! parser would silently drop tabs and line breaks (`java\nscript:`) and
 //! the others hide what the address really says.
 
+mod mailto;
+
 use std::fmt;
 
 use url::Url;
@@ -82,6 +84,10 @@ pub enum UriRejection {
     /// Control, bidi or zero-width characters, or characters that would
     /// leave the normalized address unsafe to pass on.
     UnsafeCharacters,
+    /// A mail link sets a field other than to, cc, bcc, subject, body and
+    /// in-reply-to (`attach` can attach local files in some mail apps):
+    /// its name, lowercase, at most 32 ASCII letters, digits, `-` or `_`.
+    MailField(String),
 }
 
 impl fmt::Display for UriRejection {
@@ -93,6 +99,7 @@ impl fmt::Display for UriRejection {
             Self::Scheme(s) => write!(f, "\"{s}:\" links are not opened"),
             Self::Credentials => f.write_str("the address contains a user name or password"),
             Self::UnsafeCharacters => f.write_str("the address contains unsafe characters"),
+            Self::MailField(name) => write!(f, "the mail link sets the field \"{name}\""),
         }
     }
 }
@@ -129,6 +136,9 @@ pub fn check_external_uri(raw: &str) -> Result<ExternalUri, UriRejection> {
             // query (`mailto:?to=...`); a bare `mailto:` says nothing.
             if url.path().is_empty() && url.query().is_none_or(str::is_empty) {
                 return Err(UriRejection::Malformed);
+            }
+            if let Some(field) = url.query().and_then(mailto::refused_field) {
+                return Err(UriRejection::MailField(field));
             }
             (UriKind::Mail, None)
         }
@@ -288,6 +298,14 @@ mod tests {
             ("https://bank.example@evil.example/", R::Credentials),
             ("mailto:some one@example.invalid", R::UnsafeCharacters),
             ("mailto:a\"b@example.invalid", R::UnsafeCharacters),
+            (
+                "mailto:a@example.invalid?subject=x&attach=C:%5Cx.txt",
+                R::MailField("attach".into()),
+            ),
+            (
+                "mailto:?Attachment=%5C%5Cserver%5Cshare%5Cf",
+                R::MailField("attachment".into()),
+            ),
             (long.as_str(), R::TooLong),
             (grows.as_str(), R::TooLong),
         ];
