@@ -1728,6 +1728,7 @@ dependencies = [
 name = "fastpdf-shell"
 version = "0.0.2"
 dependencies = [
+ "url",
  "windows-sys 0.61.2",
 ]
 

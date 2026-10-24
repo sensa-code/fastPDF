@@ -60,11 +60,13 @@ serde = { version = "1.0.229", features = ["derive"] } # bench JSON only
 serde_json = "1.0.151"      # bench JSON only
 windows-sys = "0.61.2"      # Win32 process metrics / file APIs; no runtime cost
 # Already in GPUI's dependency graph (no new crates); named here because
-# GPUI does not re-export them. Only fastpdf-ui / fastpdf-app use them.
+# GPUI does not re-export them. Only fastpdf-ui / fastpdf-app use them, and
+# fastpdf-shell uses url.
 futures = "0.3"             # render workers -> UI thread wake channel
 image = { version = "0.25", default-features = false } # GPUI RenderImage frames
 log = "0.4"                 # logging facade (FASTPDF_LOG, spec §31)
 raw-window-handle = "0.6"   # the window a smart card's PIN dialog belongs to (signing)
+url = "2.5"                 # checking external link addresses (ADR 0015)
 # Build-time only: compiles fastpdf.exe's icon + VERSIONINFO (fastpdf-app
 # build.rs, spec §33). Already a GPUI build-dependency (windows-manifest), so
 # no new crate; MIT.

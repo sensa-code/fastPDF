@@ -1,6 +1,6 @@
 [package]
 name = "fastpdf-shell"
-description = "Windows shell integration plans (per-user .pdf file association)"
+description = "Windows shell integration: .pdf file association plans, opening confirmed external links"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,12 +8,17 @@ publish.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# No dependencies on other platforms: plans are plain data. Only the Windows
-# executor (`apply`) talks to the registry.
+# Plans are plain data; link addresses are checked with `url` (already in
+# GPUI's dependency graph). Only the Windows executor (`apply`) talks to the
+# registry, and only `launch` to ShellExecuteEx (with COM initialized).
+[dependencies]
+url.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_Com",
     "Win32_System_Registry",
     "Win32_UI_Shell",
 ] }

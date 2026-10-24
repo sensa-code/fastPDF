@@ -1,5 +1,7 @@
 //! Windows shell integration: per-user `.pdf` file association plans
-//! (spec §33: file association, Explorer integration).
+//! (spec §33: file association, Explorer integration), and opening an
+//! allowlisted external link after the user confirmed it (ADR 0015:
+//! [`check_external_uri`], [`open_external`]).
 //!
 //! A [`Plan`] is plain data: the registry writes (or deletions) that make
 //! FastPDF appear in Explorer's "Open with" menu and in Settings > Apps >
@@ -27,8 +29,12 @@ use std::path::Path;
 
 #[cfg(windows)]
 mod apply;
+mod launch;
+mod uri;
 #[cfg(windows)]
 pub use apply::{ApplyError, apply};
+pub use launch::{OpenError, open_external};
+pub use uri::{ExternalUri, MAX_URI_LEN, UriKind, UriRejection, check_external_uri};
 
 /// ProgID for PDF documents opened by FastPDF.
 pub const PROG_ID: &str = "FastPDF.Document";

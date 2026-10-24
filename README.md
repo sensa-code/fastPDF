@@ -82,7 +82,7 @@ crates/
   fastpdf-ui/            GPUI views（唯一依賴 GPUI 的 library crate）
   fastpdf-app/           執行檔 `fastpdf`
   fastpdf-print/         Win32 列印（分段 render）
-  fastpdf-shell/         Windows 檔案關聯（per-user HKCU 註冊計畫）
+  fastpdf-shell/         Windows 檔案關聯（per-user HKCU 註冊計畫）、外部連結的檢查與開啟
   fastpdf-bench/         無 GUI 的 benchmark harness
 docs/                    spec、audit、ADR、profiling、development guide
 fixtures/                測試語料說明（產出不 commit）
