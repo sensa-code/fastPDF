@@ -73,7 +73,9 @@ mod window_placement;
 
 pub use actions::{KEY_CONTEXT, bind_keys};
 pub use bench::{BenchEvent, BenchHook};
-pub use document::{OpenFailure, OpenedDocument, PendingOpen, open_document_blocking};
+pub use document::{
+    LockedSource, OpenFailure, OpenedDocument, PendingOpen, open_document_blocking,
+};
 pub use reader::{ReaderOptions, ReaderView, WriteRunner, open_reader_window};
 pub use startup::{ScreenGuess, Startup};
 pub use textures::DEFAULT_UPLOAD_BUDGET;

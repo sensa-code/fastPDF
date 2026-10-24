@@ -1059,7 +1059,8 @@ impl Strings {
                     format!("The file is too large to open ({mib:.0} MiB).")
                 }
             }
-            OpenFailure::Engine(EngineError::PasswordRequired | EngineError::InvalidPassword) => {
+            OpenFailure::Locked(_)
+            | OpenFailure::Engine(EngineError::PasswordRequired | EngineError::InvalidPassword) => {
                 self.password_protected.into()
             }
             OpenFailure::Engine(EngineError::Malformed(m)) => detail(
@@ -1130,7 +1131,13 @@ pub(crate) fn display_keystroke(keystroke: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use fastpdf_core::loader::LoadStrategy;
+    use fastpdf_engine_api::{DocumentSource, SharedBytes};
+
     use super::*;
+    use crate::document::LockedSource;
 
     #[test]
     fn windows_ui_languages_map_to_tables() {
@@ -1225,6 +1232,15 @@ mod tests {
         assert_eq!(zh.open_failure(&missing), zh.file_not_found);
         let locked = OpenFailure::Engine(EngineError::PasswordRequired);
         assert_eq!(en.open_failure(&locked), en.password_protected);
+        let locked = OpenFailure::Locked(Box::new(LockedSource {
+            path: PathBuf::from("a.pdf"),
+            source: DocumentSource::from_bytes(SharedBytes::from_vec(Vec::new())),
+            strategy: LoadStrategy::Read,
+            file_bytes: 0,
+            load_ms: 0.0,
+            wrong_password: true,
+        }));
+        assert_eq!(zh.open_failure(&locked), zh.password_protected);
         let broken = OpenFailure::Engine(EngineError::Malformed("no xref".into()));
         assert_eq!(
             zh.open_failure(&broken),

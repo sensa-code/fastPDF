@@ -8,7 +8,7 @@ use std::time::Instant;
 use fastpdf_core::DocumentSession;
 use fastpdf_core::loader::{self, LoadError, LoadStrategy};
 use fastpdf_engine_api::{
-    DocumentSource, EngineDocument, EngineError, GuardedDocument, OpenOptions, PageIndex,
+    DocumentSource, EngineDocument, EngineError, GuardedDocument, OpenOptions, PageIndex, Password,
     PdfEngine, open_guarded,
 };
 use futures::channel::oneshot;
@@ -27,6 +27,8 @@ pub struct OpenedDocument {
     pub load_ms: f64,
     /// Time spent in the engine's open plus the first page's geometry.
     pub open_ms: f64,
+    /// Opened with a password: nothing writes this document (ADR 0014).
+    pub password_protected: bool,
 }
 
 /// Why a document could not be opened. Displayed to the user as is.
@@ -34,6 +36,9 @@ pub struct OpenedDocument {
 pub enum OpenFailure {
     Load(LoadError),
     Engine(EngineError),
+    /// The document is encrypted and needs a password, or the one given did
+    /// not open it. The loaded file is kept for the next attempt.
+    Locked(Box<LockedSource>),
     /// The opening thread went away without an answer.
     Abandoned,
 }
@@ -42,16 +47,42 @@ impl fmt::Display for OpenFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Load(e) => e.fmt(f),
-            Self::Engine(EngineError::PasswordRequired) => {
-                f.write_str("this document is password protected (not supported yet)")
-            }
             Self::Engine(e) => e.fmt(f),
+            Self::Locked(locked) if locked.wrong_password => {
+                f.write_str("the password did not open the document")
+            }
+            Self::Locked(_) => f.write_str("a password is needed"),
             Self::Abandoned => f.write_str("opening was interrupted"),
         }
     }
 }
 
 impl std::error::Error for OpenFailure {}
+
+/// A loaded (read or mapped) file that is not open yet: the input of
+/// [`open_loaded`], and what an encrypted document keeps while it asks for
+/// its password, so each attempt reuses the bytes or the file handle.
+pub struct LockedSource {
+    pub(crate) path: PathBuf,
+    /// Shared bytes; cloning it does not copy the file.
+    pub(crate) source: DocumentSource,
+    pub(crate) strategy: LoadStrategy,
+    pub(crate) file_bytes: usize,
+    /// Time spent getting the bytes (read or map).
+    pub(crate) load_ms: f64,
+    /// A password was given and did not open the document.
+    pub(crate) wrong_password: bool,
+}
+
+impl fmt::Debug for LockedSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LockedSource")
+            .field("path", &self.path)
+            .field("file_bytes", &self.file_bytes)
+            .field("wrong_password", &self.wrong_password)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Reads `path` and opens it with `engine`. Blocking; run it off the UI
 /// thread. Only the minimum is done (spec §11): load or map the bytes, let
@@ -61,28 +92,67 @@ pub fn open_document_blocking(
     engine: &dyn PdfEngine,
     path: &Path,
 ) -> Result<OpenedDocument, OpenFailure> {
+    open_loaded(engine, load_source(path)?, None)
+}
+
+/// Loads (reads or maps) `path` for [`open_loaded`].
+pub(crate) fn load_source(path: &Path) -> Result<LockedSource, OpenFailure> {
     let started = Instant::now();
     let loaded = loader::load(path).map_err(OpenFailure::Load)?;
-    let loaded_at = Instant::now();
     let file_bytes = loaded.bytes.len();
-    let source = DocumentSource::from_bytes(loaded.bytes).with_path(path);
-    let doc = open_guarded(engine, source, &OpenOptions::default()).map_err(OpenFailure::Engine)?;
-    // Cached by GuardedDocument; errors surface again (as page errors) later.
-    let _ = doc.page_info(PageIndex::FIRST);
-    let done = Instant::now();
-    let opened = OpenedDocument {
+    Ok(LockedSource {
         path: path.to_path_buf(),
-        doc: Arc::new(doc),
+        source: DocumentSource::from_bytes(loaded.bytes).with_path(path),
         strategy: loaded.strategy,
         file_bytes,
-        load_ms: ms(loaded_at - started),
-        open_ms: ms(done - loaded_at),
+        load_ms: ms(started.elapsed()),
+        wrong_password: false,
+    })
+}
+
+/// Opens a loaded file, with `password` for an encrypted document. Blocking.
+/// When the document needs a password, or a different one, it comes back as
+/// [`OpenFailure::Locked`] with the same bytes.
+pub(crate) fn open_loaded(
+    engine: &dyn PdfEngine,
+    loaded: LockedSource,
+    password: Option<Password>,
+) -> Result<OpenedDocument, OpenFailure> {
+    let started = Instant::now();
+    let password_protected = password.is_some();
+    let options = OpenOptions {
+        password,
+        ..OpenOptions::default()
+    };
+    let opened = open_guarded(engine, loaded.source.clone(), &options);
+    // The engine keeps its own copy; this one is wiped now.
+    drop(options);
+    let doc = match opened {
+        Ok(doc) => doc,
+        Err(EngineError::PasswordRequired | EngineError::InvalidPassword) => {
+            return Err(OpenFailure::Locked(Box::new(LockedSource {
+                wrong_password: password_protected,
+                ..loaded
+            })));
+        }
+        Err(e) => return Err(OpenFailure::Engine(e)),
+    };
+    // Cached by GuardedDocument; errors surface again (as page errors) later.
+    let _ = doc.page_info(PageIndex::FIRST);
+    let opened = OpenedDocument {
+        path: loaded.path,
+        doc: Arc::new(doc),
+        strategy: loaded.strategy,
+        file_bytes: loaded.file_bytes,
+        load_ms: loaded.load_ms,
+        open_ms: ms(started.elapsed()),
+        password_protected,
     };
     log::info!(
         "opened {} ({} pages, {} bytes {}) load {:.1} ms, open {:.1} ms",
-        path.display(),
+        opened.path.display(),
         opened.doc.page_count(),
-        file_bytes,
+        opened.file_bytes,
         opened.strategy,
         opened.load_ms,
         opened.open_ms
@@ -172,5 +242,121 @@ impl PendingOpen {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fastpdf_engine_api::{
+        CancelToken, EngineCapabilities, EngineInfo, PageInfo, PageSize, PixmapMut, RenderOutcome,
+        RenderRequest, Rotation, SharedBytes,
+    };
+
+    use super::*;
+
+    /// One letter page; bytes that start with "locked" need the password "pw".
+    struct Engine;
+    struct Doc;
+
+    impl PdfEngine for Engine {
+        fn info(&self) -> EngineInfo {
+            EngineInfo {
+                name: "test",
+                version: "0",
+                capabilities: EngineCapabilities::default(),
+            }
+        }
+
+        fn open(
+            &self,
+            source: DocumentSource,
+            options: &OpenOptions,
+        ) -> Result<Box<dyn EngineDocument>, EngineError> {
+            if source.data.as_slice().starts_with(b"locked") {
+                match options.password.as_ref().map(Password::as_str) {
+                    None | Some("") => return Err(EngineError::PasswordRequired),
+                    Some("pw") => {}
+                    Some(_) => return Err(EngineError::InvalidPassword),
+                }
+            }
+            Ok(Box::new(Doc))
+        }
+    }
+
+    impl EngineDocument for Doc {
+        fn page_count(&self) -> u32 {
+            1
+        }
+
+        fn page_info(&self, _: PageIndex) -> Result<PageInfo, EngineError> {
+            Ok(PageInfo {
+                size: PageSize::LETTER,
+                rotation: Rotation::R0,
+            })
+        }
+
+        fn render(
+            &self,
+            _: &RenderRequest,
+            _: &mut PixmapMut<'_>,
+            _: &CancelToken,
+        ) -> Result<RenderOutcome, EngineError> {
+            Ok(RenderOutcome::default())
+        }
+    }
+
+    fn loaded(bytes: &[u8]) -> LockedSource {
+        LockedSource {
+            path: PathBuf::from("test.pdf"),
+            source: DocumentSource::from_bytes(SharedBytes::from_vec(bytes.to_vec()))
+                .with_path("test.pdf"),
+            strategy: LoadStrategy::Read,
+            file_bytes: bytes.len(),
+            load_ms: 0.0,
+            wrong_password: false,
+        }
+    }
+
+    fn locked(result: Result<OpenedDocument, OpenFailure>) -> Box<LockedSource> {
+        match result {
+            Err(OpenFailure::Locked(locked)) => locked,
+            other => panic!("not locked: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encrypted_documents_stay_loaded_until_a_password_opens_them() {
+        let first = locked(open_loaded(&Engine, loaded(b"locked"), None));
+        assert!(!first.wrong_password);
+        let bytes = first.source.data.as_slice().as_ptr();
+        let second = locked(open_loaded(&Engine, *first, Some(Password::from("bad"))));
+        assert!(second.wrong_password);
+        // The same bytes: the file is not read again for the next attempt.
+        assert_eq!(second.source.data.as_slice().as_ptr(), bytes);
+        let opened = open_loaded(&Engine, *second, Some(Password::from("pw"))).unwrap();
+        assert!(opened.password_protected);
+        assert_eq!(opened.doc.page_count(), 1);
+        assert_eq!(opened.path, PathBuf::from("test.pdf"));
+    }
+
+    #[test]
+    fn plain_documents_open_without_a_password() {
+        let opened = open_loaded(&Engine, loaded(b"plain"), None).unwrap();
+        assert!(!opened.password_protected);
+    }
+
+    #[test]
+    fn locked_failures_never_show_the_password() {
+        let wrong = open_loaded(
+            &Engine,
+            loaded(b"locked"),
+            Some(Password::from("zq9-secret")),
+        )
+        .unwrap_err();
+        let text = format!("{wrong} {wrong:?}");
+        assert!(!text.contains("zq9"), "{text}");
+        assert_eq!(wrong.to_string(), "the password did not open the document");
+        let needed = open_loaded(&Engine, loaded(b"locked"), None).unwrap_err();
+        assert_eq!(needed.to_string(), "a password is needed");
     }
 }
