@@ -301,6 +301,22 @@ fn rejected_objects_count_against_the_byte_budget() {
     assert_eq!(all[0].as_deref(), Some("p"));
     assert_eq!(all[40].as_deref(), Some("7"));
 
+    // An indirect number does not tell what reading it cost: each distinct
+    // /St costs the fixed share, so the sixteenth ends the walk and the
+    // ranges after it (here "i" on page 18) are never read.
+    let mut nums = String::new();
+    let mut objects: Vec<(u32, String)> = Vec::new();
+    for i in 0..17u32 {
+        nums.push_str(&format!("{i} << /S /D /St {} 0 R >> ", 101 + i));
+        objects.push((101 + i, format!("{}", 10 + i)));
+    }
+    nums.push_str("17 << /S /r >>");
+    objects.push((100, format!("<< /Nums [{nums}] >>")));
+    let (labels, all) = labels_of(document(18, "/PageLabels 100 0 R", &objects));
+    assert_eq!(all[0].as_deref(), Some("10"));
+    assert_eq!(labels.ranges().len(), 15);
+    assert_eq!(all[17].as_deref(), Some("27"));
+
     // Streams answer with their dictionary: their data and /Length are
     // never read, so a broken stream (an indirect /Length to a missing
     // object, no endstream) costs nothing more than its dictionary.

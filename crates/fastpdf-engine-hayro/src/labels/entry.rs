@@ -2,7 +2,10 @@
 //! and `/St` (start). Each may be written directly or as a reference; a
 //! referenced value is read once per object (remembered in the walk), as
 //! the type it must be, and charged like every other reference: by size
-//! when it is that type, a fixed share of the budget when it is not.
+//! when it is that type, a fixed share of the budget when it is not. A
+//! number does not tell how much text it took to read (`0000…7`), so an
+//! indirect `/St` always costs that fixed share. Reading stops as soon as
+//! the budget is spent.
 
 use fastpdf_engine_api::display::clean_display;
 use fastpdf_engine_api::{PageLabelStyle, PageLabels};
@@ -24,22 +27,30 @@ impl<'p> Walk<'p> {
             Some(MaybeRef::Ref(r)) => self.indirect_style(r.into()),
             None => PageLabelStyle::None,
         };
+        self.within_budget()?;
         let start = match dict.get_raw::<i64>(b"St") {
             Some(MaybeRef::NotRef(st)) => start_from(st),
             Some(MaybeRef::Ref(r)) => self.indirect_start(r.into()),
             None => 1,
         };
+        self.within_budget()?;
         let prefix = match dict.get_raw::<PdfString<'p>>(b"P") {
             // Part of the dictionary's bytes, already charged.
             Some(MaybeRef::NotRef(text)) => prefix_text(&text),
             Some(MaybeRef::Ref(r)) => self.indirect_prefix(r.into())?,
             None => String::new(),
         };
-        (self.bytes <= super::MAX_SCANNED_BYTES).then_some(Entry {
+        self.within_budget()?;
+        Some(Entry {
             style,
             prefix,
             start,
         })
+    }
+
+    /// `Some` while the byte budget lasts.
+    fn within_budget(&self) -> Option<()> {
+        (self.bytes <= super::MAX_SCANNED_BYTES).then_some(())
     }
 
     /// An indirect `/S`; anything but a name means no numbers.
@@ -72,13 +83,9 @@ impl<'p> Walk<'p> {
         if self.starts.len() >= MAX_INDIRECT_VALUES {
             return 1;
         }
-        let start = match self.xref().get::<i64>(id) {
-            Some(st) => start_from(st),
-            None => {
-                self.reject();
-                1
-            }
-        };
+        // Charged whatever comes back: see the module comment.
+        let start = self.xref().get::<i64>(id).map_or(1, start_from);
+        self.reject();
         self.starts.insert(id, start);
         start
     }
