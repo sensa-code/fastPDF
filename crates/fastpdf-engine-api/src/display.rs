@@ -23,6 +23,20 @@ pub fn is_format_control(c: char) -> bool {
 /// Marks text that was cut by [`clean_display`].
 const ELLIPSIS: char = '\u{2026}';
 
+/// How [`clean_display`] shows one character: format controls
+/// ([`is_format_control`]) not at all, C0/C1 controls and line or
+/// paragraph separators as a space, everything else as it is. For text
+/// that is cut or marked up elsewhere (search snippets).
+pub fn display_char(c: char) -> Option<char> {
+    if is_format_control(c) {
+        None
+    } else if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+        Some(' ')
+    } else {
+        Some(c)
+    }
+}
+
 /// `text` made safe for a one-line display: C0/C1 controls and line or
 /// paragraph separators become spaces, format controls
 /// ([`is_format_control`]) are removed, and the result is at most
@@ -34,15 +48,7 @@ const ELLIPSIS: char = '\u{2026}';
 pub fn clean_display(text: &str, max_bytes: usize) -> String {
     let mut out = String::with_capacity(text.len().min(max_bytes));
     let mut cut = false;
-    for c in text.chars() {
-        if is_format_control(c) {
-            continue;
-        }
-        let c = if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
-            ' '
-        } else {
-            c
-        };
+    for c in text.chars().filter_map(display_char) {
         if out.len() + c.len_utf8() > max_bytes {
             cut = true;
             break;
@@ -87,6 +93,10 @@ mod tests {
             "cod.exe!"
         );
         assert_eq!(clean_display("附錄-", 64), "附錄-");
+        assert_eq!(display_char('\u{202E}'), None);
+        assert_eq!(display_char('\u{0}'), Some(' '));
+        assert_eq!(display_char('\u{2028}'), Some(' '));
+        assert_eq!(display_char('公'), Some('公'));
         assert!(is_format_control('\u{200F}'));
         assert!(!is_format_control('a'));
     }

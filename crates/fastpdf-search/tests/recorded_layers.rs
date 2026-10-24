@@ -109,10 +109,7 @@ fn search(page: &TextLayer, query: &str) -> Vec<SearchHit> {
         DocumentId::from_raw(7),
         Arc::new(Recorded(page.clone())),
         Arc::new(TextCache::default()),
-        &SearchQuery {
-            text: query.into(),
-            case_sensitive: false,
-        },
+        &SearchQuery::new(query),
         PageIndex::FIRST,
         move |e| {
             let _ = tx.lock().unwrap().send(e);

@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Instant;
 
 use fastpdf_core::keymap::ReaderCommand;
 use fastpdf_engine_api::{
@@ -130,6 +131,8 @@ pub(crate) struct FindBar {
     pub progress: Progress,
     generation: u64,
     search: Option<SearchSession>,
+    /// When the current search started (logged with its result).
+    started: Option<Instant>,
     tx: Sender<(u64, SearchEvent)>,
     rx: Receiver<(u64, SearchEvent)>,
     _input_changes: Subscription,
@@ -164,6 +167,7 @@ impl FindBar {
             progress: Progress::default(),
             generation: 0,
             search: None,
+            started: None,
             tx,
             rx,
             _input_changes: subscription,
@@ -199,16 +203,14 @@ impl FindBar {
             return;
         }
         self.progress.page_count = target.doc.page_count();
+        self.started = Some(Instant::now());
         let generation = self.generation;
         let tx = self.tx.clone();
         self.search = SearchSession::start(
             target.document,
             target.doc as Arc<dyn EngineDocument>,
             Arc::clone(texts),
-            &SearchQuery {
-                text: self.query.clone(),
-                case_sensitive: false,
-            },
+            &SearchQuery::new(self.query.clone()),
             target.start,
             move |event| {
                 if tx.send((generation, event)).is_ok() {
@@ -246,7 +248,21 @@ impl FindBar {
                         self.progress.failed_pages += 1;
                     }
                 }
-                SearchEvent::Finished { .. } => self.progress.finished = true,
+                SearchEvent::Finished {
+                    hits,
+                    cancelled,
+                    limit_reached,
+                } => {
+                    self.progress.finished = true;
+                    if !cancelled {
+                        log::info!(
+                            "search finished: {hits} hits{} in {:.1} ms",
+                            if limit_reached { " (limit)" } else { "" },
+                            self.started
+                                .map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0),
+                        );
+                    }
+                }
             }
         }
         got_hits
@@ -376,6 +392,7 @@ mod tests {
             start,
             end: start + 2,
             rects: vec![PageRect::new(start as f32, 0.0, start as f32 + 10.0, 10.0)],
+            context: Default::default(),
         }
     }
 
@@ -447,6 +464,7 @@ mod tests {
                 PageRect::new(500.0, 100.0, 520.0, 114.0),
                 PageRect::new(72.0, 120.0, 86.0, 134.0),
             ],
+            context: Default::default(),
         };
         let mut list = HitList::default();
         list.insert(vec![hit(3, 60), wrapped.clone(), hit(3, 0)]);

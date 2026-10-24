@@ -2,6 +2,8 @@ use std::ops::Range;
 
 use fastpdf_engine_api::{TextLayer, is_cjk};
 
+use crate::fold::{fold, is_word_char};
+
 /// One occurrence of the query, as a range of `char` indices into the
 /// searched text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,8 +26,15 @@ pub(crate) const SPACE: char = ' ';
 ///   over two lines (「公」 / 「文」), a spaced-out title (「申　請　書」)
 ///   and a Latin word set with or without spaces around it (「使用 PDF」,
 ///   「使用PDF」) all match the query written either way.
+/// * Full-width ASCII forms match their ASCII counterparts (「ＰＤＦ」 and
+///   `PDF`), in both directions; the gap rule above still sees the
+///   characters as written, so full-width letters keep CJK spacing:
+///   「ＡＢＣ　ＤＥＦ」 matches `ABCDEF`, not `ABC DEF`.
 /// * Letters match case-insensitively unless asked otherwise, with
 ///   single-char lowercase mappings only.
+/// * With [`Matcher::whole_word`], a match that starts (or ends) with a
+///   word character ([`crate::is_word_char`]) must not have one right
+///   before (or after) it.
 ///
 /// Hyphens are kept: a word hyphenated at a line end only matches with the
 /// hyphen and a space (「inter- national」).
@@ -37,6 +46,13 @@ pub struct Matcher {
     /// [`Matcher::may_match`] looks for.
     distinct: Vec<char>,
     case_sensitive: bool,
+    whole_word: bool,
+    /// The needle starts with a word character: with `whole_word`, the
+    /// token before a match must not be one.
+    word_start: bool,
+    /// The needle ends with a word character: with `whole_word`, the token
+    /// after a match must not be one.
+    word_end: bool,
 }
 
 impl Matcher {
@@ -58,15 +74,30 @@ impl Matcher {
         let mut distinct: Vec<char> = needle.chars().filter(|&c| c != SPACE).collect();
         distinct.sort_unstable();
         distinct.dedup();
+        let word_start = needle.chars().next().is_some_and(is_word_char);
+        let word_end = needle.chars().next_back().is_some_and(is_word_char);
         (!needle.is_empty()).then_some(Self {
             needle,
             distinct,
             case_sensitive,
+            whole_word: false,
+            word_start,
+            word_end,
         })
+    }
+
+    /// Matches whole words only (see [`Matcher`]).
+    pub fn whole_word(mut self, on: bool) -> Self {
+        self.whole_word = on;
+        self
     }
 
     pub fn case_sensitive(&self) -> bool {
         self.case_sensitive
+    }
+
+    pub fn is_whole_word(&self) -> bool {
+        self.whole_word
     }
 
     /// All non-overlapping matches in `text`, from left to right; ranges
@@ -105,13 +136,54 @@ impl Matcher {
 
     /// Non-overlapping matches in normalized `tokens`, from left to right,
     /// as byte ranges.
+    ///
+    /// Whole words: a candidate with a word character next to it is
+    /// skipped and the search goes on inside it, so `ab-ab` is found in
+    /// `xab-ab-ab` (at 4..9). A needle starting with a word character can
+    /// only start after a token that is not one, so the search goes on
+    /// after the next such token: a page of `aaaa…` is scanned once.
     pub(crate) fn find_in<'a>(
         &'a self,
         tokens: &'a str,
     ) -> impl Iterator<Item = Range<usize>> + 'a {
-        tokens
-            .match_indices(self.needle.as_str())
-            .map(|(start, found)| start..start + found.len())
+        let mut from = 0;
+        std::iter::from_fn(move || {
+            loop {
+                let start = from + tokens.get(from..)?.find(self.needle.as_str())?;
+                let end = start + self.needle.len();
+                if self.is_whole(tokens, start, end) {
+                    from = end;
+                    return Some(start..end);
+                }
+                from = self.retry_from(tokens, start)?;
+            }
+        })
+    }
+
+    /// Whether the match at `start..end` of `tokens` stands as the query
+    /// asks (always, unless whole words are asked for).
+    fn is_whole(&self, tokens: &str, start: usize, end: usize) -> bool {
+        if !self.whole_word {
+            return true;
+        }
+        let before = tokens.get(..start).and_then(|t| t.chars().next_back());
+        let after = tokens.get(end..).and_then(|t| t.chars().next());
+        !(self.word_start && before.is_some_and(is_word_char))
+            && !(self.word_end && after.is_some_and(is_word_char))
+    }
+
+    /// Where to look again after the candidate at `start` was rejected.
+    fn retry_from(&self, tokens: &str, start: usize) -> Option<usize> {
+        let rest = tokens.get(start..)?;
+        if self.word_start {
+            // The next valid start follows a token that is not a word
+            // character; there is none inside the run of word characters
+            // the candidate starts in.
+            let (offset, c) = rest.char_indices().find(|&(_, c)| !is_word_char(c))?;
+            Some(start + offset + c.len_utf8())
+        } else {
+            Some(start + rest.chars().next()?.len_utf8())
+        }
     }
 
     /// Whether every character of the query occurs on the page. A page
@@ -174,20 +246,6 @@ impl Normalizer {
         self.gap = false;
         self.prev = Some(c);
         (space, fold(c, self.case_sensitive))
-    }
-}
-
-fn fold(c: char, case_sensitive: bool) -> char {
-    if case_sensitive {
-        return c;
-    }
-    if c.is_ascii() {
-        return c.to_ascii_lowercase();
-    }
-    let mut lower = c.to_lowercase();
-    match (lower.next(), lower.next()) {
-        (Some(l), None) => l,
-        _ => c, // multi-char mappings (e.g. 'İ') stay as-is to keep indices 1:1
     }
 }
 

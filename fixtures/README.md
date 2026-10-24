@@ -71,7 +71,7 @@ uv run tools/fixtures/verify.py
 | `fonts` | standard-14 全部＋字碼表＋MacRoman／`/Differences`；嵌入 TrueType subset（Bitstream Vera）；嵌入 Type 1（callig15）；Type3（d0／d1／dvips 風格點陣字）；文字狀態運算子 | 字型程式與編碼 |
 | `cjk` | 非嵌入 CID 字型：MSung-Light（繁中）、STSong-Light（簡中）、HeiseiMin-W3／HeiseiKakuGo-W5（日）、HYSMyeongJo-Medium／HYGothic-Medium（韓）；直排（`-V` CMap）；50 頁密集繁中；reportlab 舊版 CMap 不一致案例 | **非嵌入 CJK 字型**的系統字型替代 |
 | `japanese` | 非嵌入 Heisei 字型（橫排＋直排）；嵌入 TrueType subset（Yu Gothic）；嵌入 Type0／Identity-H（MS Gothic） | 日文字型與直排 |
-| `traditional-chinese` | 模擬公文「函」與醫院檢驗報告，各有 TrueType subset、Type0／Identity-H、非嵌入 MSung-Light 三種版本；掃描版公文（200 dpi 彩色 JPEG＋紅色印章、300 dpi CCITT G4）；Big5 第一字面 5401 字（TrueType subset 與 Type0 各一） | 台灣使用情境（見下節） |
+| `traditional-chinese` | 模擬公文「函」與醫院檢驗報告，各有 TrueType subset、Type0／Identity-H、非嵌入 MSung-Light 三種版本；掃描版公文（200 dpi 彩色 JPEG＋紅色印章、300 dpi CCITT G4）；Big5 第一字面 5401 字（TrueType subset 與 Type0 各一）；40 頁搜尋選項文件（全形ＰＤＦ與數字、全字陷阱、跨行全形代碼，Type0） | 台灣使用情境（見下節）；搜尋選項與結果清單 |
 | `transparency` | 常數 alpha 重疊、3000 個半透明矩形、半透明文字、RGBA 影像；16 種 blend mode；luminosity／alpha soft mask、isolated／knockout group、巢狀 group、page group | 透明度合成 |
 | `encrypted` | AES-256 R6／R5、AES-128、RC4-128、RC4-40（空 user password＋owner password，限制權限）；AES-256 與 AES-128 需 user password；中文 user password | Standard security handler |
 | `malformed` | 30 個損壞或惡意檔案（見下表） | §24／§25 guardrails |
@@ -82,6 +82,7 @@ uv run tools/fixtures/verify.py
 
 - `gov-letter-*`：模擬「虛構市政府環境保護局 函」，包含檔號、保存年限、發文機關、受文者、發文日期（民國紀年）、發文字號、速別、主旨、說明（一、二、三…懸掛縮排）、附表、正本／副本、署名、附件表格。
 - `lab-report-*`：模擬「測試綜合醫院（虛構）檢驗醫學部」臨床檢驗報告：病人資料表、CBC／生化／血脂／尿液／甲狀腺，含數值、單位、參考範圍、H／L／A 註記（紅字）。
+- `search-options-type0.pdf`：搜尋選項（全形對應、大小寫須相符、全字拼寫須相符）與結果清單用。第 1 頁有全形「ＰＤＦ」與半形 PDF／pdf、「第１２條」與「第112條」、FastPDF／PDFs／PDF-A、跨兩行的全形「ＩＳＯ／９００１」、「ＡＢＣ　ＤＥＦ」與「ABC DEF」；第 2–40 頁每頁 30 行相同文字，讓結果清單有數千筆可捲動。每個查詢的預期筆數寫在 manifest 的 description（`tools/fixtures/fxlib/docs_search.py` 的 `COUNTS`）。
 - 每頁都印有「【測試樣本】本文件內容全部為虛構」字樣；機關、人名、地址、電話、字號、病歷號碼與檢驗數值均為合成。
 - 同一份文件有多種字型結構，方便比較：
   - `*-embedded-ttfsubset.pdf`：reportlab 的 simple TrueType subset（每個 subset ≤256 字，字多時會產生多個字型物件）。

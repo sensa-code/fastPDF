@@ -86,8 +86,8 @@
     "open_error_expected": "Should be rejected with a clean error (no panic, no hang)."
   },
   "summary": {
-    "files": 87,
-    "bytes": 63942733,
+    "files": 88,
+    "bytes": 63990550,
     "skipped": 0,
     "by_category": {
       "small-text": {
@@ -127,8 +127,8 @@
         "bytes": 131734
       },
       "traditional-chinese": {
-        "files": 10,
-        "bytes": 4788411
+        "files": 11,
+        "bytes": 4836228
       },
       "transparency": {
         "files": 3,
@@ -1897,6 +1897,38 @@
         "Identity-H",
         "ToUnicode",
         "medical-report"
+      ],
+      "producer": "rawpdf",
+      "inputs": {
+        "system_font": {
+          "role": "tc_ming",
+          "file": "mingliu.ttc",
+          "index": 1,
+          "family": "PMingLiU",
+          "postscript_name": "PMingLiU",
+          "sha256": "d7857c403c7c79a4de93a11a22c8b0fedc077762e173a8b80b950c0b1e9caacc"
+        }
+      }
+    },
+    {
+      "path": "traditional-chinese/search-options-type0.pdf",
+      "category": "traditional-chinese",
+      "bytes": 47817,
+      "sha256": "46d5eb8f9fd4476ec12aa17441c5e7fa050d0dd9fe65529c1c6744f05b9cf770",
+      "pages": 40,
+      "encrypted": false,
+      "encryption": null,
+      "password": null,
+      "expected": "open_ok",
+      "description": "搜尋選項：Type0／Identity-H＋ToUnicode（全形字元照原碼對應）。第 1 頁：全形ＰＤＦ與半形 PDF、pdf，第１２條與第112條，FastPDF、PDFs、PDF-A，跨行的全形ＩＳＯ／９００１，ＡＢＣ　ＤＥＦ與 ABC DEF，research／searching／search-engine／(search)；第 2–40 頁每頁 30 行「search Search SEARCH 搜尋結果列表測試」。預期筆數（預設／大小寫須相符／全字）：「pdf」7／1／5、「PDF」7／6／5、「ＰＤＦ」7／6／5、「12」2／2／1、「ISO9001」1／1／1、「ABCDEF」1／1／1、「ABC DEF」1／1／1、「search」3514／1174／3512、「搜尋結果」1170／1170／1170。",
+      "guardrails": [],
+      "features": [
+        "Type0",
+        "CIDFontType2",
+        "Identity-H",
+        "ToUnicode",
+        "full-width-forms",
+        "search"
       ],
       "producer": "rawpdf",
       "inputs": {

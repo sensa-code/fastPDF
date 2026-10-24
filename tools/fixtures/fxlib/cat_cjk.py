@@ -8,6 +8,10 @@ from typing import Any
 from .cat_raster import _g4_encoder, render_raster_pages, write_scanned_pdf
 from .common import (JA_PHRASES, KO_PHRASES, SC_PHRASES, TC_PHRASES, Ctx, Job, SkipFixture,
                      cjk_paragraph, rng, wrap)
+from .docs_search import PAGES as SEARCH_PAGES
+from .docs_search import description as search_description
+from .docs_search import search_options
+from .docs_search import text as search_text
 from .docs_tw import Pager, gov_letter, lab_report
 from .fonts import Type0Font
 from .imaging import jpeg, scan_effects
@@ -323,6 +327,21 @@ def tc_gov_scanned_ccitt(out: Path, ctx: Ctx) -> dict:
     return {"pages": n, **font_inputs(info)}
 
 
+def tc_search_options(out: Path, ctx: Ctx) -> dict:
+    info = pick_font(ctx, TC_MING_FIRST)
+    with open(out, "wb") as fp:
+        pdf = RawPdf(fp)
+        f = Type0Font(pdf, info, "F1")
+        missing = sorted({ch for ch in search_text() if not f.gid(ch)})
+        if missing:
+            raise SkipFixture(f"{info['family']} lacks {''.join(missing)!r}")
+        p = RawPainter(pdf, {"body": f, "title": f}, title="FastPDF fixture: search options",
+                       id_seed="tc-search-options")
+        search_options(p)
+        pages = p.close()
+    return {"pages": pages, **font_inputs(info)}
+
+
 def big5_level1_chars() -> str:
     chars = []
     for lead in range(0xA4, 0xC7):
@@ -435,6 +454,10 @@ def jobs() -> list[Job]:
         Job("traditional-chinese/gov-letter-scanned-ccitt-g4.pdf", tc_gov_scanned_ccitt, "open_ok",
             "掃描版公文黑白版：300 dpi 1-bit CCITT G4（公文掃描歸檔最常見的格式）。",
             features=("CCITTFaxDecode", "G4", "gov-document", "scan"), cost=3),
+        Job("traditional-chinese/search-options-type0.pdf", tc_search_options, "open_ok",
+            search_description(), pages=SEARCH_PAGES,
+            features=("Type0", "CIDFontType2", "Identity-H", "ToUnicode", "full-width-forms",
+                      "search"), cost=1),
         Job("traditional-chinese/big5-level1-chars-ttfsubset.pdf", tc_big5_ttf, "open_ok",
             "Big5 第一字面全部 5401 個常用字，reportlab TrueType subset（約 22 個 subset 字型），測大量字型物件與 glyph cache。",
             features=("TrueType", "many-subsets", "glyph-cache"), producer="reportlab", cost=4),

@@ -83,16 +83,11 @@ impl PageText {
         self.text.capacity() + self.runs.capacity() * std::mem::size_of::<Run>()
     }
 
-    /// Highlight of the tokens at bytes `range` of [`PageText::text`]: one
-    /// rectangle per run of characters of one span on one line, the union
-    /// of their boxes (an even split of the span box when the engine gives
-    /// no per-char boxes). Whitespace between them is covered; line breaks
-    /// are not.
-    pub(crate) fn rects(&self, layer: &TextLayer, range: Range<usize>) -> Vec<PageRect> {
-        let mut rects: Vec<(usize, usize, PageRect)> = Vec::new();
-        let Some(tokens) = self.text.get(range.clone()) else {
-            return rects.into_iter().map(|(_, _, r)| r).collect();
-        };
+    /// Where the tokens at bytes `range` of [`PageText::text`] come from,
+    /// in order. Nothing for a range that is out of bounds or not on char
+    /// boundaries.
+    pub(crate) fn sources(&self, range: Range<usize>) -> impl Iterator<Item = Source> + '_ {
+        let tokens = self.text.get(range.clone()).unwrap_or_default();
         // The run of the first token, and the token's index in it.
         let mut run = self.runs.partition_point(|r| r.start <= range.start);
         let mut k = run
@@ -100,30 +95,63 @@ impl PageText {
             .and_then(|i| self.runs.get(i))
             .and_then(|r| self.text.get(r.start..range.start))
             .map_or(0, |before| before.chars().count());
-        for (offset, token) in tokens.char_indices() {
+        tokens.char_indices().filter_map(move |(offset, token)| {
             let at = range.start + offset;
             if self.runs.get(run).is_some_and(|r| r.start <= at) {
                 run += 1;
                 k = 0;
             }
-            let Some(r) = run.checked_sub(1).and_then(|i| self.runs.get(i)) else {
-                continue;
-            };
-            let ch = r.ch + k;
+            let r = run.checked_sub(1).and_then(|i| self.runs.get(i))?;
+            let ch = r.ch.saturating_add(k);
             k += 1;
-            let Some(span) = layer.spans.get(r.span).filter(|_| token != SPACE) else {
+            Some(Source {
+                at,
+                token,
+                line: r.line,
+                span: r.span,
+                ch,
+            })
+        })
+    }
+
+    /// Highlight of the tokens at bytes `range` of [`PageText::text`]: one
+    /// rectangle per run of characters of one span on one line, the union
+    /// of their boxes (an even split of the span box when the engine gives
+    /// no per-char boxes). Whitespace between them is covered; line breaks
+    /// are not.
+    pub(crate) fn rects(&self, layer: &TextLayer, range: Range<usize>) -> Vec<PageRect> {
+        let mut rects: Vec<(usize, usize, PageRect)> = Vec::new();
+        for source in self.sources(range) {
+            let Some(span) = layer
+                .spans
+                .get(source.span)
+                .filter(|_| source.token != SPACE)
+            else {
                 continue;
             };
-            let rect = span.char_rect(ch);
+            let rect = span.char_rect(source.ch);
             match rects.last_mut() {
-                Some((line, s, union)) if *line == r.line && *s == r.span => {
+                Some((line, s, union)) if *line == source.line && *s == source.span => {
                     *union = union.union(rect);
                 }
-                _ => rects.push((r.line, r.span, rect)),
+                _ => rects.push((source.line, source.span, rect)),
             }
         }
         rects.into_iter().map(|(_, _, r)| r).collect()
     }
+}
+
+/// Where one token of a [`PageText`] comes from: `char` `ch` of span
+/// `span`, on line `line` in reading order. A [`SPACE`] token stands for a
+/// gap; its `span` and `ch` say nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Source {
+    /// Byte offset of the token in [`PageText::text`].
+    pub at: usize,
+    pub token: char,
+    pub line: usize,
+    pub span: usize,
+    pub ch: usize,
 }
 
 #[cfg(test)]
@@ -198,6 +226,22 @@ mod tests {
         // Out of range or not on a char boundary: nothing.
         assert!(t.rects(&l, 100..104).is_empty());
         assert!(t.rects(&l, 6..7).is_empty());
+    }
+
+    #[test]
+    fn full_width_hits_keep_their_rectangles() {
+        let l = layer(vec![span("第１２條", 0.0, 0.0)]);
+        let t = PageText::new(&l, false);
+        assert_eq!(t.text(), "第12條");
+        let matcher = crate::Matcher::new("12", false).unwrap();
+        let hit = matcher.find_in(t.text()).next().unwrap();
+        // The full-width digits as drawn: the second and third cells.
+        assert_eq!(t.rects(&l, hit), vec![PageRect::new(10.0, 0.0, 30.0, 10.0)]);
+        let sources: Vec<_> = t
+            .sources(0..t.text().len())
+            .map(|s| (s.token, s.ch))
+            .collect();
+        assert_eq!(sources, vec![('第', 0), ('1', 1), ('2', 2), ('條', 3)]);
     }
 
     #[test]

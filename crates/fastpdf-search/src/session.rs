@@ -8,13 +8,36 @@ use fastpdf_engine_api::{
 };
 
 use crate::page_text::PageText;
-use crate::{Matcher, search_order};
+use crate::snippet::{Originals, snippet};
+use crate::{Matcher, Snippet, search_order};
 
 /// What to look for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchQuery {
     pub text: String,
     pub case_sensitive: bool,
+    /// Only matches that are whole words ([`Matcher::whole_word`]).
+    pub whole_word: bool,
+    /// The search stops once it found this many hits (the ones nearest the
+    /// start page, as pages are searched outward from it).
+    pub max_hits: usize,
+}
+
+impl SearchQuery {
+    /// Hits a search keeps at most: a bounded result list (about 5 MB
+    /// with snippets), and pages past it are not extracted.
+    pub const DEFAULT_MAX_HITS: usize = 20_000;
+
+    /// `text`, case-insensitive, not whole words, at most
+    /// [`Self::DEFAULT_MAX_HITS`] hits.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            case_sensitive: false,
+            whole_word: false,
+            max_hits: Self::DEFAULT_MAX_HITS,
+        }
+    }
 }
 
 /// One hit, with highlight rectangles in page space.
@@ -28,6 +51,8 @@ pub struct SearchHit {
     /// In reading order: one rectangle per span and line the hit covers
     /// (a hit that wraps onto the next line has one on each).
     pub rects: Vec<PageRect>,
+    /// The hit in a line of its page's text, for a list of results.
+    pub context: Snippet,
 }
 
 /// Progress stream of a search (delivered on the search thread).
@@ -43,8 +68,13 @@ pub enum SearchEvent {
     },
     /// A page whose text could not be extracted; the search continues.
     PageFailed { page: PageIndex, error: EngineError },
-    /// The search ended (all pages done, cancelled, or unsupported engine).
-    Finished { hits: usize, cancelled: bool },
+    /// The search ended (all pages done, cancelled, unsupported engine, or
+    /// `max_hits` found: `limit_reached`, more hits may exist).
+    Finished {
+        hits: usize,
+        cancelled: bool,
+        limit_reached: bool,
+    },
 }
 
 /// Byte-budgeted cache of extracted text layers and, for pages that were
@@ -238,7 +268,8 @@ impl SearchSession {
         start_page: PageIndex,
         sink: impl Fn(SearchEvent) + Send + 'static,
     ) -> Option<Self> {
-        let matcher = Matcher::new(&query.text, query.case_sensitive)?;
+        let matcher = Matcher::new(&query.text, query.case_sensitive)?.whole_word(query.whole_word);
+        let max_hits = query.max_hits;
         let cancel = CancelToken::new();
         let token = cancel.clone();
         let thread = std::thread::Builder::new()
@@ -248,7 +279,7 @@ impl SearchSession {
                     document,
                     doc.as_ref(),
                     &texts,
-                    &matcher,
+                    (&matcher, max_hits),
                     start_page,
                     &token,
                     &sink,
@@ -282,29 +313,42 @@ impl Drop for SearchSession {
     }
 }
 
+/// Searches `doc` from `start_page` outward for `matcher`, until every
+/// page is done or `max_hits` hits are found (`query`).
 fn run(
     document: DocumentId,
     doc: &dyn EngineDocument,
     texts: &TextCache,
-    matcher: &Matcher,
+    query: (&Matcher, usize),
     start_page: PageIndex,
     cancel: &CancelToken,
     sink: &dyn Fn(SearchEvent),
 ) {
+    let (matcher, max_hits) = query;
     let page_count = doc.page_count();
     let mut hits = 0;
     let mut pages_done = 0;
+    // A page had more hits than were kept.
+    let mut cut = false;
+    let finished = |hits, cancelled, limit_reached| SearchEvent::Finished {
+        hits,
+        cancelled,
+        limit_reached,
+    };
     for page in search_order(start_page, page_count) {
         if cancel.is_cancelled() {
-            sink(SearchEvent::Finished {
-                hits,
-                cancelled: true,
-            });
+            sink(finished(hits, true, false));
+            return;
+        }
+        if hits >= max_hits {
+            // Pages are left: no more are extracted.
+            sink(finished(hits, false, true));
             return;
         }
         match texts.search_text(document, doc, page, cancel, matcher) {
             Ok(Some((layer, text))) => {
-                let found = search_layer(&layer, &text, matcher);
+                let (found, more) = search_layer(&layer, &text, matcher, max_hits - hits);
+                cut |= more;
                 if !found.is_empty() {
                     hits += found.len();
                     sink(SearchEvent::Hits(found));
@@ -317,10 +361,7 @@ fn run(
                     page,
                     error: EngineError::Unsupported(what),
                 });
-                sink(SearchEvent::Finished {
-                    hits,
-                    cancelled: false,
-                });
+                sink(finished(hits, false, false));
                 return;
             }
             Err(error) => sink(SearchEvent::PageFailed { page, error }),
@@ -332,25 +373,35 @@ fn run(
             hits,
         });
     }
-    sink(SearchEvent::Finished {
-        hits,
-        cancelled: cancel.is_cancelled(),
-    });
+    sink(finished(hits, cancel.is_cancelled(), cut));
 }
 
 /// Searches one page, in reading order, across span and line boundaries
-/// (see [`Matcher`] for how they compare): matches in the page's search
-/// text, with highlight rectangles from its layer.
-fn search_layer(layer: &TextLayer, text: &PageText, matcher: &Matcher) -> Vec<SearchHit> {
-    matcher
-        .find_in(text.text())
+/// (see [`Matcher`] for how they compare): at most `room` matches in the
+/// page's search text, with highlight rectangles from its layer and
+/// snippets. True with them when the page has more matches. Rectangles
+/// and snippets are made only for the matches kept.
+fn search_layer(
+    layer: &TextLayer,
+    text: &PageText,
+    matcher: &Matcher,
+    room: usize,
+) -> (Vec<SearchHit>, bool) {
+    let mut originals = Originals::new(layer);
+    let mut matches = matcher.find_in(text.text());
+    let hits: Vec<SearchHit> = matches
+        .by_ref()
+        .take(room)
         .map(|m| SearchHit {
             page: layer.page,
             start: m.start,
             end: m.end,
-            rects: text.rects(layer, m),
+            rects: text.rects(layer, m.clone()),
+            context: snippet(text, &mut originals, m),
         })
-        .collect()
+        .collect();
+    let more = hits.len() == room && matches.next().is_some();
+    (hits, more)
 }
 
 #[cfg(test)]
@@ -370,7 +421,7 @@ mod tests {
             return Vec::new();
         }
         let text = PageText::new(layer, matcher.case_sensitive());
-        search_layer(layer, &text, matcher)
+        search_layer(layer, &text, matcher, usize::MAX).0
     }
 
     /// Page `n` contains "page n" plus "needle" on pages divisible by 3.
@@ -436,17 +487,22 @@ mod tests {
         q: &str,
         from: u32,
     ) -> (SearchSession, mpsc::Receiver<SearchEvent>) {
+        start_query(d, texts, &SearchQuery::new(q), from)
+    }
+
+    fn start_query(
+        d: Arc<TextDoc>,
+        texts: Arc<TextCache>,
+        query: &SearchQuery,
+        from: u32,
+    ) -> (SearchSession, mpsc::Receiver<SearchEvent>) {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let query = SearchQuery {
-            text: q.into(),
-            case_sensitive: false,
-        };
         let session = SearchSession::start(
             DocumentId::from_raw(1),
             d,
             texts,
-            &query,
+            query,
             PageIndex::new(from),
             move |e| {
                 let _ = tx.lock().unwrap().send(e);
@@ -491,7 +547,8 @@ mod tests {
             events.last(),
             Some(&SearchEvent::Finished {
                 hits: 4,
-                cancelled: false
+                cancelled: false,
+                limit_reached: false,
             })
         );
         let first_hit = events.iter().find_map(|e| match e {
@@ -790,8 +847,8 @@ mod tests {
             d,
             texts,
             &SearchQuery {
-                text: "Needle".into(),
                 case_sensitive: true,
+                ..SearchQuery::new("Needle")
             },
             PageIndex::FIRST,
             move |e| {
@@ -803,7 +860,8 @@ mod tests {
             collect(&rx).last(),
             Some(SearchEvent::Finished {
                 hits: 0,
-                cancelled: false
+                cancelled: false,
+                limit_reached: false,
             })
         ));
     }
@@ -863,11 +921,90 @@ mod tests {
     }
 
     #[test]
-    fn empty_queries_do_not_start() {
+    fn stops_at_max_hits() {
+        let d = doc(1000, 0);
         let query = SearchQuery {
-            text: "  ".into(),
-            case_sensitive: false,
+            max_hits: 3,
+            ..SearchQuery::new("needle")
         };
+        let (_s, rx) = start_query(d.clone(), Arc::new(TextCache::default()), &query, 500);
+        let events = collect(&rx);
+        let kept: Vec<u32> = events
+            .iter()
+            .filter_map(|e| match e {
+                SearchEvent::Hits(h) => Some(h.iter().map(|h| h.page.get())),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        // The nearest pages with a needle: 501, 498, 504.
+        assert_eq!(kept, vec![501, 498, 504]);
+        assert_eq!(
+            events.last(),
+            Some(&SearchEvent::Finished {
+                hits: 3,
+                cancelled: false,
+                limit_reached: true,
+            })
+        );
+        // Pages past the third hit are never extracted.
+        assert!(d.extracted.load(Ordering::Relaxed) < 20);
+    }
+
+    #[test]
+    fn a_page_with_more_hits_than_room_is_cut() {
+        let layer = TextLayer {
+            page: PageIndex::FIRST,
+            spans: vec![text("aa aa aa aa", 0.0, 0.0)],
+        };
+        let matcher = Matcher::new("aa", false).unwrap();
+        let page = PageText::new(&layer, false);
+        let (hits, more) = search_layer(&layer, &page, &matcher, 2);
+        assert_eq!((hits.len(), more), (2, true));
+        let (hits, more) = search_layer(&layer, &page, &matcher, 4);
+        assert_eq!((hits.len(), more), (4, false));
+    }
+
+    #[test]
+    fn hits_carry_their_snippets() {
+        let d = doc(10, 0);
+        let (_s, rx) = start(d, Arc::new(TextCache::default()), "NEEDLE", 6);
+        let first = collect(&rx).into_iter().find_map(|e| match e {
+            SearchEvent::Hits(h) => h.into_iter().next(),
+            _ => None,
+        });
+        let context = first.map(|h| h.context).unwrap_or_default();
+        assert_eq!(&*context.text, "page 6 needle");
+        assert_eq!(context.hit().map(|r| &context.text[r]), Some("needle"));
+    }
+
+    #[test]
+    fn whole_words_and_case_come_from_the_query() {
+        let d = doc(10, 0);
+        let hits = |query: SearchQuery| {
+            let (_s, rx) = start_query(d.clone(), Arc::new(TextCache::default()), &query, 0);
+            match collect(&rx).last() {
+                Some(SearchEvent::Finished { hits, .. }) => *hits,
+                _ => usize::MAX,
+            }
+        };
+        // "page 6 needle": "need" is inside a word.
+        assert_eq!(hits(SearchQuery::new("need")), 4);
+        let whole = SearchQuery {
+            whole_word: true,
+            ..SearchQuery::new("need")
+        };
+        assert_eq!(hits(whole), 0);
+        let cased = SearchQuery {
+            case_sensitive: true,
+            ..SearchQuery::new("Page")
+        };
+        assert_eq!(hits(cased), 0);
+    }
+
+    #[test]
+    fn empty_queries_do_not_start() {
+        let query = SearchQuery::new("  ");
         let s = SearchSession::start(
             DocumentId::from_raw(1),
             doc(1, 0),
