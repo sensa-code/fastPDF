@@ -1,28 +1,30 @@
 //! Page labels in the reader (the document's own page numbering, such as
 //! `iii` or `A-1`): the toolbar shows `iii (3 / 120)`, thumbnails `iii (3)`,
-//! the scroll-bar drag label the same as the toolbar.
+//! the scroll-bar drag label the same as the toolbar (`display.rs`).
 //!
-//! Labels are asked for once per document, after its first page is fully
-//! rendered (never while it opens), or when something needs them (go to
-//! page, a dev-script step). Documents whose labels are just their page
-//! numbers count as having none, so nothing extra is shown; a label equal
-//! to the page number is not repeated either.
+//! Labels are asked for after the document's first page is fully rendered
+//! (never while it opens), or when something needs them (go to page, a
+//! dev-script step). When the render host could not answer at the time,
+//! they are asked for once more on a later wake-up, unless the request
+//! itself brought the host down. Documents whose labels are just their
+//! page numbers count as having none, so nothing extra is shown; a label
+//! equal to the page number, or empty, is not shown either.
+
+mod display;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use fastpdf_engine_api::{EngineDocument, PageIndex, PageLabels, is_cjk};
-use gpui::{
-    Context, Div, Font, ParentElement, Pixels, SharedString, Styled, TextRun, TruncateFrom, Window,
-    div, px,
-};
+use fastpdf_engine_api::{EngineDocument, EngineError, PageIndex, PageLabels};
+use gpui::Context;
 
-use crate::doc_queries::Lazy;
+pub(crate) use self::display::indicator;
+use crate::doc_queries::{DocQueries, Lazy};
 use crate::reader::{DocState, ReaderView};
 
-/// Width of a label in a caption, counting CJK characters twice; longer
-/// labels are cut and end in an ellipsis.
-const CAPTION_WIDTH: usize = 24;
+/// Requests for the labels made without a demand: the first after the
+/// first page, and one more after the host could not answer at the time.
+const AUTO_ATTEMPTS: u8 = 2;
 
 impl ReaderView {
     /// Asks for the open document's page labels unless they are known or
@@ -34,17 +36,24 @@ impl ReaderView {
                 let labels = doc.page_labels()?;
                 Ok((!labels.is_plain_numbers()).then(|| Arc::new(labels)))
             },
-            log_labels,
+            labels_answered,
             cx,
         );
     }
 
     /// On every wake-up (cheap): once the first page is fully rendered, the
-    /// labels are asked for, once.
+    /// labels are asked for, and asked again once after a failure of the
+    /// moment.
     pub(crate) fn poll_page_labels(&mut self, cx: &mut Context<'_, Self>) {
         let due = match &mut self.doc {
-            DocState::Open(open) if open.exact_reported && !open.queries.labels_requested => {
-                open.queries.labels_requested = true;
+            DocState::Open(open)
+                if auto_request_due(
+                    open.exact_reported,
+                    &open.queries.labels,
+                    open.queries.label_attempts,
+                ) =>
+            {
+                open.queries.label_attempts += 1;
                 true
             }
             _ => false,
@@ -69,194 +78,41 @@ impl ReaderView {
 
     /// The label of `page` when it says something its number does not.
     pub(crate) fn page_label(&self, page: PageIndex) -> Option<String> {
-        let label = self.page_labels()?.label(page)?;
-        (label != page.display_number().to_string()).then_some(label)
-    }
-
-    /// The toolbar's page text: `iii (3 / 120)`, `3 / 120`, or `- / -`
-    /// without a document.
-    pub(crate) fn page_position_text(&self) -> String {
-        match self.page_indicator() {
-            Some((page, count)) => position_text(
-                self.page_label(page).as_deref(),
-                page.display_number(),
-                count,
-            ),
-            None => "- / -".to_owned(),
-        }
-    }
-
-    /// A thumbnail's caption, `iii (3)` or `3` (marked when it failed),
-    /// fitted into `width` in `font` at `size`: a label too wide is cut with
-    /// an ellipsis so the page number and the mark always show.
-    pub(crate) fn thumbnail_caption(
-        &self,
-        page: PageIndex,
-        failed: bool,
-        font: &Font,
-        size: Pixels,
-        width: Pixels,
-        window: &Window,
-    ) -> String {
-        let number = page.display_number();
-        let caption = |label: &str| {
-            let caption = if label.is_empty() {
-                number.to_string()
-            } else {
-                format!("{label} ({number})")
-            };
-            if failed {
-                self.strings().thumbnail_failed(&caption)
-            } else {
-                caption
-            }
-        };
-        let Some(label) = self.page_label(page).map(|l| shorten(&l, CAPTION_WIDTH)) else {
-            return caption("");
-        };
-        let full = caption(&label);
-        let run = |text: &str| TextRun {
-            len: text.len(),
-            font: font.clone(),
-            color: gpui::black(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let measure = |text: &str| {
-            window
-                .text_system()
-                .shape_line(
-                    SharedString::from(text.to_owned()),
-                    size,
-                    &[run(text)],
-                    None,
-                )
-                .width
-        };
-        if measure(&full) <= width {
-            return full;
-        }
-        // The label comes first; everything after it must stay.
-        let rest = full.get(label.len()..).unwrap_or_default();
-        let room = (width - measure(rest)).max(px(0.0));
-        let (cut, _) = window
-            .text_system()
-            .line_wrapper(font.clone(), size)
-            .truncate_line(
-                SharedString::from(label.clone()),
-                room,
-                "\u{2026}",
-                &[run(&label)],
-                TruncateFrom::End,
-            );
-        format!("{cut}{rest}")
+        shown_label(self.page_labels()?.label(page)?, page.display_number())
     }
 }
 
-/// `label (number / count)`, or `number / count` without a label; the
-/// label is cut to [`CAPTION_WIDTH`]. Language-neutral, like the plain
-/// numbers it replaces.
-pub(crate) fn position_text(label: Option<&str>, number: u32, count: u32) -> String {
-    match label {
-        Some(label) => format!("{} ({number} / {count})", shorten(label, CAPTION_WIDTH)),
-        None => format!("{number} / {count}"),
+/// A label worth showing next to page `number`: trimmed, not empty (a range
+/// with neither style nor prefix), not just the number again.
+fn shown_label(label: String, number: u32) -> Option<String> {
+    let trimmed = label.trim();
+    if trimmed.is_empty() || trimmed == number.to_string() {
+        None
+    } else if trimmed.len() == label.len() {
+        Some(label)
+    } else {
+        Some(trimmed.to_owned())
     }
 }
 
-/// `text` cut to `width` columns (CJK characters take two) with an ellipsis.
-fn shorten(text: &str, width: usize) -> String {
-    let columns = |c: char| if is_cjk(c) { 2 } else { 1 };
-    if text.chars().map(columns).sum::<usize>() <= width {
-        return text.to_owned();
-    }
-    let mut out = String::new();
-    let mut used = 1; // the ellipsis
-    for c in text.chars() {
-        used += columns(c);
-        if used > width {
-            break;
-        }
-        out.push(c);
-    }
-    out.push('\u{2026}');
-    out
+/// Whether the labels should be asked for without a demand now.
+fn auto_request_due(exact_reported: bool, labels: &Lazy<Arc<PageLabels>>, attempts: u8) -> bool {
+    exact_reported && attempts < AUTO_ATTEMPTS && matches!(labels, Lazy::NotLoaded)
 }
 
-/// The toolbar's page indicator, `iii (3 / 120)` or `3 / 120` (at least as
-/// wide as `12 / 345`). A label never pushes buttons out of the row: when
-/// the row is short of room (after its end, rotation and the title, gave
-/// way), the numbers wrap under the label onto a second line, and a label
-/// still too wide is cut with an ellipsis. The indicator never gets
-/// narrower than its numbers, so they stay whole.
-pub(crate) fn indicator(view: &ReaderView, window: &Window) -> Div {
-    let Some((page, count)) = view.page_indicator() else {
-        return numbers_box("- / -".to_owned());
-    };
-    let numbers = format!("{} / {count}", page.display_number());
-    let Some(label) = view.page_label(page) else {
-        return numbers_box(numbers);
-    };
-    let numbers = format!("({numbers})");
-    // The label's own width must not hold the indicator open (the row
-    // would push buttons out instead): its narrowest is its numbers.
-    let size = px(NUMBERS_TEXT);
-    let font = gpui::font(view.language().ui_font());
-    let run = TextRun {
-        len: numbers.len(),
-        font,
-        color: gpui::black(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let narrowest = window
-        .text_system()
-        .shape_line(SharedString::from(numbers.clone()), size, &[run], None)
-        .width
-        .ceil();
-    div()
-        .flex()
-        .flex_row()
-        .flex_wrap()
-        .justify_center()
-        .content_center()
-        .gap_x_1()
-        .min_w(narrowest + px(1.0))
-        .max_w(px(220.0))
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_size(px(LABEL_TEXT))
-        .line_height(px(16.0))
-        .child(
-            div()
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .child(shorten(&label, CAPTION_WIDTH)),
-        )
-        .child(
-            div()
-                .flex_none()
-                .text_size(size)
-                .text_color(view.theme.text_muted)
-                .child(numbers),
-        )
+/// An answer came in: logged, and when the request itself brought the
+/// render host down, nothing asks again without a demand.
+fn labels_answered(queries: &mut DocQueries, error: Option<&EngineError>, since_open: Duration) {
+    log_labels(&queries.labels, since_open);
+    queries.label_attempts = attempts_after(queries.label_attempts, error);
 }
 
-/// Text sizes of the indicator with a label: two lines fit the toolbar, and
-/// the numbers in parentheses take no more room than plain numbers.
-const LABEL_TEXT: f32 = 13.0;
-const NUMBERS_TEXT: f32 = 12.0;
-
-fn numbers_box(numbers: String) -> Div {
-    div()
-        .flex_none()
-        .min_w(px(56.0))
-        .flex()
-        .justify_center()
-        .whitespace_nowrap()
-        .child(numbers)
+fn attempts_after(attempts: u8, error: Option<&EngineError>) -> u8 {
+    if matches!(error, Some(EngineError::HostExited(_))) {
+        AUTO_ATTEMPTS
+    } else {
+        attempts
+    }
 }
 
 fn log_labels(state: &Lazy<Arc<PageLabels>>, since_open: Duration) {
@@ -275,26 +131,48 @@ fn log_labels(state: &Lazy<Arc<PageLabels>>, since_open: Duration) {
 
 #[cfg(test)]
 mod tests {
+    use fastpdf_engine_api::{HostExit, HostExitReason};
+
     use super::*;
 
     #[test]
-    fn position_text_formats() {
-        assert_eq!(position_text(Some("iii"), 3, 120), "iii (3 / 120)");
-        assert_eq!(position_text(None, 3, 120), "3 / 120");
-        assert_eq!(position_text(Some("附錄-5"), 9, 12), "附錄-5 (9 / 12)");
-        let long = position_text(Some(&"x".repeat(100)), 1, 2);
-        assert_eq!(long, format!("{}\u{2026} (1 / 2)", "x".repeat(23)));
+    fn empty_labels_and_plain_numbers_are_not_shown() {
+        assert_eq!(shown_label("iii".into(), 3), Some("iii".into()));
+        assert_eq!(shown_label(String::new(), 1), None);
+        assert_eq!(shown_label("  ".into(), 1), None);
+        assert_eq!(shown_label("3".into(), 3), None);
+        assert_eq!(shown_label(" 3 ".into(), 3), None);
+        assert_eq!(shown_label(" A-1".into(), 9), Some("A-1".into()));
     }
 
     #[test]
-    fn labels_are_shortened_by_width() {
-        assert_eq!(shorten("App-B", 24), "App-B");
-        assert_eq!(shorten(&"附".repeat(12), 24), "附".repeat(12));
-        // 13 wide characters do not fit in 24 columns.
-        assert_eq!(
-            shorten(&"附".repeat(13), 24),
-            format!("{}\u{2026}", "附".repeat(11))
-        );
-        assert_eq!(shorten("abcdef", 4), "abc\u{2026}");
+    fn labels_are_asked_again_once_after_a_failure_of_the_moment() {
+        let not_loaded = Lazy::NotLoaded;
+        // Not before the first page is on screen.
+        assert!(!auto_request_due(false, &not_loaded, 0));
+        assert!(auto_request_due(true, &not_loaded, 0));
+        // The host was restarting: one more try on a later wake-up.
+        let unavailable = EngineError::Unavailable("restarting".into());
+        let attempts = attempts_after(1, Some(&unavailable));
+        assert!(auto_request_due(true, &not_loaded, attempts));
+        assert!(!auto_request_due(true, &not_loaded, attempts + 1));
+        // The request brought the host down: only a demand asks again.
+        let crashed = EngineError::HostExited(HostExit {
+            reason: HostExitReason::Crashed { exit_code: None },
+            permanent: false,
+        });
+        assert!(!auto_request_due(
+            true,
+            &not_loaded,
+            attempts_after(1, Some(&crashed))
+        ));
+        // Answered or on its way: nothing to ask.
+        assert!(!auto_request_due(true, &Lazy::Absent, 0));
+        assert!(!auto_request_due(
+            true,
+            &Lazy::Ready(Arc::new(PageLabels::default())),
+            0
+        ));
+        assert_eq!(attempts_after(1, None), 1);
     }
 }

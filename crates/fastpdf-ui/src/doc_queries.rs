@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use fastpdf_engine_api::{EngineError, GuardedDocument, PageLabels};
+use fastpdf_engine_api::{DocumentId, EngineError, GuardedDocument, PageLabels};
 use gpui::{Context, Task};
 
 use crate::reader::{DocState, ReaderView};
@@ -15,7 +15,7 @@ use crate::reader::{DocState, ReaderView};
 /// The state of one lazily loaded answer.
 pub(crate) enum Lazy<T> {
     /// Not asked yet, or asked and the engine could not answer at the
-    /// time (asked again on the next demand).
+    /// time (asked again on demand; the owner may also retry on its own).
     NotLoaded,
     /// The question runs in the background.
     Loading(#[allow(dead_code)] Task<()>),
@@ -35,16 +35,17 @@ impl<T> Lazy<T> {
 /// The open document's lazily loaded answers.
 pub(crate) struct DocQueries {
     pub labels: Lazy<Arc<PageLabels>>,
-    /// The labels were asked for once on their own (after the first page);
-    /// after that only a demand (go to page, a dev-script step) asks again.
-    pub labels_requested: bool,
+    /// Times the labels were asked for on their own (after the first page;
+    /// `crate::page_labels` bounds them). Demands (go to page, a dev-script
+    /// step) do not count.
+    pub label_attempts: u8,
 }
 
 impl Default for DocQueries {
     fn default() -> Self {
         Self {
             labels: Lazy::NotLoaded,
-            labels_requested: false,
+            label_attempts: 0,
         }
     }
 }
@@ -60,6 +61,25 @@ pub(crate) fn settle<T>(result: Result<Option<T>, EngineError>) -> Lazy<T> {
     }
 }
 
+/// Puts the answer to a question about document `asked` into `slot` of the
+/// open document's queries (`open`: its id and queries, `None` without
+/// one). An answer for a document that is no longer open is dropped
+/// (`None`); otherwise the queries come back with the error, if any.
+pub(crate) fn deliver<T>(
+    open: Option<(DocumentId, &mut DocQueries)>,
+    asked: DocumentId,
+    slot: fn(&mut DocQueries) -> &mut Lazy<T>,
+    answer: Result<Option<T>, EngineError>,
+) -> Option<(&mut DocQueries, Option<EngineError>)> {
+    let (open_id, queries) = open?;
+    if open_id != asked {
+        return None;
+    }
+    let error = answer.as_ref().err().cloned();
+    *slot(queries) = settle(answer);
+    Some((queries, error))
+}
+
 impl ReaderView {
     pub(crate) fn doc_queries(&self) -> Option<&DocQueries> {
         match &self.doc {
@@ -70,13 +90,14 @@ impl ReaderView {
 
     /// Asks `query` about the open document on a background thread, unless
     /// `slot` is already loading or settled; the answer goes into `slot`
-    /// (through [`settle`]) if the same document is still open, then
-    /// `done` sees it with the time since the session started.
+    /// (through [`deliver`]) if the same document is still open, then
+    /// `done` sees the queries, the error if there was one and the time
+    /// since the session started.
     pub(crate) fn load_doc_query<T: Send + 'static>(
         &mut self,
         slot: fn(&mut DocQueries) -> &mut Lazy<T>,
         query: impl FnOnce(&GuardedDocument) -> Result<Option<T>, EngineError> + Send + 'static,
-        done: fn(&Lazy<T>, std::time::Duration),
+        done: fn(&mut DocQueries, Option<&EngineError>, std::time::Duration),
         cx: &mut Context<'_, Self>,
     ) {
         let DocState::Open(open) = &mut self.doc else {
@@ -94,16 +115,18 @@ impl ReaderView {
         let task = cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |this, cx| {
-                let DocState::Open(open) = &mut this.doc else {
-                    return;
+                let open = match &mut this.doc {
+                    DocState::Open(open) => Some((open.session.id(), &mut open.queries)),
+                    _ => None,
                 };
-                if open.session.id() != document {
-                    return;
+                if let Some((queries, error)) = deliver(open, document, slot, result) {
+                    done(
+                        queries,
+                        error.as_ref(),
+                        Instant::now().duration_since(opened_at),
+                    );
+                    cx.notify();
                 }
-                let state = slot(&mut open.queries);
-                *state = settle(result);
-                done(state, Instant::now().duration_since(opened_at));
-                cx.notify();
             });
         });
         if let DocState::Open(open) = &mut self.doc {
@@ -163,5 +186,31 @@ mod tests {
         );
         assert!(!Lazy::<u8>::NotLoaded.is_settled());
         assert!(Lazy::<u8>::Absent.is_settled());
+    }
+
+    #[test]
+    fn answers_for_a_closed_document_are_dropped() {
+        let asked = DocumentId::from_raw(7);
+        let labels: fn(&mut DocQueries) -> &mut Lazy<Arc<PageLabels>> = |q| &mut q.labels;
+        let answer = || Ok(Some(Arc::new(PageLabels::default())));
+        // No document open any more.
+        assert!(deliver(None, asked, labels, answer()).is_none());
+        // Another document opened meanwhile: its queries stay as they are.
+        let mut other = DocQueries::default();
+        let replaced = Some((DocumentId::from_raw(8), &mut other));
+        assert!(deliver(replaced, asked, labels, answer()).is_none());
+        assert_eq!(name(&other.labels), "not loaded");
+        // The same document: the answer lands.
+        let mut same = DocQueries::default();
+        let (queries, error) = deliver(Some((asked, &mut same)), asked, labels, answer()).unwrap();
+        assert_eq!(name(&queries.labels), "ready");
+        assert!(error.is_none());
+        // A failure comes back with its error.
+        let mut failed = DocQueries::default();
+        let unavailable = Err(EngineError::Unavailable("restarting".into()));
+        let (queries, error) =
+            deliver(Some((asked, &mut failed)), asked, labels, unavailable).unwrap();
+        assert_eq!(name(&queries.labels), "not loaded");
+        assert!(matches!(error, Some(EngineError::Unavailable(_))));
     }
 }
