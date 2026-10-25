@@ -94,6 +94,16 @@ fn broken_offsets_fall_back_to_the_last_stream() {
     let mut both = b"%PDF-1.7\ntrailer\n<< /Root 4 0 R >>\n".to_vec();
     both.extend_from_slice(&stream_file("1")[9..]);
     assert_eq!(root(&both), Some(3));
+    // An object that looks like a stream inside the trailer, or that is
+    // no stream at all, is no cross-reference stream.
+    let decoys = [
+        "trailer\n<< /Root 4 0 R /Note (99 0 obj << /Type /XRef /Root 5 0 R >> stream) >>\n",
+        "trailer\n<< /Root 4 0 R >>\n99 0 obj\n<< /Type /XRef /Root 5 0 R >>\nendobj\n",
+    ];
+    for decoy in decoys {
+        let doc = format!("%PDF-1.7\n{decoy}startxref\n999999999\n%%EOF\n");
+        assert_eq!(root(doc.as_bytes()), Some(4), "{decoy}");
+    }
     assert_eq!(object_header_start(b"x 12 0 obj", 7), Some(2));
     assert_eq!(object_header_start(b"12 0obj", 4), None);
     assert_eq!(object_header_start(b"a 0 obj", 4), None);

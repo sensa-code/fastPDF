@@ -243,6 +243,13 @@ fn fields_listed_with_their_parent_count_once() {
         counts(&["<< /Fields [7 0 R 8 0 R] >>", named, group, text, signed]),
         (2, 1, 1)
     );
+    // Widgets with /Kids null are widgets: one signed field, not three.
+    let field = "<< /T (f) /FT /Sig /V << >> /Kids [8 0 R 9 0 R] >>";
+    let widget = "<< /Subtype /Widget /Parent 7 0 R /Kids null >>";
+    assert_eq!(
+        counts(&["<< /Fields [7 0 R] >>", field, widget, widget]),
+        (1, 1, 1)
+    );
     // Two fields whose /Kids name the same object that is no array: both
     // are terminal fields.
     let a = "<< /T (a) /Kids 9 0 R /FT /Sig /V << >> >>";

@@ -41,7 +41,12 @@ fn last_section_before(bytes: &[u8], end: usize) -> Option<Dict<'_>> {
     let start = end.saturating_sub(WINDOW);
     let window = bytes.get(start..end)?;
     match (trailer_before(window), stream_before(window)) {
-        (Some((t, table)), Some((s, stream))) => Some(if t > s { table } else { stream }),
+        // A "stream" inside the trailer's own dictionary (in a string) is
+        // none.
+        (Some((table_at, table)), Some((stream_at, stream))) => {
+            let table_end = table_at + table.data().len();
+            Some(if stream_at > table_end { stream } else { table })
+        }
         (table, stream) => table.or(stream).map(|(_, dict)| dict),
     }
 }
@@ -115,24 +120,32 @@ fn number(data: &[u8], pos: usize) -> Option<(usize, usize)> {
     Some((text.parse().ok()?, start + digits))
 }
 
-/// The dictionary of the cross-reference stream (`n g obj << ... >>`) at
-/// the start of `section`.
+/// The dictionary of the cross-reference stream (`n g obj << ... >>
+/// stream`) at the start of `section`; an object that is no stream is
+/// none, whatever its dictionary says.
 fn stream_dict(section: &[u8]) -> Option<Dict<'_>> {
     let (_, pos) = number(section, 0)?;
     let (_, pos) = number(section, pos)?;
     let rest = section.get(pos..)?;
     let rest = rest[whitespace(rest)..].strip_prefix(b"obj")?;
-    let dict = dict(&rest[whitespace(rest)..])?;
-    dict.get::<Name<'_>>(b"Type")
-        .is_some_and(|t| t.as_ref() == b"XRef")
-        .then_some(dict)
+    let rest = &rest[whitespace(rest)..];
+    let dict = dict(rest)?;
+    let after = rest.get(dict.data().len()..)?;
+    let is_stream = after[whitespace(after)..].starts_with(b"stream");
+    (is_stream
+        && dict
+            .get::<Name<'_>>(b"Type")
+            .is_some_and(|t| t.as_ref() == b"XRef"))
+    .then_some(dict)
 }
 
-/// The last `trailer` dictionary in `window`, and where it is.
+/// The last `trailer` dictionary in `window`, and where the dictionary
+/// starts.
 fn trailer_before(window: &[u8]) -> Option<(usize, Dict<'_>)> {
     let at = window.windows(7).rposition(|w| w == b"trailer")?;
     let rest = &window[at + 7..];
-    Some((at, dict(&rest[whitespace(rest)..])?))
+    let start = at + 7 + whitespace(rest);
+    Some((start, dict(window.get(start..)?)?))
 }
 
 /// The last cross-reference stream object (`n g obj << /Type /XRef ... >>`)

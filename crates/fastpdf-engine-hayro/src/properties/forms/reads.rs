@@ -46,7 +46,7 @@ pub(super) fn has_value(dict: &Dict<'_>, key: &[u8]) -> bool {
 /// has a name (`/T`), or kids of its own (an unnamed field that groups
 /// others; widgets have none).
 pub(super) fn is_field(dict: &Dict<'_>) -> bool {
-    dict.contains_key(b"T") || dict.contains_key(b"Kids")
+    dict.contains_key(b"T") || has_value(dict, b"Kids")
 }
 
 /// Whether a field's own `/V` is a signature: a dictionary, or a reference
