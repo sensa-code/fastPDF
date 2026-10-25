@@ -21,20 +21,21 @@
 | M4 Renderer comparison | `docs/engine-comparison.md` | ✅ Hayro 為預設 engine（ADR 0007） |
 | M5 Tile renderer | tile／scheduler／cache + GPUI viewport；B-3／B-4（2 workers；tile 508，對齊 GPU atlas） | ✅ |
 | M6 Memory budget | `MemoryBudgetManager`、overlay 分項、B-5 驗證（大型 PDF 不爆 RAM） | ✅ |
-| M7 UX | sidebar（outline、縮圖）、搜尋、選取／複製、列印、recent files、深色外觀、夜間模式、設定、繁體中文介面、平滑捲動、文件內容（Ctrl+D） | V0.1 功能清單完成；檔案關聯目前只有命令列（`--register-file-types`）；安裝程式待做 |
+| M7 UX | sidebar（outline、縮圖）、搜尋、選取／複製、列印、recent files、深色外觀、夜間模式、設定、繁體中文介面、平滑捲動 | V0.1 功能清單完成；檔案關聯目前只有命令列（`--register-file-types`）；安裝程式待做 |
+| 閱讀導覽 | 上一個／下一個檢視（Alt+←／→、滑鼠側鍵、工具列 ←→）；頁面標籤（工具列、縮圖、捲軸）與跳頁（Ctrl+G，輸入頁碼或標籤）；搜尋選項（大小寫 Alt+C、全字 Alt+W，全形英數視同半形）與結果清單（Ctrl+Shift+F）；文件內的連結，外部連結（http、https、mailto）每次確認後才交給瀏覽器或郵件程式（ADR 0015）；加密文件的開啟密碼（ADR 0014）；文件內容（Ctrl+D、ⓘ）；重新開啟時回到上次的位置 | ✅ round 1；窄視窗時放不下的工具列按鈕收進「⋯」選單；閱讀 KPI 不變（`docs/benchmarks/reading-round1.md`） |
 | 閱讀版面 | 可拖曳的捲軸（點軌道翻一頁）；單頁、連續捲動、雙頁、雙頁連續，雙頁可選封面單獨顯示；單頁模式以 PageDown、方向鍵或滾輪在頁尾翻頁 | ✅ 工具列的版面選單，選擇會保存在設定 |
 | 寫入功能 | 另存副本、頁面操作（擷取、分割、刪除、旋轉、重排、合併）、印章、文字修改、數位簽章（ADR 0013：一律另存新檔、在子行程執行） | 另存副本（Ctrl+Shift+S）、頁面工具、蓋章（印章圖片）、修改文字、數位簽章（PAdES B-B，可用印章作為簽章外觀）✅（工具列「編輯」選單） |
 | 發佈 | 可攜版 zip：icon／版本資訊、第三方授權全文、SHA-256、smoke test | ✅ 0.0.1 預覽版（GitHub Releases，未簽章）；`tools/package.ps1`、`docs/RELEASE.md`；第三方授權全文 0 缺漏，exe 與 zip 可重現 |
 | Render host | engine 移到獨立 process（ADR 0008）：crash、配置失敗、卡住只會結束 host | ✅ Windows 的預設（`hayro-isolated`）；`--engine hayro` 在 process 內 render。吞吐量與啟動時間和 in-process 相同（`docs/benchmarks/render-host.md`） |
 
-## KPI（spec §29；第十輪 `658b47a` 實測，idle RAM 為第十一輪）
+## KPI（spec §29；第十輪 `658b47a` 實測，idle RAM 為第十一輪，執行檔為 round 1 之後）
 
 - 預設 engine 是 render host（`hayro-isolated`），idle 時有 3 個 process：app、文件 host、待命 host。
 - GPUI 的 Windows 平台套用了 4 個本地 patch（ADR 0011）。
 
 | 指標 | 目標 | 實測 | |
 |---|---|---|---|
-| 執行檔 | < 30 MB | 16.1 MiB | ✅ |
+| 執行檔 | < 30 MB | 22.1 MiB（2026-10-25，round 1 之後的 dist build；寫入功能之後 21.0 MiB，第九輪 16.1 MiB） | ✅ |
 | 小檔首頁 | < 200 ms | 中位數 166 ms（3 頁）、167 ms（300 頁），從 process 啟動起算到第一頁完全清晰 | ✅ |
 | Idle RAM（private working set） | < 50 MB | 24.2 MB（3 頁文件，3 個 process 合計；第十一輪，patch 0004 之後，原本 27.9 MB）；private bytes 108 MB，大部分是 GPU driver | ✅ |
 | 大型 PDF | 不需完整掃描 | 2000 頁捲到底，private 穩定在 190–220 MiB（B-5）；engine 層與 M1 baseline 相同（B-1 配對比較） | ✅ |
@@ -42,12 +43,13 @@
 | 網路／telemetry | 0 | 0 | ✅ |
 
 - 量測機是高階桌機（Ryzen 9 9950X、RTX 5090），每次啟動前都等系統負載降到 30% 以下。
+- round 1 之後（2026-10-25，release build 與 round 1 之前的配對比較，量測期間有背景負載，所以沒有取代上表的 dist build 數字）：首頁、idle RAM 與 idle CPU 都沒有可判定的變化。啟動前負載 ≤ 20% 的幾次，首頁中位數 158 ms（3 頁）、156 ms（300 頁）；idle private working set 24.7 MB（3 頁）、26.5 MB（300 頁）。見 `docs/benchmarks/reading-round1.md`。
 - 低階機器以模擬方式量測（R12，`docs/benchmarks/low-end.md`，本機內顯、WARP，以及較少、較慢的 CPU 核心）：
   - 首頁時間和單核速度成正比，主要花在 GPU 初始化：弱內顯配快 CPU 約 193 ms，主流舊筆電等級約 0.57 秒，入門筆電等級約 1.15 秒。這些包含本機特有的跨 adapter 成本（螢幕接在獨立顯示卡上），螢幕由內顯驅動時估計約 0.1、0.27、0.58 秒；
   - idle RAM 在內顯上 44–50 MB（多出的是 driver 的配置）；
   - idle CPU 接近 0、捲動反應（約 22 ms）在低階設定上仍成立；
   - 尚未在真正的低階筆電上量測。
-- 定義與細節見 `benchmarks/README.md`、`docs/benchmarks/b8-app.md`。
+- 定義與細節見 `benchmarks/README.md`、`docs/benchmarks/b8-app.md`、`docs/benchmarks/reading-round1.md`。
 
 ## 需求
 

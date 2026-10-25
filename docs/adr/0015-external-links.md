@@ -1,6 +1,6 @@
 # ADR 0015 — 文件中的連結與外部連結（http、https、mailto）
 
-- 狀態：Proposed（round 1；PR 合併時改為 Accepted）
+- 狀態：Accepted（round 1，隨閱讀功能的 PR 一起合併）
 - 日期：2026-10-25
 - 相關：spec §9（不編輯 annotation）、§15–§16（cache 預算）、§20（極簡介面）、§24／§25（惡意輸入）、§27（介面語言）、§31（log）、§46（開發工具）；CLAUDE.md non-negotiables「No network」；ADR 0002（engine 抽象）、ADR 0004（memory budget）、ADR 0008（out-of-process rendering）、ADR 0014（提示卡）
 
@@ -95,3 +95,4 @@ info 等級的 log 只寫頁碼，以及外部網址的 scheme 與 host；完整
 - 單元與整合測試：`crates/fastpdf-shell/src/uri.rs` 的網址表（接受、正規化結果、每種拒絕原因）；`crates/fastpdf-core/src/links.rs`（檢查、上限、最上層連結、點擊門檻、cache）；`crates/fastpdf-engine-hayro/tests/links.rs`（flags、不執行的動作、反向矩形、網址上限、具名目的地、名稱樹預算、連結洪水、無法解析的陣列項目、fixtures）；i18n 與開發腳本的解析。
 - Fixtures：`small-text/links-actions.pdf`（每種連結一個標示框，座標見 `fixtures/README.md`）、`malformed/links-flood.pdf`。
 - GUI 檢查與待 owner 手動確認的項目見 round 1 的 PR 說明；owner 需手動確認一次：實際點擊網頁連結並按「開啟」，預設瀏覽器會開啟該網址。
+- 閱讀 KPI（2026-10-25，round 1 前後的 B-1 與 B-8 配對比較）：開檔、第一頁、idle 與記憶體沒有可判定的變化；捲動與縮放的第一個反應相同，見 [`docs/benchmarks/reading-round1.md`](../benchmarks/reading-round1.md)。

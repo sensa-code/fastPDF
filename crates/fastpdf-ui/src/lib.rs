@@ -26,6 +26,19 @@
 //! * Find (Ctrl+F), text selection and the sidebar (outline, thumbnails)
 //!   start their background work only when used: text is extracted through
 //!   one byte-budgeted `TextCache`, thumbnails render only while visible.
+//!   Match case (Alt+C) and whole word (Alt+W) are find-bar toggles
+//!   (`find_options.rs`); Ctrl+Shift+F lists every hit in the sidebar
+//!   (`search_results.rs`).
+//! * Back and Forward (Alt+Left / Alt+Right, the mouse's side buttons, the
+//!   toolbar's arrows) return between views left by a jump: go to page,
+//!   first or last page, the outline, thumbnails, links, search hits
+//!   (`navigation.rs`, a bounded `fastpdf_core::NavigationHistory`).
+//! * Page labels (`page_labels.rs`) are asked for after the first page is
+//!   exact and shown in the toolbar, thumbnails and scroll bar; Ctrl+G goes
+//!   to a page by number or label (`go_to_page.rs`).
+//! * Documents that need a password ask for it in a prompt card in the
+//!   document area (`password.rs`, `prompt.rs`, ADR 0014); they are never
+//!   written.
 //! * Print (Ctrl+P) opens a small panel; jobs run on their own thread
 //!   through `fastpdf_print` (Win32 GDI, banded) and report progress
 //!   through the same wake-up channel.
@@ -39,7 +52,9 @@
 //!   UI language unless the settings choose; mouse-wheel notches scroll
 //!   with a short ease-out (`smooth_scroll.rs`).
 //! * Ctrl+D (or the toolbar's ⓘ) shows the document's properties
-//!   (`properties.rs`); the engine is asked only then.
+//!   (`properties.rs`); the engine is asked only then. Toolbar controls a
+//!   narrow window has no room for move into a "⋯" menu
+//!   (`toolbar/overflow.rs`).
 //! * Links on the pages are read when the pointer first moves over a page
 //!   (`links.rs`); a click follows an internal link, a drag still selects;
 //!   http, https and mailto links open after a confirmation (`link_open.rs`,

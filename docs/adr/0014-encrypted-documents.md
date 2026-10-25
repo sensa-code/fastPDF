@@ -1,6 +1,6 @@
 # ADR 0014 — 加密文件（開啟密碼）
 
-- 狀態：Proposed（round 1；PR 合併時改為 Accepted）
+- 狀態：Accepted（round 1，隨閱讀功能的 PR 一起合併）
 - 日期：2026-10-24
 - 相關：spec §24（錯誤處理）、§25（安全）、§27（介面語言）；ADR 0002（engine 抽象）、ADR 0008（out-of-process rendering）、ADR 0013（文件寫入）；`docs/upstream-issues/hayro.md` 草稿 #2
 
@@ -83,3 +83,4 @@ hayro 不提供權限資訊。列印與複製和現在的 owner-only 文件一�
   - 取消（`prompt-cancel` 與 Esc）回到空白視窗，最近開啟的檔案沒有新增；提示卡顯示時，側邊欄、列印、尋找與上一頁的指令都沒有作用；
   - log 裡找不到任何 fixture 密碼，step 一律顯示 `Password(<redacted>)`；執行期間 render host 的命令列只有 `--render-host` 與 pipe 參數。
 - 待 owner 手動確認：注音輸入法組字時只顯示 •；欄位裡按 Ctrl+C 不改變剪貼簿。
+- 閱讀 KPI（2026-10-25，round 1 前後的 B-1 與 B-8 配對比較）：開檔、第一頁、idle 與記憶體沒有可判定的變化，見 [`docs/benchmarks/reading-round1.md`](../benchmarks/reading-round1.md)。
