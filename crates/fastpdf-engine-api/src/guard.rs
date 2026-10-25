@@ -13,9 +13,10 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{
-    CancelToken, ColorMode, DocumentMetadata, DocumentSource, EngineDocument, EngineError,
-    EngineInfo, HostStatus, Link, MemoryPressure, OpenOptions, OutlineItem, PageIndex, PageInfo,
-    PageLabels, PdfEngine, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
+    CancelToken, ColorMode, DocumentMetadata, DocumentProperties, DocumentSource, EngineDocument,
+    EngineError, EngineInfo, HostStatus, Link, MemoryPressure, OpenOptions, OutlineItem, PageIndex,
+    PageInfo, PageLabels, PdfEngine, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits,
+    TextLayer,
 };
 
 /// Upper bound for [`EngineDocument::render_queue_depth`]: callers start one
@@ -127,6 +128,12 @@ impl EngineDocument for GuardedDocument {
 
     fn metadata(&self) -> Result<DocumentMetadata, EngineError> {
         self.call(|| self.inner.metadata())
+    }
+
+    // Without this, the trait's default would answer from the guarded
+    // metadata only.
+    fn properties(&self) -> Result<DocumentProperties, EngineError> {
+        self.call(|| self.inner.properties())
     }
 
     fn render(

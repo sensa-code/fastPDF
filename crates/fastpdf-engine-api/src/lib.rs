@@ -16,6 +16,7 @@
 //!   (tiles) are expressed in this space.
 
 mod cancel;
+mod date;
 pub mod display;
 mod engine;
 mod error;
@@ -28,12 +29,14 @@ mod metadata;
 mod nav;
 mod password;
 mod pixmap;
+mod properties;
 mod render;
 mod source;
 mod text;
 pub mod write;
 
 pub use cancel::CancelToken;
+pub use date::PdfDate;
 pub use engine::{
     EngineCapabilities, EngineDocument, EngineInfo, HostStatus, MemoryPressure, OpenOptions,
     PageInfo, PdfEngine,
@@ -48,6 +51,9 @@ pub use metadata::DocumentMetadata;
 pub use nav::{Destination, DestinationView, Link, LinkTarget, OutlineItem};
 pub use password::{Password, wipe_bytes, wipe_string, wipe_vec};
 pub use pixmap::{PixelFormat, Pixmap, PixmapMut, Rgba8};
+pub use properties::{
+    DocumentProperties, EncryptionMethod, FormSummary, Permissions, PrintPermission, Security,
+};
 pub use render::{ColorMode, RenderOutcome, RenderRequest};
 pub use source::{DocumentSource, FileOrigin, SharedBytes};
 pub use text::{CharPos, LaidText, LineBreak, TextLayer, TextSpan, is_cjk};

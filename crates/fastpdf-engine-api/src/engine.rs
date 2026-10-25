@@ -1,7 +1,7 @@
 use crate::{
-    CancelToken, DocumentMetadata, DocumentSource, EngineError, Link, OutlineItem, PageIndex,
-    PageLabels, PageSize, Password, PixmapMut, RenderOutcome, RenderRequest, ResourceLimits,
-    Rotation, TextLayer,
+    CancelToken, DocumentMetadata, DocumentProperties, DocumentSource, EngineError, Link,
+    OutlineItem, PageIndex, PageLabels, PageSize, Password, PixmapMut, RenderOutcome,
+    RenderRequest, ResourceLimits, Rotation, TextLayer,
 };
 
 /// Static description of an engine adapter.
@@ -101,6 +101,15 @@ pub trait EngineDocument: Send + Sync {
 
     fn metadata(&self) -> Result<DocumentMetadata, EngineError> {
         Ok(DocumentMetadata::default())
+    }
+
+    /// The properties panel's facts: the metadata, how the document is
+    /// encrypted, its form and signature fields, whether it is tagged and
+    /// linearized. Asked for only when the panel opens, never while a
+    /// document opens; may read the trailer, the catalog and the form field
+    /// tree (bounded). The default knows the metadata only.
+    fn properties(&self) -> Result<DocumentProperties, EngineError> {
+        Ok(DocumentProperties::from_metadata(self.metadata()?))
     }
 
     /// Renders `request.region` of a page into `target`, whose size equals
