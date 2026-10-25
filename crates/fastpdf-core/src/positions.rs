@@ -192,8 +192,12 @@ impl PositionStore {
     }
 
     /// Where `doc` was left: a record not written yet, else the file's.
-    /// `None` when there is none or the file cannot be read.
+    /// `None` when there is none, the file cannot be read, or `doc` is a
+    /// path the file cannot hold: such a path was never remembered, and
+    /// comparing it (lossily, as text) could name another file, e.g. an
+    /// unpaired UTF-16 surrogate against a real U+FFFD.
     pub fn lookup(&self, doc: &Path) -> Option<PositionRecord> {
+        format::writable(doc)?;
         if let Some((_, record)) = lock(&self.pending).iter().find(|(p, _)| same_path(p, doc)) {
             return Some(*record);
         }

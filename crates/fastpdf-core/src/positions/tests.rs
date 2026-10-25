@@ -220,6 +220,31 @@ fn only_paths_the_file_can_hold_are_remembered() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(windows)]
+#[test]
+fn paths_that_are_not_unicode_never_match_a_stored_one() {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    let dir = scratch("surrogate");
+    let store = PositionStore::at(dir.join("positions.txt"));
+    let stored = Path::new("C:\\docs\\x\u{fffd}.pdf");
+    assert!(store.remember(stored, record(4)));
+    // The same name with an unpaired surrogate where the U+FFFD is: shown
+    // (lossily) the same, but another file.
+    let mut wide: Vec<u16> = "C:\\docs\\x".encode_utf16().collect();
+    wide.push(0xD800);
+    wide.extend(".pdf".encode_utf16());
+    let lone = PathBuf::from(OsString::from_wide(&wide));
+    assert_eq!(lone.to_string_lossy(), stored.to_string_lossy());
+    assert_eq!(store.lookup(&lone), None, "pending");
+    store.flush().unwrap();
+    assert_eq!(store.lookup(&lone), None, "written");
+    assert_eq!(store.lookup(stored), Some(record(4)));
+    assert!(!store.remember(&lone, record(5)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_flush_removes_temporary_files_an_interrupted_write_left() {
     let dir = scratch("stale");
