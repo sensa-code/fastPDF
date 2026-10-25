@@ -72,27 +72,36 @@ impl ReaderView {
             .filter(|_| self.settings.remember_position)
     }
 
-    /// The document at `path` opened (its start is applied): follow its
-    /// view. Without a start (positions off when it opened) nothing is.
+    /// The document at `path` is open (its start is applied): follow its
+    /// view. Without a start (positions were off when it started opening)
+    /// only when they are on now: its view is then written like a moved one.
     pub(crate) fn track_reading(&mut self, path: &Path, start: Option<ReadingStart>) {
         self.reading.settle = None;
         self.reading.doc = None;
-        let (Some(start), Some(session), true) = (start, self.session(), self.reading.has_store())
-        else {
+        let (Some(session), true) = (self.session(), self.reading.has_store()) else {
             return;
         };
         let view = quantized(session.saved_view());
         let page_count = session.page_count();
-        if let Some(restore) = &start.restore {
-            log::info!(
-                "restored the reading position of {}: page {} ({})",
-                path.display(),
-                restore.view().page.display_number(),
-                restore.kind()
-            );
-        }
-        let tracked = Tracked::new(path.to_path_buf(), page_count, &start, view, Instant::now());
-        self.reading.doc = Some(tracked);
+        let path = path.to_path_buf();
+        let now = Instant::now();
+        self.reading.doc = match start {
+            Some(start) => {
+                if let Some(restore) = &start.restore {
+                    log::info!(
+                        "restored the reading position of {}: page {} ({})",
+                        path.display(),
+                        restore.view().page.display_number(),
+                        restore.kind()
+                    );
+                }
+                Some(Tracked::new(path, page_count, &start, view, now))
+            }
+            None if self.settings.remember_position => {
+                Some(Tracked::adopted(path, page_count, view, now))
+            }
+            None => None,
+        };
     }
 
     /// Canvas prepaint: notes where the view is and starts the settle timer
@@ -167,8 +176,7 @@ impl ReaderView {
 
     /// Turns remembering positions on or off. Off stops reading and
     /// writing them (the file stays); on follows the open document from
-    /// where it is (its file's identity is unknown, so it reopens at that
-    /// place in the default zoom).
+    /// where it is (`track_reading` without a start).
     pub(crate) fn set_remember_position(&mut self, on: bool, cx: &mut Context<'_, Self>) {
         self.settings.remember_position = on;
         if !on {
@@ -177,12 +185,7 @@ impl ReaderView {
             && let crate::reader::DocState::Open(open) = &self.doc
         {
             let path = open.path.clone();
-            let start = ReadingStart {
-                restore: None,
-                identity: None,
-                remembered: false,
-            };
-            self.track_reading(&path, Some(start));
+            self.track_reading(&path, None);
         }
         self.save_settings(cx);
         cx.notify();

@@ -27,6 +27,9 @@ pub(crate) const APP_TITLE: &str = "FastPDF";
 impl ReaderView {
     /// Opens `path`, replacing the current document.
     pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // Before the open looks positions up: reopening this document must
+        // find where it is now.
+        self.save_reading_position(cx);
         let path = std::path::absolute(&path).unwrap_or(path);
         let engine = Arc::clone(&self.options.engine);
         let positions = self.positions_for_open();

@@ -35,8 +35,10 @@ pub(crate) struct Tracked {
     /// closing writes even an unchanged view, so the document moves to the
     /// front of the store (the least recently left are dropped first).
     refresh: bool,
-    /// The view as restored or opened, or as last written.
-    saved: SavedView,
+    /// The view as restored or opened, or as last written; `None` for a
+    /// document followed from the middle of its session (the setting was
+    /// turned on): nothing is written yet, so its view counts as moved.
+    saved: Option<SavedView>,
     /// The view the last observation saw, and since when.
     seen: SavedView,
     changed_at: Instant,
@@ -57,7 +59,23 @@ impl Tracked {
             identity: start.identity,
             page_count,
             refresh: start.remembered,
-            saved: view,
+            saved: Some(view),
+            seen: view,
+            changed_at: now,
+        }
+    }
+
+    /// `path` already open with `page_count` pages and showing `view` when
+    /// remembering positions was turned on: its view is written like a
+    /// moved one (the file's identity is unknown, so it reopens at that
+    /// place in the default zoom).
+    pub(crate) fn adopted(path: PathBuf, page_count: u32, view: SavedView, now: Instant) -> Self {
+        Self {
+            path,
+            identity: None,
+            page_count,
+            refresh: false,
+            saved: None,
             seen: view,
             changed_at: now,
         }
@@ -74,7 +92,7 @@ impl Tracked {
             self.seen = view;
             self.changed_at = now;
         }
-        self.seen != self.saved
+        Some(self.seen) != self.saved
     }
 
     /// The settle timer fired and the view is `view`.
@@ -84,7 +102,7 @@ impl Tracked {
         if still < SETTLE {
             return Settle::Wait(SETTLE - still);
         }
-        if view == self.saved {
+        if Some(view) == self.saved {
             return Settle::Nothing;
         }
         Settle::Write(self.written(view))
@@ -94,12 +112,12 @@ impl Tracked {
     /// write, when the view moved since the last write or the store's entry
     /// is to be refreshed. Calling it again writes nothing new.
     pub(crate) fn closing(&mut self, view: SavedView) -> Option<PositionRecord> {
-        (view != self.saved || self.refresh).then(|| self.written(view))
+        (Some(view) != self.saved || self.refresh).then(|| self.written(view))
     }
 
     /// The record for `view`, which counts as written from now on.
     fn written(&mut self, view: SavedView) -> PositionRecord {
-        self.saved = view;
+        self.saved = Some(view);
         self.seen = view;
         self.refresh = false;
         PositionRecord {
@@ -220,5 +238,23 @@ mod tests {
         ));
         assert_eq!(settled.closing(at(1, 0.0)), None);
         assert_eq!(settled.path(), Path::new("a.pdf"));
+    }
+
+    #[test]
+    fn adopted_views_are_written_like_moved_ones() {
+        let t0 = Instant::now();
+        // Turned on at page 20 and closed without moving: written.
+        let mut closed = Tracked::adopted(PathBuf::from("a.pdf"), 50, at(19, 0.5), t0);
+        let record = closed.closing(at(19, 0.5)).expect("never written");
+        assert_eq!((record.view, record.identity), (at(19, 0.5), None));
+        assert_eq!(closed.closing(at(19, 0.5)), None);
+        // Left open: the settle timer writes it.
+        let mut open = Tracked::adopted(PathBuf::from("a.pdf"), 50, at(19, 0.5), t0);
+        assert!(open.observe(at(19, 0.5), t0));
+        assert!(matches!(
+            open.settled(at(19, 0.5), t0 + SETTLE),
+            Settle::Write(_)
+        ));
+        assert!(!open.observe(at(19, 0.5), t0 + SETTLE));
     }
 }
