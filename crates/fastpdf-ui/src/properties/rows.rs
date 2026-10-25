@@ -97,8 +97,13 @@ pub(crate) fn sections(facts: &Facts<'_>, strings: &Strings) -> Vec<Section> {
         || MISSING.to_owned(),
         |size| text::page_size(size, facts.page.display_number(), strings),
     );
-    let flag = |pick: fn(&DocumentProperties) -> bool| {
-        engine(ready.map(|p| strings.yes_no(pick(p)).to_owned()))
+    // "—" when the engine cannot tell.
+    let flag = |pick: fn(&DocumentProperties) -> Option<bool>| {
+        engine(
+            ready
+                .and_then(pick)
+                .map(|yes| strings.yes_no(yes).to_owned()),
+        )
     };
     let advanced = Section {
         title: L::Advanced,
@@ -136,7 +141,7 @@ pub(crate) fn sections(facts: &Facts<'_>, strings: &Strings) -> Vec<Section> {
         }
     }
 
-    let forms = ready.map(|p| p.forms);
+    let forms = ready.and_then(|p| p.forms);
     let forms = Section {
         title: L::Forms,
         note: None,

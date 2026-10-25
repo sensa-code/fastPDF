@@ -43,15 +43,15 @@ fn encrypted() -> DocumentProperties {
             encrypt_metadata: true,
             user_password: false,
         }),
-        forms: FormSummary {
+        forms: Some(FormSummary {
             fields: 20_000,
             signature_fields: 3,
             signatures: 1,
             xfa: false,
             truncated: true,
-        },
-        tagged: true,
-        linearized: false,
+        }),
+        tagged: Some(true),
+        linearized: Some(false),
     }
 }
 
@@ -73,6 +73,20 @@ fn rows_while_reading_and_without_an_answer() {
         Some("1.23 MB（1,289,331 位元組）")
     );
     assert_eq!(value(&pending, L::Printing), None);
+    // An engine that knows only the metadata: what it cannot tell is "—",
+    // not "No" or "0".
+    let unknown = DocumentProperties::from_metadata(DocumentMetadata::default());
+    let rows = sections(&facts(Answer::Ready(&unknown)), zh);
+    for label in [
+        L::Tagged,
+        L::FastWebView,
+        L::FormFields,
+        L::SignatureFields,
+        L::Xfa,
+    ] {
+        assert_eq!(value(&rows, label), Some(MISSING), "{label:?}");
+    }
+    assert_eq!(value(&rows, L::Encryption), Some("否"));
     let none = sections(&facts(Answer::None), zh);
     assert_eq!(value(&none, L::Title), Some(MISSING));
     assert_eq!(value(&none, L::FormFields), Some(MISSING));

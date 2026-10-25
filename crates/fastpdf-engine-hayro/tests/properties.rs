@@ -138,7 +138,7 @@ const FORM: &[&str] = &[
 fn form_fields_and_signatures_are_counted() {
     let p = properties(document("/AcroForm 6 0 R", FORM, ""));
     assert_eq!(
-        p.forms,
+        p.forms.unwrap(),
         FormSummary {
             fields: 6,
             signature_fields: 4,
@@ -151,8 +151,8 @@ fn form_fields_and_signatures_are_counted() {
     let mut xfa = FORM.to_vec();
     xfa[0] = "<< /Fields [7 0 R] /XFA [] >>";
     let p = properties(document("/AcroForm 6 0 R", &xfa, ""));
-    assert!(p.forms.xfa);
-    assert_eq!(p.forms.fields, 1);
+    assert!(p.forms.unwrap().xfa);
+    assert_eq!(p.forms.unwrap().fields, 1);
     // An indirect /FT, shared by two fields; a /V that is a string is no
     // signature.
     let indirect = [
@@ -161,7 +161,9 @@ fn form_fields_and_signatures_are_counted() {
         "<< /T (y) /FT 9 0 R /V (not a signature) >>",
         "/Sig",
     ];
-    let forms = properties(document("/AcroForm 6 0 R", &indirect, "")).forms;
+    let forms = properties(document("/AcroForm 6 0 R", &indirect, ""))
+        .forms
+        .unwrap();
     assert_eq!(
         (forms.fields, forms.signature_fields, forms.signatures),
         (2, 2, 1)
@@ -174,14 +176,16 @@ fn form_fields_and_signatures_are_counted() {
         "<< /T (b) /V null >>",
         "<< /T (c) /V (text) >>",
     ];
-    let forms = properties(document("/AcroForm 6 0 R", &inherited, "")).forms;
+    let forms = properties(document("/AcroForm 6 0 R", &inherited, ""))
+        .forms
+        .unwrap();
     assert_eq!(
         (forms.fields, forms.signature_fields, forms.signatures),
         (3, 3, 2)
     );
     // No form at all.
     assert_eq!(
-        properties(document("", &[], "")).forms,
+        properties(document("", &[], "")).forms.unwrap(),
         FormSummary::default()
     );
     // An /XFA of null is no XFA part.
@@ -190,6 +194,7 @@ fn form_fields_and_signatures_are_counted() {
     assert!(
         !properties(document("/AcroForm 6 0 R", &no_xfa, ""))
             .forms
+            .unwrap()
             .xfa
     );
 }
@@ -198,7 +203,7 @@ fn form_fields_and_signatures_are_counted() {
 fn fields_listed_with_their_parent_count_once() {
     let counts = |objects: &[&str]| {
         let p = properties(document("/AcroForm 6 0 R", objects, ""));
-        let f = p.forms;
+        let f = p.forms.unwrap();
         assert!(!f.truncated, "{objects:?}");
         (f.fields, f.signature_fields, f.signatures)
     };
@@ -275,9 +280,13 @@ fn hostile_field_trees_terminate() {
         "<< /T (b) /Kids [7 0 R 8 0 R] /FT /Sig /V 7 0 R >>",
     ];
     let p = properties(document("/AcroForm 6 0 R", &cycle, ""));
-    let counts = (p.forms.fields, p.forms.signature_fields, p.forms.signatures);
+    let counts = (
+        p.forms.unwrap().fields,
+        p.forms.unwrap().signature_fields,
+        p.forms.unwrap().signatures,
+    );
     assert_eq!(counts, (0, 0, 0));
-    assert!(p.forms.truncated);
+    assert!(p.forms.unwrap().truncated);
     // A /Kids array shared with a field above: also a lower bound.
     let shared = [
         "<< /Fields [7 0 R] >>",
@@ -286,7 +295,7 @@ fn hostile_field_trees_terminate() {
         "<< /T (b) /Kids 8 0 R >>",
     ];
     let p = properties(document("/AcroForm 6 0 R", &shared, ""));
-    assert_eq!(p.forms.fields, 0);
+    assert_eq!(p.forms.unwrap().fields, 0);
 
     // A chain deeper than the walk follows.
     let mut chain = vec!["<< /Fields [7 0 R] >>".to_owned()];
@@ -297,8 +306,8 @@ fn hostile_field_trees_terminate() {
     chain.push("<< /T (bottom) /FT /Tx >>".to_owned());
     let chain: Vec<&str> = chain.iter().map(String::as_str).collect();
     let p = properties(document("/AcroForm 6 0 R", &chain, ""));
-    assert!(p.forms.truncated);
-    assert_eq!(p.forms.fields, 0);
+    assert!(p.forms.unwrap().truncated);
+    assert_eq!(p.forms.unwrap().fields, 0);
 
     // Items of every wrong kind, missing objects, and an unreadable item.
     let junk = [
@@ -307,8 +316,8 @@ fn hostile_field_trees_terminate() {
         "42",
     ];
     let p = properties(document("/AcroForm 6 0 R", &junk, ""));
-    assert_eq!(p.forms.fields, 1);
-    assert!(p.forms.truncated, "read up to the unreadable item");
+    assert_eq!(p.forms.unwrap().fields, 1);
+    assert!(p.forms.unwrap().truncated, "read up to the unreadable item");
 }
 
 #[test]
@@ -321,7 +330,7 @@ fn huge_forms_are_counted_up_to_the_cap() {
             .collect();
         b.set(form, format!("<< /Fields [{}] >>", fields.join(" ")));
     });
-    let forms = properties(bytes).forms;
+    let forms = properties(bytes).forms.unwrap();
     assert!(forms.truncated);
     assert_eq!(forms.fields, 20_000);
 }
@@ -329,12 +338,15 @@ fn huge_forms_are_counted_up_to_the_cap() {
 #[test]
 fn tagged_means_marked() {
     let tagged = |extra: &str| properties(document(extra, &[], "")).tagged;
-    assert!(tagged("/MarkInfo << /Marked true >> /StructTreeRoot << >>"));
-    assert!(tagged("/MarkInfo << /Marked true >>"));
-    assert!(!tagged("/MarkInfo << /Marked false >>"));
-    assert!(!tagged("/StructTreeRoot << >>"));
-    assert!(!tagged("/MarkInfo 12"));
-    assert!(!tagged(""));
+    assert_eq!(
+        tagged("/MarkInfo << /Marked true >> /StructTreeRoot << >>"),
+        Some(true)
+    );
+    assert_eq!(tagged("/MarkInfo << /Marked true >>"), Some(true));
+    assert_eq!(tagged("/MarkInfo << /Marked false >>"), Some(false));
+    assert_eq!(tagged("/StructTreeRoot << >>"), Some(false));
+    assert_eq!(tagged("/MarkInfo 12"), Some(false));
+    assert_eq!(tagged(""), Some(false));
 }
 
 /// A document whose first object is a linearization dictionary with the
@@ -369,7 +381,7 @@ fn linearized_document() -> (Vec<u8>, usize) {
 #[test]
 fn linearization_turns_false_after_an_update() {
     let (bytes, start) = linearized_document();
-    assert!(properties(bytes.clone()).linearized);
+    assert_eq!(properties(bytes.clone()).linearized, Some(true));
     // An incremental update: one more object, a section and a trailer.
     let mut updated = bytes.clone();
     let object = updated.len();
@@ -382,10 +394,10 @@ fn linearization_turns_false_after_an_update() {
         .as_bytes(),
     );
     let doc = open(updated);
-    assert!(!doc.properties().unwrap().linearized);
+    assert_eq!(doc.properties().unwrap().linearized, Some(false));
     assert_eq!(doc.page_count(), 1);
     // Without a linearization dictionary at all.
-    assert!(!properties(document("", &[], "")).linearized);
+    assert_eq!(properties(document("", &[], "")).linearized, Some(false));
 }
 
 #[test]
@@ -540,9 +552,10 @@ fn rich_fixture() {
         Some("D:20261025091500-00'30'")
     );
     assert_eq!(m.pdf_version.as_deref(), Some("1.7"));
-    assert!(p.tagged && !p.linearized && p.security.is_none());
+    assert_eq!((p.tagged, p.linearized), (Some(true), Some(false)));
+    assert!(p.security.is_none());
     assert_eq!(
-        p.forms,
+        p.forms.unwrap(),
         FormSummary {
             fields: 6,
             signature_fields: 4,
@@ -559,7 +572,7 @@ fn linearized_fixture() {
         return;
     };
     let p = properties(bytes);
-    assert!(p.linearized);
+    assert_eq!(p.linearized, Some(true));
     assert_eq!(p.metadata.creation_date.as_deref(), Some("20200101"));
     assert_eq!(
         p.metadata.modification_date.as_deref(),
@@ -692,12 +705,12 @@ fn hostile_fixtures() {
         }
     }
     if let Some(bytes) = fixture("malformed/acroform-kids-cycle.pdf") {
-        let forms = properties(bytes).forms;
+        let forms = properties(bytes).forms.unwrap();
         assert!(forms.truncated);
         assert!(forms.fields <= 10, "{forms:?}");
     }
     if let Some(bytes) = fixture("malformed/acroform-many-fields.pdf") {
-        let forms = properties(bytes).forms;
+        let forms = properties(bytes).forms.unwrap();
         assert!(forms.truncated);
         assert_eq!(forms.fields, 20_000);
     }

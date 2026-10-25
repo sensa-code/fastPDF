@@ -7,7 +7,9 @@
 //! presence byte (handler, method tag `0` RC4 + `u16` key bits, `1`
 //! AES-128, `2` AES-256, `3` Identity, `4` unknown; optional `/V`, `/R` and
 //! permissions `u32` bits + `u8` revision; `/EncryptMetadata`; whether a
-//! password was typed); the form counts and flags; tagged; linearized.
+//! password was typed); the form counts and flags behind a presence
+//! byte; tagged and linearized, each a presence byte and a flag (the
+//! engine may not be able to tell).
 //!
 //! The host side clips strings and makes the form counts consistent
 //! (signed ≤ signature fields ≤ fields); the decoder rejects unknown
@@ -81,26 +83,33 @@ pub(super) fn put_properties(e: &mut Encoder, p: &DocumentProperties) {
         }
         None => e.u8(0),
     }
-    // Consistent counts, whatever the engine said.
-    let fields = p.forms.fields;
-    let signature_fields = p.forms.signature_fields.min(fields);
-    let signatures = p.forms.signatures.min(signature_fields);
-    e.u32(fields);
-    e.u32(signature_fields);
-    e.u32(signatures);
-    e.bool(p.forms.xfa);
-    e.bool(p.forms.truncated);
-    e.bool(p.tagged);
-    e.bool(p.linearized);
+    match &p.forms {
+        Some(forms) => {
+            e.u8(1);
+            // Consistent counts, whatever the engine said.
+            let fields = forms.fields;
+            let signature_fields = forms.signature_fields.min(fields);
+            let signatures = forms.signatures.min(signature_fields);
+            e.u32(fields);
+            e.u32(signature_fields);
+            e.u32(signatures);
+            e.bool(forms.xfa);
+            e.bool(forms.truncated);
+        }
+        None => e.u8(0),
+    }
+    for flag in [p.tagged, p.linearized] {
+        match flag {
+            Some(value) => {
+                e.u8(1);
+                e.bool(value);
+            }
+            None => e.u8(0),
+        }
+    }
 }
 
-pub(super) fn get_properties(d: &mut Decoder<'_>) -> Result<DocumentProperties> {
-    let metadata = get_metadata(d)?;
-    let security = if d.present("security")? {
-        Some(get_security(d)?)
-    } else {
-        None
-    };
+fn get_forms(d: &mut Decoder<'_>) -> Result<FormSummary> {
     let forms = FormSummary {
         fields: d.u32()?,
         signature_fields: d.u32()?,
@@ -111,12 +120,35 @@ pub(super) fn get_properties(d: &mut Decoder<'_>) -> Result<DocumentProperties> 
     if forms.signatures > forms.signature_fields || forms.signature_fields > forms.fields {
         return Err(ProtocolError::BadValue("form counts"));
     }
+    Ok(forms)
+}
+
+fn get_flag(d: &mut Decoder<'_>, what: &'static str) -> Result<Option<bool>> {
+    if d.present(what)? {
+        Ok(Some(d.bool(what)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(super) fn get_properties(d: &mut Decoder<'_>) -> Result<DocumentProperties> {
+    let metadata = get_metadata(d)?;
+    let security = if d.present("security")? {
+        Some(get_security(d)?)
+    } else {
+        None
+    };
+    let forms = if d.present("forms")? {
+        Some(get_forms(d)?)
+    } else {
+        None
+    };
     Ok(DocumentProperties {
         metadata,
         security,
         forms,
-        tagged: d.bool("tagged")?,
-        linearized: d.bool("linearized")?,
+        tagged: get_flag(d, "tagged")?,
+        linearized: get_flag(d, "linearized")?,
     })
 }
 

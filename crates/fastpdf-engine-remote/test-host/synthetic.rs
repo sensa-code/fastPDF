@@ -362,15 +362,15 @@ impl EngineDocument for SyntheticDoc {
                 encrypt_metadata: true,
                 user_password: true,
             }),
-            forms: FormSummary {
+            forms: Some(FormSummary {
                 fields: 3,
                 signature_fields: 2,
                 signatures: 1,
                 xfa: false,
                 truncated: false,
-            },
-            tagged: true,
-            linearized: false,
+            }),
+            tagged: Some(true),
+            linearized: None,
         })
     }
 

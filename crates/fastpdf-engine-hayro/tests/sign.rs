@@ -176,7 +176,7 @@ fn a_second_signature_keeps_the_first() {
     );
     // The properties count one signed field, then two.
     let signed = |bytes: &[u8]| {
-        let forms = open(bytes.to_vec()).properties().unwrap().forms;
+        let forms = open(bytes.to_vec()).properties().unwrap().forms.unwrap();
         (forms.fields, forms.signature_fields, forms.signatures)
     };
     assert_eq!(signed(&first), (1, 1, 1));

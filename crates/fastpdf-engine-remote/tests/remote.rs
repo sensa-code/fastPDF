@@ -220,7 +220,7 @@ fn remote_results_are_identical_to_in_process() {
     assert!(
         properties
             .as_ref()
-            .is_ok_and(|p| p.tagged && p.forms.fields == 3),
+            .is_ok_and(|p| p.tagged == Some(true) && p.forms.is_some_and(|f| f.fields == 3)),
         "{properties:?}"
     );
     assert_eq!(remote.properties(), properties);

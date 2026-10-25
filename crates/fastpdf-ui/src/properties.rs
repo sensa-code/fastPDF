@@ -202,10 +202,16 @@ fn log_answer(answer: &Result<DocumentProperties, EngineError>, took: Duration) 
     let ms = took.as_secs_f64() * 1000.0;
     match answer {
         Ok(p) => log::info!(
-            "document properties: read in {ms:.1} ms ({}{} form fields, {} signed; encrypted {}, tagged {}, linearized {})",
-            if p.forms.truncated { "at least " } else { "" },
-            p.forms.fields,
-            p.forms.signatures,
+            "document properties: read in {ms:.1} ms (form fields {}; encrypted {}, tagged {:?}, linearized {:?})",
+            p.forms.map_or_else(
+                || "unknown".to_owned(),
+                |f| format!(
+                    "{}{}, {} signed",
+                    if f.truncated { "at least " } else { "" },
+                    f.fields,
+                    f.signatures
+                )
+            ),
             p.metadata.encrypted,
             p.tagged,
             p.linearized

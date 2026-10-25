@@ -15,16 +15,20 @@ pub struct DocumentProperties {
     /// be read. `None` with `metadata.encrypted` set means "encrypted,
     /// details unknown".
     pub security: Option<Security>,
-    pub forms: FormSummary,
-    /// The catalog's `/MarkInfo /Marked` is true (a tagged PDF).
-    pub tagged: bool,
+    /// `None` when the engine cannot tell (not "no form").
+    pub forms: Option<FormSummary>,
+    /// The catalog's `/MarkInfo /Marked` is true (a tagged PDF); `None`
+    /// when the engine cannot tell.
+    pub tagged: Option<bool>,
     /// A linearization dictionary within the first 1024 bytes names the
     /// file's length ("Fast Web View"). Its hint tables are not checked.
-    pub linearized: bool,
+    /// `None` when the engine cannot tell.
+    pub linearized: Option<bool>,
 }
 
 impl DocumentProperties {
-    /// Properties of an engine that knows only the metadata.
+    /// Properties of an engine that knows only the metadata: everything
+    /// else is unknown.
     pub fn from_metadata(metadata: DocumentMetadata) -> Self {
         Self {
             metadata,

@@ -31,15 +31,15 @@ fn rich() -> DocumentProperties {
             encrypt_metadata: false,
             user_password: true,
         }),
-        forms: FormSummary {
+        forms: Some(FormSummary {
             fields: 7,
             signature_fields: 3,
             signatures: 2,
             xfa: true,
             truncated: true,
-        },
-        tagged: true,
-        linearized: true,
+        }),
+        tagged: Some(true),
+        linearized: Some(false),
     }
 }
 
@@ -180,22 +180,31 @@ fn invalid_properties_are_rejected() {
     bad[at] = 2;
     assert_eq!(decoded(&bad), Err(ProtocolError::BadTag("security", 2)));
 
-    // The last four bytes: xfa, truncated, tagged, linearized.
+    // The last bytes: xfa, truncated, then tagged and linearized, each a
+    // presence byte and a flag.
     let end = good.len();
     for (offset, what) in [
-        (4, "xfa"),
-        (3, "form truncated"),
-        (2, "tagged"),
+        (6, "xfa"),
+        (5, "form truncated"),
+        (4, "tagged"),
+        (3, "tagged"),
+        (2, "linearized"),
         (1, "linearized"),
     ] {
         let mut bad = good.clone();
         bad[end - offset] = 2;
         assert_eq!(decoded(&bad), Err(ProtocolError::BadTag(what, 2)), "{what}");
     }
+    // The forms' presence byte.
+    let forms_at = end - 6 - 12 - 1;
+    assert_eq!(good[forms_at], 1);
+    let mut bad = good.clone();
+    bad[forms_at] = 2;
+    assert_eq!(decoded(&bad), Err(ProtocolError::BadTag("forms", 2)));
 
     // Counts that cannot be: more signed than signature fields, more
     // signature fields than fields.
-    let counts_at = end - 4 - 12;
+    let counts_at = end - 6 - 12;
     for (index, value) in [(2usize, 4u32), (1, 8)] {
         let mut bad = good.clone();
         let i = counts_at + 4 * index;
@@ -227,24 +236,39 @@ fn invalid_properties_are_rejected() {
 }
 
 #[test]
+fn facts_an_engine_cannot_tell_stay_unknown() {
+    let unknown = DocumentProperties::from_metadata(metadata());
+    let back = decoded(&reply_bytes(unknown.clone())).unwrap_or_default();
+    assert_eq!(back, unknown);
+    assert_eq!(
+        (back.forms, back.tagged, back.linearized),
+        (None, None, None)
+    );
+    let mut partly = rich();
+    partly.forms = None;
+    partly.linearized = None;
+    assert_eq!(decoded(&reply_bytes(partly.clone())), Ok(partly));
+}
+
+#[test]
 fn engine_properties_are_sanitized_not_rejected() {
     let mut p = rich();
-    p.forms = FormSummary {
+    p.forms = Some(FormSummary {
         fields: 2,
         signature_fields: 5,
         signatures: 9,
         xfa: false,
         truncated: false,
-    };
+    });
     if let Some(s) = &mut p.security {
         s.handler = Some("測".repeat(40)); // 120 bytes
     }
     let back = decoded(&reply_bytes(p)).unwrap_or_default();
     assert_eq!(
         (
-            back.forms.fields,
-            back.forms.signature_fields,
-            back.forms.signatures
+            back.forms.unwrap_or_default().fields,
+            back.forms.unwrap_or_default().signature_fields,
+            back.forms.unwrap_or_default().signatures
         ),
         (2, 2, 2)
     );

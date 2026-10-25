@@ -68,9 +68,9 @@ pub(crate) fn properties(inner: &DocInner, generation: &Generation) -> DocumentP
     DocumentProperties {
         metadata,
         security,
-        forms,
-        tagged,
-        linearized: linearized(bytes),
+        forms: Some(forms),
+        tagged: Some(tagged),
+        linearized: Some(linearized(bytes)),
     }
 }
 

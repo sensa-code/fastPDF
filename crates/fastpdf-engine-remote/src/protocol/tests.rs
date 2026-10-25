@@ -393,18 +393,19 @@ impl Rng {
             encrypt_metadata: self.chance(2),
             user_password: self.chance(2),
         });
+        let forms = FormSummary {
+            fields,
+            signature_fields,
+            signatures: signature_fields / (1 + self.below(3) as u32),
+            xfa: self.chance(2),
+            truncated: self.chance(2),
+        };
         DocumentProperties {
             metadata: self.metadata(),
             security,
-            forms: FormSummary {
-                fields,
-                signature_fields,
-                signatures: signature_fields / (1 + self.below(3) as u32),
-                xfa: self.chance(2),
-                truncated: self.chance(2),
-            },
-            tagged: self.chance(2),
-            linearized: self.chance(2),
+            forms: (!self.chance(4)).then_some(forms),
+            tagged: (!self.chance(4)).then(|| self.chance(2)),
+            linearized: (!self.chance(4)).then(|| self.chance(2)),
         }
     }
 

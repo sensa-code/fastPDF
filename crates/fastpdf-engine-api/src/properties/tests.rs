@@ -181,9 +181,9 @@ fn the_default_is_the_metadata_and_nothing_else() {
         Ok(DocumentProperties {
             metadata: metadata(),
             security: None,
-            forms: FormSummary::default(),
-            tagged: false,
-            linearized: false,
+            forms: None,
+            tagged: None,
+            linearized: None,
         })
     );
     // The guard passes the engine's answer on.
