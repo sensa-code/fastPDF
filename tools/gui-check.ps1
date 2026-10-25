@@ -11,7 +11,7 @@
       release builds only with it), FASTPDF_LOG=info, FASTPDF_PRINT_TO_FILE=-OutDir\print.out (print
       jobs never reach a printer; an earlier run's file is removed) and FASTPDF_DEV_SCRIPT=-Script;
       other FASTPDF_* variables of the calling shell are not passed on (use -AppEnv)
-    - refuses a script that opens the signature panel (`sign-panel`, `cmd=Sign`) before `sign-test`:
+    - refuses a script that opens the signature panel (`sign-panel`, `cmd=Sign`, `more-run=Sign`) before `sign-test`:
       the panel would list the certificates of the Windows store
     - writes the app's log (stderr) to -OutDir\fastpdf.log
     - answers every `mark=PATH` step with a PrintWindow capture of the client area, PATH.png, and
@@ -176,7 +176,9 @@ function Test-SignPanelFirst([string]$Steps) {
     # Case-insensitive like command_named; a step devscript rejects only makes this stricter.
     foreach ($step in Get-Steps $Steps) {
         if ($step.Name -eq 'sign-test') { return $false }
-        if ($step.Name -eq 'sign-panel' -or ($step.Name -eq 'cmd' -and $step.Value -eq 'Sign')) { return $true }
+        if ($step.Name -eq 'sign-panel') { return $true }
+        # `cmd=Sign` runs the command, `more-run=Sign` the toolbar's overflow menu row.
+        if (($step.Name -eq 'cmd' -or $step.Name -eq 'more-run') -and $step.Value -eq 'Sign') { return $true }
     }
     $false
 }
