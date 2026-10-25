@@ -38,13 +38,14 @@ impl ReaderView {
         cx: &mut Context<'_, Self>,
     ) -> StepState {
         match step {
+            // Settled first: a failure of the moment is an answer too, and
+            // asking again would start over.
             PropertiesStep::Wait => {
-                self.ensure_properties(cx);
                 if self.properties_settled() {
-                    StepState::Done
-                } else {
-                    StepState::Pending
+                    return StepState::Done;
                 }
+                self.ensure_properties(cx);
+                StepState::Pending
             }
             PropertiesStep::Save(path) => match std::fs::write(path, self.properties_text()) {
                 Ok(()) => {

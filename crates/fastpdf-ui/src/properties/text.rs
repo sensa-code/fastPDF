@@ -99,10 +99,10 @@ pub(crate) fn page_size(size: PageSize, page: u32, strings: &Strings) -> String 
 }
 
 /// A PDF date in the offset it was written with; the text as written
-/// (made safe) when it is not a date.
+/// when it is not a date (made safe, and cut, only when shown or copied).
 pub(crate) fn date(raw: &str, strings: &Strings) -> String {
     let Some(d) = PdfDate::parse(raw) else {
-        return display_value(raw.trim());
+        return raw.trim().to_owned();
     };
     let offset = d.utc_offset_minutes.map(|minutes| {
         if minutes == 0 {
@@ -219,9 +219,19 @@ mod tests {
             "2026-10-25 09:15:00 (UTC-00:30)"
         );
         assert_eq!(date("20200101", zh()), "2020/01/01 00:00:00");
-        // Not a date: the text, made safe.
+        // Not a date: the text as written, made safe when shown, not cut
+        // before it is copied.
         assert_eq!(date("D:2026-13-45", en()), "D:2026-13-45");
-        assert_eq!(date("yesterday\u{202E}\n", en()), "yesterday");
+        assert_eq!(
+            display_value(&date("yesterday\u{202E}\n", en())),
+            "yesterday"
+        );
+        let long = format!("D:{}", "2".repeat(10_000));
+        assert_eq!(copy_value(&date(&long, en())), long);
+        assert_eq!(
+            display_value(&date(&long, en())).chars().count(),
+            MAX_DISPLAY_CHARS + 1
+        );
     }
 
     #[test]
