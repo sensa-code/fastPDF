@@ -69,6 +69,7 @@ mod navigation;
 mod opening;
 mod overlay;
 mod page_labels;
+mod panel_slot;
 mod password;
 mod print;
 mod prompt;

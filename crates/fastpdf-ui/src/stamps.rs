@@ -238,13 +238,10 @@ pub(crate) fn keep_on_page(rect: PageRect, size: PageSize) -> PageRect {
 
 impl ReaderView {
     pub(crate) fn toggle_stamp_panel(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.stamps.open {
+            self.make_room_for(crate::panel_slot::CornerPanel::Stamps, cx);
+        }
         self.stamps.open = !self.stamps.open;
-        if self.stamps.open && self.text_edits.open {
-            self.hide_text_edit_panel(cx);
-        }
-        if self.stamps.open {
-            self.signing.open = false;
-        }
         if !self.stamps.open {
             self.stamps.armed = None;
             // Nothing shows the previews any more: free their GPU memory

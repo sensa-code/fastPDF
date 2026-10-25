@@ -221,10 +221,7 @@ impl ReaderView {
             self.close_text_edit_panel(window, cx);
             return;
         }
-        if self.stamps.open {
-            self.toggle_stamp_panel(cx);
-        }
-        self.signing.open = false;
+        self.make_room_for(crate::panel_slot::CornerPanel::TextEdits, cx);
         let panel = &mut self.text_edits;
         panel.open = true;
         panel.problem = None;

@@ -89,12 +89,7 @@ impl ReaderView {
             cx.notify();
             return;
         }
-        if self.stamps.open {
-            self.toggle_stamp_panel(cx);
-        }
-        if self.text_edits.open {
-            self.hide_text_edit_panel(cx);
-        }
+        self.make_room_for(crate::panel_slot::CornerPanel::Sign, cx);
         self.signing.open = true;
         self.signing.problem = None;
         // The test signer (development scripts) replaces the store.

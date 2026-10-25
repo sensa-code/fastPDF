@@ -7,8 +7,9 @@
 //! while the panel is closed. File name, size, page count and the current
 //! page's size are the reader's own and show at once; the page size
 //! follows scrolling because the rows are built when the panel renders.
-//! The panel takes the settings panel's place at the top right: opening
-//! one closes the other. Permissions are shown, not applied.
+//! The panel shares the top right with the settings, stamp, signature and
+//! text edit panels (`crate::panel_slot`): opening one closes the others.
+//! Permissions are shown, not applied.
 
 mod panel;
 mod rows;
@@ -54,11 +55,11 @@ impl ReaderView {
         if self.active_prompt().is_some() {
             return;
         }
+        self.make_room_for(crate::panel_slot::CornerPanel::Properties, cx);
         self.properties = PropertiesPanel {
             open: true,
             copied: None,
         };
-        self.settings_open = false;
         self.menus.open = None;
         self.ensure_properties(cx);
     }

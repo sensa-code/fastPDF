@@ -26,9 +26,8 @@ impl ReaderView {
             return;
         }
         self.settings_open = !self.settings_open;
-        // The two panels take the same place.
         if self.settings_open {
-            self.close_properties_panel();
+            self.make_room_for(crate::panel_slot::CornerPanel::Settings, cx);
         }
         cx.notify();
     }
