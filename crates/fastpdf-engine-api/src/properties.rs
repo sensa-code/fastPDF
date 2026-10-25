@@ -51,8 +51,10 @@ pub struct Security {
     pub permissions: Option<Permissions>,
     /// `/EncryptMetadata` (true when absent).
     pub encrypt_metadata: bool,
-    /// The document was opened with a password the reader typed (a user
-    /// password); false when it opens without one.
+    /// The document was opened with a password the reader typed; false
+    /// when it opens without one. Not necessarily the user password: the
+    /// engine may accept the owner password as well (hayro does for
+    /// revisions 5 and 6).
     pub user_password: bool,
 }
 

@@ -143,7 +143,7 @@ impl ReaderView {
             let query = self.find.input.read(cx).text().to_string();
             self.on_find_query(query, cx);
         }
-        self.properties_follow_document(cx);
+        self.properties_follow_document();
         cx.notify();
     }
 

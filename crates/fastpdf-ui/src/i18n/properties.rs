@@ -53,12 +53,13 @@ impl Strings {
     }
 
     /// How the document was opened: with a password the reader typed, or
-    /// without one.
+    /// without one. Which password it was is not known (an owner password
+    /// opens AES-256 documents too), so the text does not say.
     pub(crate) fn opened_with(&self, password: bool) -> &'static str {
         match (self.language, password) {
-            (Language::English, true) => "User password",
+            (Language::English, true) => "A password",
             (Language::English, false) => "No password",
-            (Language::TraditionalChinese, true) => "使用者密碼",
+            (Language::TraditionalChinese, true) => "以密碼開啟",
             (Language::TraditionalChinese, false) => "不需密碼",
         }
     }

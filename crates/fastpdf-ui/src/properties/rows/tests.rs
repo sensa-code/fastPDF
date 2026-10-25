@@ -136,7 +136,7 @@ fn rows_of_an_encrypted_document() {
     let mut f = facts(Answer::Ready(&p));
     f.password = true;
     let rows = sections(&f, en);
-    assert_eq!(value(&rows, L::OpenedWith), Some("User password"));
+    assert_eq!(value(&rows, L::OpenedWith), Some("A password"));
     assert_eq!(
         value(&rows, L::Encryption),
         Some("128-bit AES (Standard security handler, revision 4)")
@@ -158,4 +158,27 @@ fn plain_documents_have_no_security_rows() {
     // Raw in the row, cleaned when copied.
     assert_eq!(value(&rows, L::Title), Some("t\u{202E}x\n"));
     assert!(as_text(&rows, en).contains("Title: tx \n"));
+}
+
+#[test]
+fn only_rows_still_being_read_are_pending() {
+    let en = Language::English.strings();
+    let rows = |answer| sections(&facts(answer), en);
+    let row = |sections: &[Section], label| {
+        sections
+            .iter()
+            .flat_map(|s| s.rows.clone())
+            .find(|r| r.label == label)
+    };
+    let pending = rows(Answer::Pending);
+    assert!(row(&pending, L::Title).is_some_and(|r| r.pending));
+    assert!(row(&pending, L::FileName).is_some_and(|r| !r.pending));
+    // A title that happens to be an ellipsis is a value like any other.
+    let p = DocumentProperties::from_metadata(DocumentMetadata {
+        title: Some(PENDING.to_owned()),
+        ..DocumentMetadata::default()
+    });
+    let ready = rows(Answer::Ready(&p));
+    assert!(row(&ready, L::Title).is_some_and(|r| r.value == PENDING && !r.pending));
+    assert!(ready.iter().flat_map(|s| &s.rows).all(|r| !r.pending));
 }

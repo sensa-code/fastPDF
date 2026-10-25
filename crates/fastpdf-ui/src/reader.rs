@@ -479,6 +479,7 @@ impl ReaderView {
         self.print.drain();
         self.tools.drain();
         self.poll_page_labels(cx);
+        self.poll_properties(cx);
         cx.notify();
     }
 

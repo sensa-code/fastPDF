@@ -15,6 +15,8 @@ use crate::i18n::{PropertyLabel as L, Strings};
 pub(crate) struct Row {
     pub label: L,
     pub value: String,
+    /// The engine's answer is not in yet (the value is a placeholder).
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,12 +57,11 @@ pub(crate) fn sections(facts: &Facts<'_>, strings: &Strings) -> Vec<Section> {
         Answer::Ready(p) => Some(p),
         _ => None,
     };
-    // A value from the engine: "…" while it is being read, "—" without one.
-    let engine = |value: Option<String>| match (facts.answer, value) {
-        (Answer::Pending, _) => PENDING.to_owned(),
-        (_, Some(v)) => v,
-        (_, None) => MISSING.to_owned(),
-    };
+    // A value from the engine: `None` while it is being read, "—" without
+    // one.
+    let pending = matches!(facts.answer, Answer::Pending);
+    let engine =
+        |value: Option<String>| (!pending).then(|| value.unwrap_or_else(|| MISSING.to_owned()));
     let meta = ready.map(|p| &p.metadata);
     let text = |pick: fn(&fastpdf_engine_api::DocumentMetadata) -> &Option<String>| {
         engine(meta.and_then(|m| pick(m).clone()))
@@ -68,7 +69,17 @@ pub(crate) fn sections(facts: &Facts<'_>, strings: &Strings) -> Vec<Section> {
     let date = |pick: fn(&fastpdf_engine_api::DocumentMetadata) -> &Option<String>| {
         engine(meta.and_then(|m| pick(m).as_deref().map(|d| text::date(d, strings))))
     };
-    let row = |label, value| Row { label, value };
+    let row = |label, value| Row {
+        label,
+        value,
+        pending: false,
+    };
+    // A row of the engine's: "…" until its answer is in.
+    let erow = |label, value: Option<String>| Row {
+        label,
+        pending: value.is_none(),
+        value: value.unwrap_or_else(|| PENDING.to_owned()),
+    };
 
     let description = Section {
         title: L::Description,
@@ -82,14 +93,14 @@ pub(crate) fn sections(facts: &Facts<'_>, strings: &Strings) -> Vec<Section> {
                     .parent()
                     .map_or_else(|| MISSING.to_owned(), |p| p.display().to_string()),
             ),
-            row(L::Title, text(|m| &m.title)),
-            row(L::Author, text(|m| &m.author)),
-            row(L::Subject, text(|m| &m.subject)),
-            row(L::Keywords, text(|m| &m.keywords)),
-            row(L::Created, date(|m| &m.creation_date)),
-            row(L::Modified, date(|m| &m.modification_date)),
-            row(L::Creator, text(|m| &m.creator)),
-            row(L::Producer, text(|m| &m.producer)),
+            erow(L::Title, text(|m| &m.title)),
+            erow(L::Author, text(|m| &m.author)),
+            erow(L::Subject, text(|m| &m.subject)),
+            erow(L::Keywords, text(|m| &m.keywords)),
+            erow(L::Created, date(|m| &m.creation_date)),
+            erow(L::Modified, date(|m| &m.modification_date)),
+            erow(L::Creator, text(|m| &m.creator)),
+            erow(L::Producer, text(|m| &m.producer)),
         ],
     };
 
@@ -109,19 +120,19 @@ pub(crate) fn sections(facts: &Facts<'_>, strings: &Strings) -> Vec<Section> {
         title: L::Advanced,
         note: None,
         rows: vec![
-            row(L::PdfVersion, text(|m| &m.pdf_version)),
+            erow(L::PdfVersion, text(|m| &m.pdf_version)),
             row(L::Pages, facts.page_count.to_string()),
             row(L::PageSize, page_size),
             row(L::FileSize, text::file_size(facts.file_bytes, strings)),
-            row(L::Tagged, flag(|p| p.tagged)),
-            row(L::FastWebView, flag(|p| p.linearized)),
+            erow(L::Tagged, flag(|p| p.tagged)),
+            erow(L::FastWebView, flag(|p| p.linearized)),
         ],
     };
 
     let mut security = Section {
         title: L::Security,
         note: None,
-        rows: vec![row(
+        rows: vec![erow(
             L::Encryption,
             engine(ready.map(|p| text::encryption(&p.metadata, p.security.as_ref(), strings))),
         )],
@@ -146,11 +157,11 @@ pub(crate) fn sections(facts: &Facts<'_>, strings: &Strings) -> Vec<Section> {
         title: L::Forms,
         note: None,
         rows: vec![
-            row(
+            erow(
                 L::FormFields,
                 engine(forms.map(|f| text::count(f.fields, f.truncated))),
             ),
-            row(
+            erow(
                 L::SignatureFields,
                 engine(forms.map(|f| {
                     strings.signature_count(
@@ -159,7 +170,7 @@ pub(crate) fn sections(facts: &Facts<'_>, strings: &Strings) -> Vec<Section> {
                     )
                 })),
             ),
-            row(
+            erow(
                 L::Xfa,
                 engine(forms.map(|f| strings.yes_no(f.xfa).to_owned())),
             ),

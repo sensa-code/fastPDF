@@ -67,11 +67,22 @@ impl ReaderView {
         self.properties = PropertiesPanel::default();
     }
 
-    /// A document opened while the panel is open: its properties are asked
-    /// for at once, like the sidebar's outline.
-    pub(crate) fn properties_follow_document(&mut self, cx: &mut Context<'_, Self>) {
+    /// Another document opened: what was copied is forgotten. While the
+    /// panel stays open, the new document's properties are asked for once
+    /// its first page is drawn ([`Self::poll_properties`]), never while it
+    /// opens.
+    pub(crate) fn properties_follow_document(&mut self) {
         self.properties.copied = None;
-        if self.properties.open {
+    }
+
+    /// On every wake-up (cheap): while the panel is open, asks for the open
+    /// document's properties once its first page is fully drawn, unless
+    /// they are known, on their way, or failed (Retry asks again).
+    pub(crate) fn poll_properties(&mut self, cx: &mut Context<'_, Self>) {
+        let due = self.properties.open
+            && matches!(&self.doc, DocState::Open(open)
+                if open.exact_reported && follow_due(&open.queries));
+        if due {
             self.ensure_properties(cx);
         }
     }
@@ -107,13 +118,7 @@ impl ReaderView {
     /// Whether the properties question is answered (or there is no
     /// document to ask about).
     pub(crate) fn properties_settled(&self) -> bool {
-        match self.doc_queries() {
-            Some(q) => {
-                q.properties.is_settled()
-                    || (matches!(q.properties, Lazy::NotLoaded) && q.properties_problem.is_some())
-            }
-            None => true,
-        }
+        self.doc_queries().is_none_or(settled)
     }
 
     /// The panel's rows; `None` without a document.
@@ -191,6 +196,19 @@ impl ReaderView {
     }
 }
 
+/// Whether the properties question is answered: with properties, with
+/// none, or with a failure (a failure of the moment counts: it is shown
+/// with Retry, and waiting would ask again forever).
+fn settled(queries: &DocQueries) -> bool {
+    queries.properties.is_settled()
+        || (matches!(queries.properties, Lazy::NotLoaded) && queries.properties_problem.is_some())
+}
+
+/// Whether a document the open panel follows should be asked now.
+fn follow_due(queries: &DocQueries) -> bool {
+    matches!(queries.properties, Lazy::NotLoaded) && queries.properties_problem.is_none()
+}
+
 /// An answer came in: a failure of the moment is kept to show with Retry
 /// (the slot itself goes back to "not loaded").
 fn properties_answered(queries: &mut DocQueries, error: Option<&EngineError>, _since: Duration) {
@@ -217,5 +235,48 @@ fn log_answer(answer: &Result<DocumentProperties, EngineError>, took: Duration) 
             p.linearized
         ),
         Err(e) => log::info!("document properties: unavailable after {ms:.1} ms: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fastpdf_engine_api::{DocumentProperties, HostExit, HostExitReason};
+
+    use super::*;
+    use crate::doc_queries::deliver;
+
+    fn queries(answer: Option<Result<Option<Arc<DocumentProperties>>, EngineError>>) -> DocQueries {
+        let mut q = DocQueries::default();
+        if let Some(answer) = answer {
+            let id = fastpdf_engine_api::DocumentId::from_raw(1);
+            let delivered = deliver(Some((id, &mut q)), id, |q| &mut q.properties, answer);
+            if let Some((q, error)) = delivered {
+                properties_answered(q, error.as_ref(), Duration::ZERO);
+            }
+        }
+        q
+    }
+
+    #[test]
+    fn a_failure_of_the_moment_settles_the_wait_and_is_not_asked_again() {
+        // Not asked yet: wait, and a following panel asks.
+        let fresh = queries(None);
+        assert!(!settled(&fresh) && follow_due(&fresh));
+        // The host restarting: settled (Retry is shown), not asked again
+        // on its own.
+        let exit = HostExit {
+            reason: HostExitReason::Crashed { exit_code: None },
+            permanent: false,
+        };
+        let transient = queries(Some(Err(EngineError::HostExited(exit))));
+        assert!(matches!(transient.properties, Lazy::NotLoaded));
+        assert!(transient.properties_problem.is_some());
+        assert!(settled(&transient) && !follow_due(&transient));
+        // A final failure and an answer settle too.
+        let failed = queries(Some(Err(EngineError::Panicked("boom".into()))));
+        assert!(settled(&failed) && !follow_due(&failed));
+        let ready = queries(Some(Ok(Some(Arc::new(DocumentProperties::default())))));
+        assert!(settled(&ready) && !follow_due(&ready));
+        assert!(ready.properties_problem.is_none());
     }
 }

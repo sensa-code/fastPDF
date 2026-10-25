@@ -8,7 +8,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
 };
 
-use super::text::{self, PENDING};
+use super::text;
 use super::{Copied, Section};
 use crate::i18n::Strings;
 use crate::reader::ReaderView;
@@ -179,7 +179,7 @@ impl ReaderView {
         for (i, row) in section.rows.into_iter().enumerate() {
             let label = row.label;
             let copied = self.properties.copied == Some(Copied::Row(label));
-            let pending = row.value == PENDING;
+            let pending = row.pending;
             let shown: SharedString = text::display_value(&row.value).into();
             rows = rows.child(
                 div()
