@@ -22,6 +22,7 @@
 //!   button, where only the view's release still runs) on the UI thread.
 //!   A crash loses at most the last two seconds of movement.
 
+mod gate;
 mod start;
 mod tracker;
 
@@ -29,14 +30,16 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use fastpdf_core::SavedView;
 use fastpdf_core::positions::{PositionRecord, PositionStore, quantized};
+use fastpdf_core::{DocumentSession, SavedView};
 use gpui::{Context, Task};
 
+use gate::{Follow, Gate};
 pub(crate) use start::{ReadingStart, apply_start, open_for_reading, with_start};
 use tracker::{SETTLE, Settle, Tracked};
 
 use crate::reader::ReaderView;
+use crate::textures::TileImage;
 
 /// The store and the open document's position as last written and seen.
 #[derive(Default)]
@@ -63,13 +66,46 @@ impl ReadingMemory {
 }
 
 impl ReaderView {
+    /// What reading positions may do now (`gate.rs`).
+    fn reading_gate(&self) -> Gate {
+        Gate {
+            store: self.reading.has_store(),
+            remember: self.settings.remember_position,
+        }
+    }
+
     /// The store an open looks the document up in; `None` when the setting
     /// is off or there is no store.
     pub(crate) fn positions_for_open(&self) -> Option<Arc<PositionStore>> {
-        self.reading
-            .store
-            .clone()
-            .filter(|_| self.settings.remember_position)
+        let lookup = self.reading_gate().lookup();
+        self.reading.store.clone().filter(|_| lookup)
+    }
+
+    /// A document finished opening with `start`, maybe with an early
+    /// session already at the restored view. When positions were turned
+    /// off meanwhile the start is dropped, and so is such a session (off
+    /// the UI thread: its render workers join): the document starts at the
+    /// top, like any document opened with positions off.
+    pub(crate) fn screen_start(
+        &self,
+        start: Option<ReadingStart>,
+        session: Option<DocumentSession<TileImage>>,
+        cx: &mut Context<'_, Self>,
+    ) -> (Option<ReadingStart>, Option<DocumentSession<TileImage>>) {
+        if start.is_none() || self.reading_gate().keep(start).is_some() {
+            return (start, session);
+        }
+        let restored = start.is_some_and(|s| s.restore.is_some());
+        let session = match session {
+            Some(early) if restored => {
+                cx.background_executor()
+                    .spawn(async move { drop(early) })
+                    .detach();
+                None
+            }
+            other => other,
+        };
+        (None, session)
     }
 
     /// The document at `path` is open (its start is applied): follow its
@@ -78,15 +114,16 @@ impl ReaderView {
     pub(crate) fn track_reading(&mut self, path: &Path, start: Option<ReadingStart>) {
         self.reading.settle = None;
         self.reading.doc = None;
-        let (Some(session), true) = (self.session(), self.reading.has_store()) else {
+        let follow = self.reading_gate().follow(start);
+        let Some(session) = self.session() else {
             return;
         };
         let view = quantized(session.saved_view());
         let page_count = session.page_count();
         let path = path.to_path_buf();
         let now = Instant::now();
-        self.reading.doc = match start {
-            Some(start) => {
+        self.reading.doc = match follow {
+            Follow::Start(start) => {
                 if let Some(restore) = &start.restore {
                     log::info!(
                         "restored the reading position of {}: page {} ({})",
@@ -97,17 +134,15 @@ impl ReaderView {
                 }
                 Some(Tracked::new(path, page_count, &start, view, now))
             }
-            None if self.settings.remember_position => {
-                Some(Tracked::adopted(path, page_count, view, now))
-            }
-            None => None,
+            Follow::Adopt => Some(Tracked::adopted(path, page_count, view, now)),
+            Follow::Nothing => None,
         };
     }
 
     /// Canvas prepaint: notes where the view is and starts the settle timer
     /// when it moved. Cheap (no IO, no allocation); nothing when off.
     pub(crate) fn note_reading_position(&mut self, cx: &mut Context<'_, Self>) {
-        if !self.settings.remember_position || self.reading.doc.is_none() {
+        if !self.reading_gate().write() || self.reading.doc.is_none() {
             return;
         }
         let Some(view) = self.reading_view() else {
@@ -134,7 +169,7 @@ impl ReaderView {
     /// wait for it to.
     fn reading_settled(&mut self, cx: &mut Context<'_, Self>) {
         self.reading.settle = None;
-        if !self.settings.remember_position {
+        if !self.reading_gate().write() {
             return;
         }
         let Some(view) = self.reading_view() else {
@@ -200,7 +235,7 @@ impl ReaderView {
     /// true when it did.
     fn close_reading(&mut self, why: &str) -> bool {
         self.reading.settle = None;
-        if !self.settings.remember_position {
+        if !self.reading_gate().write() {
             return false;
         }
         let Some(view) = self.reading_view() else {

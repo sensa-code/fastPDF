@@ -18,6 +18,9 @@ use crate::settings::DefaultZoom;
 use crate::startup::{SessionParts, ViewGuess};
 use crate::textures::TileImage;
 
+#[cfg(test)]
+mod tests;
+
 /// Pages around the restored one whose geometry the open thread fetches:
 /// its row in every layout, and the rows next to it.
 const PREFETCH_BEFORE: u32 = 2;

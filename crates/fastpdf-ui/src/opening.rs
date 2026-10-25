@@ -90,6 +90,8 @@ impl ReaderView {
             }
         };
 
+        // Positions turned off while it opened: it starts at the top.
+        let (start, session) = self.screen_start(start, session, cx);
         let restore = start.and_then(|s| s.restore);
         let session = match session {
             // Started while GPUI was starting; the first frame resizes it to
