@@ -85,6 +85,7 @@ pub(crate) enum Expect {
     Outline,
     Links,
     PageLabels,
+    Properties,
     MemoryUsage,
     Trimmed,
 }
@@ -103,6 +104,7 @@ impl Expect {
             | (Self::Outline, Payload::Outline(_))
             | (Self::Links, Payload::Links(_))
             | (Self::PageLabels, Payload::PageLabels(_))
+            | (Self::Properties, Payload::Properties(_))
             | (Self::MemoryUsage, Payload::MemoryUsage(_))
             | (Self::Trimmed, Payload::Trimmed) => true,
             _ => false,

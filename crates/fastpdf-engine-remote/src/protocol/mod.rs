@@ -21,6 +21,7 @@
 //! Only pathological documents ever hit those caps.
 
 mod labels;
+mod properties;
 mod wire;
 
 #[cfg(test)]
@@ -31,17 +32,19 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fastpdf_engine_api::{
-    ColorMode, Destination, DestinationView, DocumentMetadata, EngineCapabilities, EngineError,
-    LimitKind, Link, LinkTarget, MemoryPressure, OutlineItem, PageIndex, PageInfo, PageLabelRange,
-    PageRect, PageSize, Password, PixelFormat, PixelRect, RenderOutcome, RenderRequest,
-    RenderScale, ResourceLimits, Rgba8, Rotation, TextLayer, TextSpan,
+    ColorMode, Destination, DestinationView, DocumentMetadata, DocumentProperties,
+    EngineCapabilities, EngineError, LimitKind, Link, LinkTarget, MemoryPressure, OutlineItem,
+    PageIndex, PageInfo, PageLabelRange, PageRect, PageSize, Password, PixelFormat, PixelRect,
+    RenderOutcome, RenderRequest, RenderScale, ResourceLimits, Rgba8, Rotation, TextLayer,
+    TextSpan,
 };
 
 pub(crate) use wire::ProtocolError;
 use wire::{Decoder, Encoder, Result, clip};
 
 /// Bumped on every incompatible change. Each frame carries it.
-/// 2: page labels (`PageLabels` command and payload).
+/// 2: page labels and document properties (`PageLabels` and `Properties`
+/// commands and payloads).
 pub(crate) const PROTOCOL_VERSION: u16 = 2;
 
 /// Identifies the code on both ends; parent and host must match exactly
@@ -98,6 +101,7 @@ const CMD_TRIM: u8 = 0x0A;
 const CMD_CANCEL: u8 = 0x0B;
 const CMD_PAGE_INFOS: u8 = 0x0C;
 const CMD_PAGE_LABELS: u8 = 0x0D;
+const CMD_PROPERTIES: u8 = 0x0E;
 const REPLY_READY: u8 = 0x81;
 const REPLY_INIT_FAILED: u8 = 0x82;
 const REPLY_DONE: u8 = 0x83;
@@ -114,6 +118,7 @@ const P_MEMORY_USAGE: u8 = 8;
 const P_TRIMMED: u8 = 9;
 const P_PAGE_INFOS: u8 = 10;
 const P_PAGE_LABELS: u8 = 11;
+const P_PROPERTIES: u8 = 12;
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -153,6 +158,9 @@ pub(crate) enum Command {
     PageLabels {
         id: u64,
     },
+    Properties {
+        id: u64,
+    },
     MemoryUsage {
         id: u64,
     },
@@ -180,6 +188,7 @@ impl Command {
             | Self::Outline { id }
             | Self::Links { id, .. }
             | Self::PageLabels { id }
+            | Self::Properties { id }
             | Self::MemoryUsage { id }
             | Self::Trim { id, .. }
             | Self::Cancel { id } => Some(*id),
@@ -306,6 +315,8 @@ pub(crate) enum Payload {
     Links(Vec<Link>),
     /// As the engine gave them; the parent normalizes them again.
     PageLabels(Vec<PageLabelRange>),
+    /// Boxed: far larger than the other payloads.
+    Properties(Box<DocumentProperties>),
     MemoryUsage(Option<u64>),
     Trimmed,
 }
@@ -481,6 +492,7 @@ pub(crate) fn encode_command(cmd: &Command) -> Result<Vec<u8>> {
         Command::Outline { id } => id_only(CMD_OUTLINE, *id),
         Command::Links { id, page } => id_page(CMD_LINKS, *id, *page),
         Command::PageLabels { id } => id_only(CMD_PAGE_LABELS, *id),
+        Command::Properties { id } => id_only(CMD_PROPERTIES, *id),
         Command::MemoryUsage { id } => id_only(CMD_MEMORY_USAGE, *id),
         Command::Trim { id, pressure } => {
             let mut e = Encoder::new(CMD_TRIM);
@@ -637,6 +649,7 @@ pub(crate) fn decode_command(payload: &[u8]) -> Result<Command> {
             page: PageIndex::new(d.u32()?),
         },
         CMD_PAGE_LABELS => Command::PageLabels { id: d.u64()? },
+        CMD_PROPERTIES => Command::Properties { id: d.u64()? },
         CMD_MEMORY_USAGE => Command::MemoryUsage { id: d.u64()? },
         CMD_TRIM => {
             let id = d.u64()?;
@@ -1073,20 +1086,7 @@ fn put_payload(e: &mut Encoder, p: &Payload) {
         }
         Payload::Metadata(m) => {
             e.u8(P_METADATA);
-            for value in [
-                &m.title,
-                &m.author,
-                &m.subject,
-                &m.keywords,
-                &m.creator,
-                &m.producer,
-                &m.creation_date,
-                &m.modification_date,
-                &m.pdf_version,
-            ] {
-                e.opt_str(value.as_deref().map(|s| clip(s, MAX_STRING)));
-            }
-            e.bool(m.encrypted);
+            properties::put_metadata(e, m);
         }
         Payload::Rendered(outcome) => {
             e.u8(P_RENDERED);
@@ -1125,6 +1125,10 @@ fn put_payload(e: &mut Encoder, p: &Payload) {
             e.u8(P_PAGE_LABELS);
             labels::put_page_labels(e, ranges);
         }
+        Payload::Properties(p) => {
+            e.u8(P_PROPERTIES);
+            properties::put_properties(e, p);
+        }
         Payload::MemoryUsage(bytes) => {
             e.u8(P_MEMORY_USAGE);
             match bytes {
@@ -1159,35 +1163,7 @@ fn get_payload(d: &mut Decoder<'_>) -> Result<Payload> {
             }
             Payload::PageInfos { first, pages }
         }
-        P_METADATA => {
-            let mut values: [Option<String>; 9] = Default::default();
-            for v in &mut values {
-                *v = d.opt_str("metadata", MAX_STRING)?;
-            }
-            let [
-                title,
-                author,
-                subject,
-                keywords,
-                creator,
-                producer,
-                creation_date,
-                modification_date,
-                pdf_version,
-            ] = values;
-            Payload::Metadata(DocumentMetadata {
-                title,
-                author,
-                subject,
-                keywords,
-                creator,
-                producer,
-                creation_date,
-                modification_date,
-                pdf_version,
-                encrypted: d.bool("encrypted")?,
-            })
-        }
+        P_METADATA => Payload::Metadata(properties::get_metadata(d)?),
         P_RENDERED => Payload::Rendered(RenderOutcome {
             partial: d.bool("partial")?,
         }),
@@ -1210,6 +1186,7 @@ fn get_payload(d: &mut Decoder<'_>) -> Result<Payload> {
             Payload::Links(links)
         }
         P_PAGE_LABELS => Payload::PageLabels(labels::get_page_labels(d)?),
+        P_PROPERTIES => Payload::Properties(Box::new(properties::get_properties(d)?)),
         P_MEMORY_USAGE => Payload::MemoryUsage(if d.present("memory usage")? {
             Some(d.u64()?)
         } else {

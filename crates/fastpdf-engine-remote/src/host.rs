@@ -569,6 +569,10 @@ impl State {
                 .document()?
                 .page_labels()
                 .map(|labels| Payload::PageLabels(labels.into_ranges())),
+            Command::Properties { .. } => self
+                .document()?
+                .properties()
+                .map(|p| Payload::Properties(Box::new(p))),
             Command::MemoryUsage { .. } => Ok(Payload::MemoryUsage(
                 self.document().ok().and_then(|d| d.memory_usage()),
             )),

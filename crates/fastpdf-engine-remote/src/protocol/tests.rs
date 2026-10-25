@@ -10,10 +10,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fastpdf_engine_api::{
-    ColorMode, Destination, DestinationView, DocumentMetadata, EngineCapabilities, EngineError,
-    LimitKind, Link, LinkTarget, MemoryPressure, OutlineItem, PageIndex, PageInfo, PageLabelRange,
-    PageLabelStyle, PageRect, PageSize, PixelFormat, PixelRect, RenderOutcome, RenderRequest,
-    RenderScale, ResourceLimits, Rgba8, Rotation, TextLayer, TextSpan,
+    ColorMode, Destination, DestinationView, DocumentMetadata, DocumentProperties,
+    EncryptionMethod, EngineCapabilities, EngineError, FormSummary, LimitKind, Link, LinkTarget,
+    MemoryPressure, OutlineItem, PageIndex, PageInfo, PageLabelRange, PageLabelStyle, PageRect,
+    PageSize, Permissions, PixelFormat, PixelRect, RenderOutcome, RenderRequest, RenderScale,
+    ResourceLimits, Rgba8, Rotation, Security, TextLayer, TextSpan,
 };
 
 use super::*;
@@ -209,7 +210,8 @@ impl Rng {
     fn command(&mut self) -> Command {
         let id = self.next();
         let page = PageIndex::new(self.next() as u32);
-        match self.below(13) {
+        match self.below(14) {
+            13 => Command::Properties { id },
             12 => Command::PageLabels { id },
             11 => Command::PageInfos {
                 id,
@@ -298,7 +300,8 @@ impl Rng {
     }
 
     fn payload(&mut self) -> Payload {
-        match self.below(11) {
+        match self.below(12) {
+            11 => Payload::Properties(Box::new(self.properties())),
             10 => Payload::PageLabels(self.page_labels()),
             9 => Payload::PageInfos {
                 first: PageIndex::new(self.next() as u32),
@@ -316,18 +319,7 @@ impl Rng {
                 page_count: self.next() as u32,
             },
             1 => Payload::PageInfo(self.page_info()),
-            2 => Payload::Metadata(DocumentMetadata {
-                title: self.opt_string(20),
-                author: self.opt_string(20),
-                subject: self.opt_string(20),
-                keywords: self.opt_string(20),
-                creator: self.opt_string(20),
-                producer: self.opt_string(20),
-                creation_date: self.opt_string(20),
-                modification_date: self.opt_string(20),
-                pdf_version: self.opt_string(4),
-                encrypted: self.chance(2),
-            }),
+            2 => Payload::Metadata(self.metadata()),
             3 => Payload::Rendered(RenderOutcome {
                 partial: self.chance(2),
             }),
@@ -359,6 +351,60 @@ impl Rng {
             ),
             7 => Payload::MemoryUsage(self.chance(2).then(|| self.next())),
             _ => Payload::Trimmed,
+        }
+    }
+
+    fn metadata(&mut self) -> DocumentMetadata {
+        DocumentMetadata {
+            title: self.opt_string(20),
+            author: self.opt_string(20),
+            subject: self.opt_string(20),
+            keywords: self.opt_string(20),
+            creator: self.opt_string(20),
+            producer: self.opt_string(20),
+            creation_date: self.opt_string(20),
+            modification_date: self.opt_string(20),
+            pdf_version: self.opt_string(4),
+            encrypted: self.chance(2),
+        }
+    }
+
+    /// Valid on the wire: signed <= signature fields <= fields.
+    fn properties(&mut self) -> DocumentProperties {
+        let fields = self.next() as u32;
+        let signature_fields = fields / (1 + self.below(4) as u32);
+        let security = self.chance(2).then(|| Security {
+            handler: self.opt_string(10),
+            method: match self.below(5) {
+                0 => EncryptionMethod::Rc4 {
+                    key_bits: self.next() as u16,
+                },
+                1 => EncryptionMethod::Aes128,
+                2 => EncryptionMethod::Aes256,
+                3 => EncryptionMethod::Identity,
+                _ => EncryptionMethod::Unknown,
+            },
+            version: self.chance(2).then(|| self.byte()),
+            revision: self.chance(2).then(|| self.byte()),
+            permissions: self.chance(2).then(|| Permissions {
+                bits: self.next() as u32,
+                revision: self.byte(),
+            }),
+            encrypt_metadata: self.chance(2),
+            user_password: self.chance(2),
+        });
+        DocumentProperties {
+            metadata: self.metadata(),
+            security,
+            forms: FormSummary {
+                fields,
+                signature_fields,
+                signatures: signature_fields / (1 + self.below(3) as u32),
+                xfa: self.chance(2),
+                truncated: self.chance(2),
+            },
+            tagged: self.chance(2),
+            linearized: self.chance(2),
         }
     }
 

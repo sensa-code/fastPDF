@@ -216,6 +216,14 @@ fn remote_results_are_identical_to_in_process() {
         "{labels:?}"
     );
     assert_eq!(remote.page_labels(), labels);
+    let properties = local.properties();
+    assert!(
+        properties
+            .as_ref()
+            .is_ok_and(|p| p.tagged && p.forms.fields == 3),
+        "{properties:?}"
+    );
+    assert_eq!(remote.properties(), properties);
     assert_eq!(
         remote.page_info(PageIndex::new(99)),
         local.page_info(PageIndex::new(99))
@@ -508,6 +516,13 @@ fn open_errors_cross_the_process_boundary() {
     );
     let doc = open_with(&engine, &spec, Some("s3cret")).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(doc.metadata().map(|m| m.encrypted), Ok(true));
+    let security = doc.properties().map(|p| p.security);
+    assert!(
+        security
+            .as_ref()
+            .is_ok_and(|s| s.as_ref().is_some_and(|s| s.user_password)),
+        "{security:?}"
+    );
     for bytes in [b"%PDF-1.7 garbage".to_vec(), Vec::new()] {
         let source = DocumentSource::from_bytes(SharedBytes::from_vec(bytes));
         let result = open_guarded(&engine, source, &OpenOptions::default());

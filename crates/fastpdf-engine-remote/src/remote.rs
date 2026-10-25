@@ -29,10 +29,10 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use fastpdf_engine_api::{
-    CancelToken, DocumentMetadata, DocumentSource, EngineDocument, EngineError, EngineInfo,
-    FileOrigin, HostExit, HostExitReason, HostStatus, Link, MemoryPressure, OpenOptions,
-    OutlineItem, PageIndex, PageInfo, PageLabels, Password, PdfEngine, PixelFormat, PixmapMut,
-    RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
+    CancelToken, DocumentMetadata, DocumentProperties, DocumentSource, EngineDocument, EngineError,
+    EngineInfo, FileOrigin, HostExit, HostExitReason, HostStatus, Link, MemoryPressure,
+    OpenOptions, OutlineItem, PageIndex, PageInfo, PageLabels, Password, PdfEngine, PixelFormat,
+    PixmapMut, RenderOutcome, RenderRequest, ResourceLimits, TextLayer,
 };
 
 use crate::HostStats;
@@ -470,6 +470,7 @@ fn subject_name(s: Subject) -> String {
         Subject::Metadata => "the document metadata".to_owned(),
         Subject::Outline => "the outline".to_owned(),
         Subject::PageLabels => "the page labels".to_owned(),
+        Subject::Properties => "the document properties".to_owned(),
         Subject::Geometry => "the page geometry".to_owned(),
     }
 }
@@ -1065,6 +1066,20 @@ impl EngineDocument for RemoteDocument {
         })?;
         match payload {
             Payload::PageLabels(ranges) => Ok(PageLabels::new(ranges, self.shared.page_count)),
+            _ => Err(mismatch()),
+        }
+    }
+
+    fn properties(&self) -> Result<DocumentProperties, EngineError> {
+        let (payload, _) = self.shared.call(Some(Subject::Properties), None, |_, id| {
+            Ok(Request::new(
+                Command::Properties { id },
+                Expect::Properties,
+                None,
+            ))
+        })?;
+        match payload {
+            Payload::Properties(properties) => Ok(*properties),
             _ => Err(mismatch()),
         }
     }

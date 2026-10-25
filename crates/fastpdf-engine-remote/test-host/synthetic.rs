@@ -12,11 +12,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use fastpdf_engine_api::{
-    CancelToken, Destination, DestinationView, DocumentMetadata, DocumentSource,
-    EngineCapabilities, EngineDocument, EngineError, EngineInfo, Link, LinkTarget, MemoryPressure,
-    OpenOptions, OutlineItem, PageIndex, PageInfo, PageLabelRange, PageLabelStyle, PageLabels,
-    PageRect, PageSize, PdfEngine, PixmapMut, RenderOutcome, RenderRequest, Rgba8, Rotation,
-    TextLayer, TextSpan,
+    CancelToken, Destination, DestinationView, DocumentMetadata, DocumentProperties,
+    DocumentSource, EncryptionMethod, EngineCapabilities, EngineDocument, EngineError, EngineInfo,
+    FormSummary, Link, LinkTarget, MemoryPressure, OpenOptions, OutlineItem, PageIndex, PageInfo,
+    PageLabelRange, PageLabelStyle, PageLabels, PageRect, PageSize, PdfEngine, Permissions,
+    PixmapMut, RenderOutcome, RenderRequest, Rgba8, Rotation, Security, TextLayer, TextSpan,
 };
 
 pub(crate) const NAME: &str = "synthetic";
@@ -345,6 +345,32 @@ impl EngineDocument for SyntheticDoc {
             pdf_version: Some("1.7".into()),
             encrypted: self.spec.password.is_some(),
             ..DocumentMetadata::default()
+        })
+    }
+
+    /// A form and tagging always; a security block when the document has
+    /// a password.
+    fn properties(&self) -> Result<DocumentProperties, EngineError> {
+        Ok(DocumentProperties {
+            metadata: self.metadata()?,
+            security: self.spec.password.is_some().then(|| Security {
+                handler: Some("Standard".into()),
+                method: EncryptionMethod::Aes128,
+                version: Some(4),
+                revision: Some(4),
+                permissions: Some(Permissions::from_p(-3904, 4)),
+                encrypt_metadata: true,
+                user_password: true,
+            }),
+            forms: FormSummary {
+                fields: 3,
+                signature_fields: 2,
+                signatures: 1,
+                xfa: false,
+                truncated: false,
+            },
+            tagged: true,
+            linearized: false,
         })
     }
 
