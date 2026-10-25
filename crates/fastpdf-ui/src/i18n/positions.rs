@@ -11,11 +11,13 @@ impl Strings {
         }
     }
 
-    /// Under the switch when there is nowhere to keep positions.
+    /// Under the switch when there is nowhere to keep positions: no
+    /// recent-files list (`FASTPDF_RECENT_FILE` empty, or no per-user
+    /// folder such as `%APPDATA%`).
     pub(crate) fn positions_not_kept(&self) -> &'static str {
         match self.language {
-            Language::English => "Reading positions are not kept: FASTPDF_RECENT_FILE is empty.",
-            Language::TraditionalChinese => "不會記住閱讀位置：FASTPDF_RECENT_FILE 為空字串。",
+            Language::English => "No recent-files list, so positions are not kept.",
+            Language::TraditionalChinese => "沒有最近檔案清單，所以不會記住閱讀位置。",
         }
     }
 }

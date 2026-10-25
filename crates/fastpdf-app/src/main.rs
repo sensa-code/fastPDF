@@ -264,8 +264,11 @@ fn reader_main() {
     options.writer = Some(Arc::new(write_job::run));
     options.dev_overlay = env.dev_overlay;
     options.bench = env.bench.then(|| clock.hook());
+    // Absolute, like the settings file: the reading positions, their lock
+    // and temporary files go next to the list, never into whatever folder
+    // FastPDF was started from.
     if let Some(recent) = env.recent_file {
-        options.recent_files = recent;
+        options.recent_files = recent.map(|p| std::path::absolute(&p).unwrap_or(p));
     }
     if let Some(settings) = env.settings_file {
         options.settings_file = settings.map(|p| std::path::absolute(&p).unwrap_or(p));
