@@ -46,7 +46,11 @@ enum Copied {
 }
 
 impl ReaderView {
-    pub(crate) fn toggle_properties_panel(&mut self, cx: &mut Context<'_, Self>) {
+    pub(crate) fn toggle_properties_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.properties.open {
             self.close_properties_panel();
             return;
@@ -55,7 +59,7 @@ impl ReaderView {
         if self.active_prompt().is_some() {
             return;
         }
-        self.make_room_for(crate::panel_slot::CornerPanel::Properties, cx);
+        self.make_room_for(crate::panel_slot::CornerPanel::Properties, window, cx);
         self.properties = PropertiesPanel {
             open: true,
             copied: None,

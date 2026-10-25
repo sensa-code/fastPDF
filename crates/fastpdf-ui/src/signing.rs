@@ -89,7 +89,7 @@ impl ReaderView {
             cx.notify();
             return;
         }
-        self.make_room_for(crate::panel_slot::CornerPanel::Sign, cx);
+        self.make_room_for(crate::panel_slot::CornerPanel::Sign, window, cx);
         self.signing.open = true;
         self.signing.problem = None;
         // The test signer (development scripts) replaces the store.

@@ -555,7 +555,7 @@ impl ReaderView {
                 Done
             }
             Step::SettingsPanel => {
-                self.toggle_settings_panel(cx);
+                self.toggle_settings_panel(window, cx);
                 Done
             }
             Step::Tool(tool) => {

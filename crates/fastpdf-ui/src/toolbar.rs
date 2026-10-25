@@ -238,8 +238,8 @@ pub(crate) fn render(
                 .text_size(px(16.0))
                 .tooltip(tooltip(strings.tip_settings.into(), theme, font))
                 .when(!blocked, |button| {
-                    button.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.toggle_settings_panel(cx);
+                    button.on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.toggle_settings_panel(window, cx);
                     }))
                 }),
         )

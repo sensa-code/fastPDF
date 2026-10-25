@@ -5,7 +5,7 @@
 
 use gpui::{
     ClickEvent, Context, Div, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 
 use crate::i18n::{Language, Strings};
@@ -20,14 +20,18 @@ const WIDTH: f32 = 470.0;
 const LABEL_WIDTH: f32 = 120.0;
 
 impl ReaderView {
-    pub(crate) fn toggle_settings_panel(&mut self, cx: &mut Context<'_, Self>) {
+    pub(crate) fn toggle_settings_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         // Nothing opens behind a prompt card.
         if self.active_prompt().is_some() {
             return;
         }
         self.settings_open = !self.settings_open;
         if self.settings_open {
-            self.make_room_for(crate::panel_slot::CornerPanel::Settings, cx);
+            self.make_room_for(crate::panel_slot::CornerPanel::Settings, window, cx);
         }
         cx.notify();
     }

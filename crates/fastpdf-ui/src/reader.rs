@@ -520,7 +520,7 @@ impl ReaderView {
             C::Cancel => self.cancel(window, cx),
             C::ConfirmPrompt => self.confirm_prompt(window, cx),
             C::GoToPage => self.start_go_to(window, cx),
-            C::DocumentProperties => self.toggle_properties_panel(cx),
+            C::DocumentProperties => self.toggle_properties_panel(window, cx),
             C::ConfirmGoToPage => {
                 self.confirm_go_to(window, cx);
             }

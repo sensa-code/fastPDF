@@ -221,7 +221,7 @@ impl ReaderView {
             self.close_text_edit_panel(window, cx);
             return;
         }
-        self.make_room_for(crate::panel_slot::CornerPanel::TextEdits, cx);
+        self.make_room_for(crate::panel_slot::CornerPanel::TextEdits, window, cx);
         let panel = &mut self.text_edits;
         panel.open = true;
         panel.problem = None;

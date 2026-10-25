@@ -239,7 +239,7 @@ pub(crate) fn keep_on_page(rect: PageRect, size: PageSize) -> PageRect {
 impl ReaderView {
     pub(crate) fn toggle_stamp_panel(&mut self, cx: &mut Context<'_, Self>) {
         if !self.stamps.open {
-            self.make_room_for(crate::panel_slot::CornerPanel::Stamps, cx);
+            self.clear_corner(crate::panel_slot::CornerPanel::Stamps, cx);
         }
         self.stamps.open = !self.stamps.open;
         if !self.stamps.open {
