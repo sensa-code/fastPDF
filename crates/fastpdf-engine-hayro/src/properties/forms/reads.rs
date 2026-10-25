@@ -42,6 +42,13 @@ pub(super) fn has_value(dict: &Dict<'_>, key: &[u8]) -> bool {
     dict.contains_key(key) && !matches!(dict.get_raw::<Null>(key), Some(MaybeRef::NotRef(_)))
 }
 
+/// Whether a kid is a field rather than one of its parent's widgets: it
+/// has a name (`/T`), or kids of its own (an unnamed field that groups
+/// others; widgets have none).
+pub(super) fn is_field(dict: &Dict<'_>) -> bool {
+    dict.contains_key(b"T") || dict.contains_key(b"Kids")
+}
+
 /// Whether a field's own `/V` is a signature: a dictionary, or a reference
 /// that is not resolved (the writer's rule; a signature can be large).
 /// `None` when it has none (`null` counts as none): the parent's `/V`
@@ -96,7 +103,9 @@ impl<'p> Walk<'p> {
                         Kids::Array(array, Some(id))
                     }
                     None => {
+                        // No kids, for every field that names this object.
                         self.reject();
+                        self.kid_arrays.insert(id, false);
                         Kids::None
                     }
                 }

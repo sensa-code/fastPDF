@@ -228,6 +228,24 @@ fn fields_listed_with_their_parent_count_once() {
         counts(&["<< /Fields [7 0 R 8 0 R 9 0 R] >>", parent, a, b]),
         (2, 2, 2)
     );
+    // An unnamed field with kids of its own, listed in /Fields too, is a
+    // field, not a widget: its signed kid counts.
+    let named = "<< /T (p) /Kids [8 0 R 9 0 R] >>";
+    let group = "<< /Parent 7 0 R /Kids [10 0 R] >>";
+    let text = "<< /T (t) /Parent 7 0 R /FT /Tx >>";
+    let signed = "<< /T (s) /Parent 8 0 R /FT /Sig /V << >> >>";
+    assert_eq!(
+        counts(&["<< /Fields [7 0 R 8 0 R] >>", named, group, text, signed]),
+        (2, 1, 1)
+    );
+    // Two fields whose /Kids name the same object that is no array: both
+    // are terminal fields.
+    let a = "<< /T (a) /Kids 9 0 R /FT /Sig /V << >> >>";
+    let b = "<< /T (b) /Kids 9 0 R /FT /Sig /V << >> >>";
+    assert_eq!(
+        counts(&["<< /Fields [7 0 R 8 0 R] >>", a, b, "null"]),
+        (2, 2, 2)
+    );
     // An entry whose parent never reaches it stands on its own.
     let a = "<< /T (a) /Parent 7 0 R >>";
     let b = "<< /T (b) /Parent 7 0 R >>";

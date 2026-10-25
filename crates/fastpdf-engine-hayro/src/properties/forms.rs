@@ -29,7 +29,7 @@ use fastpdf_engine_api::FormSummary;
 use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, Object, ObjectIdentifier};
 use hayro::hayro_syntax::xref::XRef;
 
-use self::reads::{Kids, Path, has_value, signed};
+use self::reads::{Kids, Path, has_value, is_field, signed};
 use crate::items::items;
 
 /// Field and widget dictionaries looked at, at most.
@@ -223,8 +223,8 @@ impl<'p> Walk<'p> {
         }
     }
 
-    /// Puts the fields among a field's kids (those with a name, `/T`; the
-    /// others are its widgets) on the stack. True when the kids held a
+    /// Puts the fields among a field's kids ([`is_field`]; the others are
+    /// its widgets) on the stack. True when the kids held a
     /// field (one reached before included), or when the budgets cut them
     /// short (the parent is then not counted).
     fn queue(
@@ -271,7 +271,7 @@ impl<'p> Walk<'p> {
                 }
                 MaybeRef::NotRef(_) => continue,
             };
-            if dict.contains_key(b"T") {
+            if is_field(&dict) {
                 fields = true;
                 if let Some(id) = id {
                     self.field_ids.insert(id);
