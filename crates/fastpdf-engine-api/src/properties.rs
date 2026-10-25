@@ -126,10 +126,10 @@ impl Permissions {
         self.bit(5)
     }
 
-    /// Copying for accessibility (bit 10, deprecated in PDF 2.0; implied by
-    /// bit 5).
+    /// Copying for accessibility (bit 10 from revision 3 on, deprecated in
+    /// PDF 2.0; implied by bit 5).
     pub fn copy_for_accessibility(self) -> bool {
-        self.bit(10) || self.copy()
+        self.copy() || (self.extended() && self.bit(10))
     }
 
     /// Adding or changing annotations, filling in forms (bit 6).

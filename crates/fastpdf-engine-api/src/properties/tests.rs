@@ -54,6 +54,11 @@ fn revisions_read_bits_differently() {
     // the latter.
     let accessibility = Permissions::from_p(i64::from(0xFFFF_F0C0_u32 | (1 << 9)), 3);
     assert!(accessibility.copy_for_accessibility() && !accessibility.copy());
+    // Revision 2 reads no bit above 6: -64 allows nothing,
+    // whatever the reserved bits say.
+    let r2 = Permissions::from_p(-64, 2);
+    assert!(!r2.copy() && !r2.copy_for_accessibility());
+    assert!(!r2.modify() && !r2.annotate() && !r2.fill_forms() && !r2.assemble());
     // Values outside 32 bits never panic.
     let _ = Permissions::from_p(i64::MIN, 4).printing();
     let _ = Permissions::from_p(i64::MAX, 0).all_allowed();

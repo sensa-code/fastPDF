@@ -29,15 +29,16 @@ pub struct PdfDate {
 }
 
 impl PdfDate {
-    /// Longest text looked at; longer text is not a date.
+    /// Longest text looked at, surrounding whitespace and NULs included;
+    /// longer text is not a date.
     pub const MAX_LEN: usize = 64;
 
     /// The date `text` writes, if it is one.
     pub fn parse(text: &str) -> Option<Self> {
-        let text = text.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\0');
         if text.len() > Self::MAX_LEN || !text.is_ascii() {
             return None;
         }
+        let text = text.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\0');
         let bytes = text.as_bytes();
         let mut r = Reader {
             bytes: bytes.strip_prefix(b"D:").unwrap_or(bytes),
@@ -104,10 +105,11 @@ impl Reader<'_> {
         };
         self.bytes = rest;
         let sign = match first {
-            // Some writers add a zero offset after the Z; it says nothing more.
+            // Some writers add a zero offset after the Z; any other offset
+            // contradicts it.
             b'Z' => {
-                if !self.bytes.is_empty() {
-                    self.hours_minutes()?;
+                if !self.bytes.is_empty() && self.hours_minutes()? != (0, 0) {
+                    return None;
                 }
                 return Some(Some(0));
             }
@@ -230,9 +232,17 @@ mod tests {
         ] {
             assert_eq!(PdfDate::parse(text), None, "{text:?}");
         }
-        // Longer than any date, even when it starts like one.
+        // Longer than any date, even when it starts like one or the rest
+        // is padding.
         let long = format!("D:20261024153000Z{}", "0".repeat(10_000));
         assert_eq!(PdfDate::parse(&long), None);
+        let padded = format!("D:2026{}", " ".repeat(PdfDate::MAX_LEN));
+        assert_eq!(PdfDate::parse(&padded), None);
+        let padded = format!("D:2026{}", "\0".repeat(PdfDate::MAX_LEN));
+        assert_eq!(PdfDate::parse(&padded), None);
+        // Z with an offset other than zero contradicts itself.
+        assert_eq!(PdfDate::parse("D:20261024153000Z08'00'"), None);
+        assert_eq!(PdfDate::parse("D:20261024153000Z00'30'"), None);
         assert_eq!(PdfDate::parse(&"9".repeat(10_000)), None);
     }
 }
