@@ -19,6 +19,8 @@ impl RecentFiles {
 
     /// `%APPDATA%\FastPDF\recent.txt` on Windows,
     /// `$XDG_CONFIG_HOME/fastpdf/recent.txt` (or `~/.config/...`) elsewhere.
+    /// The reading positions live next to the list, wherever it is
+    /// ([`PositionStore::next_to`](crate::positions::PositionStore::next_to)).
     pub fn default_location() -> Option<PathBuf> {
         crate::paths::config_dir().map(|d| d.join("recent.txt"))
     }
@@ -81,11 +83,21 @@ impl RecentFiles {
 }
 
 /// Windows paths are case-insensitive.
-fn same_path(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     if cfg!(windows) {
-        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+        path_key(a) == path_key(b)
     } else {
         a == b
+    }
+}
+
+/// A path in the form [`same_path`] compares on Windows: equal keys name
+/// the same file.
+pub(crate) fn path_key(path: &Path) -> String {
+    if cfg!(windows) {
+        path.to_string_lossy().to_lowercase()
+    } else {
+        path.to_string_lossy().into_owned()
     }
 }
 

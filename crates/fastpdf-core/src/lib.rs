@@ -6,7 +6,8 @@
 //! the toolkit-independent heart of the viewer. [`ViewState`] and
 //! [`SavedView`] say where its view is; [`NavigationHistory`] keeps the
 //! views Back and Forward return to; [`links`] checks and caches the links
-//! of the pages the pointer visits.
+//! of the pages the pointer visits; [`positions`] remembers where each
+//! document was left.
 
 pub mod go_to;
 pub mod history;
@@ -15,6 +16,7 @@ pub mod links;
 pub mod loader;
 pub mod memory;
 pub mod paths;
+pub mod positions;
 pub mod recent;
 mod retry;
 pub mod selection;
