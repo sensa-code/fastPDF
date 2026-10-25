@@ -35,10 +35,22 @@ pub(crate) fn properties(inner: &DocInner, generation: &Generation) -> DocumentP
     let trailer = trailer::last_trailer(bytes);
     let mut metadata = nav::metadata(pdf, inner.encrypted);
     let mut security = None;
-    if let Some(trailer) = &trailer {
-        if let Some(info) = resolve_dict(xref, trailer, b"Info") {
-            complete(&mut metadata, &info);
+    let info = trailer
+        .as_ref()
+        .and_then(|trailer| resolve_dict(xref, trailer, b"Info"));
+    match &info {
+        Some(info) => complete(&mut metadata, info),
+        None => {
+            // hayro's dates: an offset of zero hours may be one the file
+            // never names (hayro stores none as 0) or a lost minus sign.
+            for date in [&mut metadata.creation_date, &mut metadata.modification_date] {
+                if let Some(d) = date.as_mut() {
+                    drop_unknown_offset(d);
+                }
+            }
         }
+    }
+    if let Some(trailer) = &trailer {
         security = resolve_dict(xref, trailer, b"Encrypt")
             .map(|dict| read_security(&dict, !inner.password.is_empty()));
     }
@@ -98,6 +110,16 @@ fn complete(metadata: &mut DocumentMetadata, info: &Dict<'_>) {
         if slot.is_none() {
             *slot = text(key);
         }
+    }
+}
+
+/// Cuts the offset off a date hayro wrote back (`D:YYYYMMDDHHmmSS+00'mm'`)
+/// when its hours are zero: hayro writes `+00'00'` for a date without an
+/// offset, and drops the minus sign of `-00'30'`.
+fn drop_unknown_offset(date: &mut String) {
+    const DIGITS: usize = "D:YYYYMMDDHHmmSS".len();
+    if date.get(DIGITS + 1..DIGITS + 3) == Some("00") {
+        date.truncate(DIGITS);
     }
 }
 
@@ -213,92 +235,4 @@ fn linearized(bytes: &[u8]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn method_of(dict: &[u8]) -> EncryptionMethod {
-        let dict = Dict::from_bytes(dict).unwrap_or_default();
-        let version = dict.get::<i64>(b"V").and_then(|v| u8::try_from(v).ok());
-        method(&dict, version)
-    }
-
-    #[test]
-    fn crypt_filters_name_the_cipher_and_its_key_length() {
-        let rc4 = |cf: &str, extra: &str| {
-            method_of(
-                format!("<< /V 4 /StmF /StdCF /StrF /StdCF /CF << /StdCF << /CFM /V2 {cf} >> >> {extra} >>")
-                    .as_bytes(),
-            )
-        };
-        // Bytes as the standard security handler writes them, or bits.
-        assert_eq!(rc4("/Length 5", ""), EncryptionMethod::Rc4 { key_bits: 40 });
-        assert_eq!(
-            rc4("/Length 16", ""),
-            EncryptionMethod::Rc4 { key_bits: 128 }
-        );
-        assert_eq!(
-            rc4("/Length 128", ""),
-            EncryptionMethod::Rc4 { key_bits: 128 }
-        );
-        assert_eq!(
-            rc4("/Length 56", ""),
-            EncryptionMethod::Rc4 { key_bits: 56 }
-        );
-        // Otherwise the dictionary's length, otherwise 128.
-        assert_eq!(
-            rc4("", "/Length 40"),
-            EncryptionMethod::Rc4 { key_bits: 40 }
-        );
-        assert_eq!(
-            rc4("/Length 3", ""),
-            EncryptionMethod::Rc4 { key_bits: 128 }
-        );
-        assert_eq!(rc4("", ""), EncryptionMethod::Rc4 { key_bits: 128 });
-        assert_eq!(
-            method_of(b"<< /V 4 /StmF /StdCF /CF << /StdCF << /CFM /AESV2 >> >> >>"),
-            EncryptionMethod::Aes128
-        );
-        assert_eq!(
-            method_of(b"<< /V 5 /StmF /StdCF /CF << /StdCF << /CFM /AESV3 >> >> >>"),
-            EncryptionMethod::Aes256
-        );
-        // Streams not encrypted: the strings' filter says.
-        assert_eq!(
-            method_of(b"<< /V 4 /StmF /Identity /StrF /S /CF << /S << /CFM /AESV2 >> >> >>"),
-            EncryptionMethod::Aes128
-        );
-        assert_eq!(method_of(b"<< /V 4 >>"), EncryptionMethod::Identity);
-        assert_eq!(
-            method_of(b"<< /V 1 >>"),
-            EncryptionMethod::Rc4 { key_bits: 40 }
-        );
-        assert_eq!(
-            method_of(b"<< /V 2 /Length 128 >>"),
-            EncryptionMethod::Rc4 { key_bits: 128 }
-        );
-        assert_eq!(method_of(b"<< /V 3 >>"), EncryptionMethod::Unknown);
-        assert_eq!(
-            method_of(b"<< /V 4 /StmF /X /CF << /X << /CFM /Other >> >> >>"),
-            EncryptionMethod::Unknown
-        );
-    }
-
-    #[test]
-    fn linearization_names_the_file_length() {
-        let doc = |len: &str| {
-            format!("%PDF-1.7\n1 0 obj\n<< /Linearized 1 /L {len} /O 3 >>\nendobj\n%%EOF\n")
-        };
-        let probe = doc("0000");
-        let exact = doc(&format!("{:04}", probe.len()));
-        assert!(linearized(exact.as_bytes()));
-        assert!(!linearized(probe.as_bytes()));
-        let mut appended = exact.clone().into_bytes();
-        appended.extend_from_slice(b"% update\n");
-        assert!(!linearized(&appended));
-        // After the first 1024 bytes it does not count.
-        let late = format!("%PDF-1.7\n%{}\n{}", "x".repeat(1100), &exact[9..]);
-        assert!(!linearized(late.as_bytes()));
-        assert!(!linearized(b""));
-        assert!(!linearized(b"/Linearized <<"));
-    }
-}
+mod tests;

@@ -7,8 +7,8 @@
 //!   per entry, as hayro reads them) up to `trailer`;
 //! * a cross-reference stream: its dictionary;
 //! * otherwise (no section at the offset `startxref` names, or a table
-//!   that does not read): the last `trailer` within 64 KiB before
-//!   `startxref`.
+//!   that does not read): the last `trailer` or cross-reference stream
+//!   object within 64 KiB before `startxref`, whichever is later.
 //!
 //! Every slice is checked and every window has a fixed size; the dictionary
 //! is read with hayro's own parser, without a document (references stay
@@ -32,7 +32,18 @@ pub(super) fn last_trailer(bytes: &[u8]) -> Option<Dict<'_>> {
     let (keyword, offset) = startxref(bytes)?;
     offset
         .and_then(|offset| section_at(bytes, offset))
-        .or_else(|| trailer_before(bytes, keyword))
+        .or_else(|| last_section_before(bytes, keyword))
+}
+
+/// The last trailer or cross-reference stream within [`WINDOW`] bytes
+/// before `end`.
+fn last_section_before(bytes: &[u8], end: usize) -> Option<Dict<'_>> {
+    let start = end.saturating_sub(WINDOW);
+    let window = bytes.get(start..end)?;
+    match (trailer_before(window), stream_before(window)) {
+        (Some((t, table)), Some((s, stream))) => Some(if t > s { table } else { stream }),
+        (table, stream) => table.or(stream).map(|(_, dict)| dict),
+    }
 }
 
 /// Where `startxref` is in the last [`TAIL`] bytes, and the offset it
@@ -117,13 +128,54 @@ fn stream_dict(section: &[u8]) -> Option<Dict<'_>> {
         .then_some(dict)
 }
 
-/// The last `trailer` dictionary within [`WINDOW`] bytes before `end`.
-fn trailer_before(bytes: &[u8], end: usize) -> Option<Dict<'_>> {
-    let start = end.saturating_sub(WINDOW);
-    let window = bytes.get(start..end)?;
+/// The last `trailer` dictionary in `window`, and where it is.
+fn trailer_before(window: &[u8]) -> Option<(usize, Dict<'_>)> {
     let at = window.windows(7).rposition(|w| w == b"trailer")?;
     let rest = &window[at + 7..];
-    dict(&rest[whitespace(rest)..])
+    Some((at, dict(&rest[whitespace(rest)..])?))
+}
+
+/// The last cross-reference stream object (`n g obj << /Type /XRef ... >>`)
+/// in `window`, and where it is. Only the last few `obj` keywords are
+/// tried: the stream is the last object a writer puts before `startxref`.
+fn stream_before(window: &[u8]) -> Option<(usize, Dict<'_>)> {
+    const TRIES: usize = 8;
+    let mut end = window.len();
+    for _ in 0..TRIES {
+        let at = window.get(..end)?.windows(3).rposition(|w| w == b"obj")?;
+        end = at;
+        let Some(start) = object_header_start(window, at) else {
+            continue;
+        };
+        if let Some(dict) = window.get(start..).and_then(stream_dict) {
+            return Some((start, dict));
+        }
+    }
+    None
+}
+
+/// Where `n g ` starts when `obj` at `at` follows an object number and a
+/// generation.
+fn object_header_start(data: &[u8], at: usize) -> Option<usize> {
+    let mut pos = at;
+    for _ in 0..2 {
+        let space = data[..pos]
+            .iter()
+            .rev()
+            .take_while(|b| matches!(b, b'\0' | b'\t' | b'\n' | b'\x0c' | b'\r' | b' '))
+            .count();
+        let digits_end = pos - space;
+        let digits = data[..digits_end]
+            .iter()
+            .rev()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        if space == 0 || digits == 0 || digits > 10 {
+            return None;
+        }
+        pos = digits_end - digits;
+    }
+    Some(pos)
 }
 
 /// The dictionary `data` starts with, read from at most [`WINDOW`] bytes.
@@ -155,108 +207,4 @@ fn whitespace(data: &[u8]) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    use hayro::hayro_syntax::object::{MaybeRef, ObjectIdentifier};
-
-    use super::*;
-
-    /// The object number `/Root` names in the trailer found.
-    fn root(bytes: &[u8]) -> Option<i32> {
-        match last_trailer(bytes)?.get_raw::<Dict<'_>>(b"Root")? {
-            MaybeRef::Ref(r) => Some(ObjectIdentifier::from(r).obj_number),
-            MaybeRef::NotRef(_) => None,
-        }
-    }
-
-    fn table(entries: usize, trailer: &str) -> Vec<u8> {
-        let mut out = b"%PDF-1.7\n1 0 obj\n<< >>\nendobj\n".to_vec();
-        let start = out.len();
-        out.extend_from_slice(format!("xref\n0 {entries}\n").as_bytes());
-        for _ in 0..entries {
-            out.extend_from_slice(b"0000000000 65535 f\r\n");
-        }
-        out.extend_from_slice(
-            format!("trailer\n{trailer}\nstartxref\n{start}\n%%EOF\n").as_bytes(),
-        );
-        out
-    }
-
-    #[test]
-    fn classic_tables_are_skipped_by_their_counts() {
-        assert_eq!(root(&table(3, "<< /Size 3 /Root 7 0 R >>")), Some(7));
-        // Far more than the window before startxref.
-        assert_eq!(
-            root(&table(200_000, "<< /Size 200000 /Root 9 0 R >>")),
-            Some(9)
-        );
-        // Two subsections.
-        let mut doc = b"%PDF-1.7\n".to_vec();
-        let start = doc.len();
-        doc.extend_from_slice(b"xref\n0 1\n0000000000 65535 f\r\n5 2\n");
-        doc.extend_from_slice(b"0000000009 00000 n\r\n0000000009 00000 n\r\n");
-        doc.extend_from_slice(
-            format!("trailer <</Root 5 0 R>>\nstartxref {start}\n%%EOF").as_bytes(),
-        );
-        assert_eq!(root(&doc), Some(5));
-    }
-
-    #[test]
-    fn cross_reference_streams_give_their_dictionary() {
-        let mut doc = b"%PDF-1.7\n".to_vec();
-        let start = doc.len();
-        doc.extend_from_slice(
-            b"12 0 obj\n<< /Type /XRef /Size 13 /Root 3 0 R /W [1 4 2] /Length 0 >>\nstream\n\nendstream\nendobj\n",
-        );
-        doc.extend_from_slice(format!("startxref\n{start}\n%%EOF\n").as_bytes());
-        assert_eq!(root(&doc), Some(3));
-        // An object that is not a cross-reference stream.
-        let wrong = String::from_utf8_lossy(&doc).replace("/Type /XRef", "/Type /Page");
-        assert_eq!(root(wrong.as_bytes()), None);
-    }
-
-    #[test]
-    fn comments_between_tokens_are_skipped() {
-        let mut doc = b"%PDF-1.7\n".to_vec();
-        let start = doc.len();
-        doc.extend_from_slice(
-            b"12 % number\n0 obj % a comment\r\n% another\n<< /Type /XRef /Root 3 0 R >>\nstream\n\nendstream\nendobj\n",
-        );
-        doc.extend_from_slice(format!("startxref\n{start}\n%%EOF\n").as_bytes());
-        assert_eq!(root(&doc), Some(3));
-        let table = String::from_utf8_lossy(&table(1, "<< /Root 4 0 R >>"))
-            .replace("trailer\n", "trailer % the trailer\n");
-        assert_eq!(root(table.as_bytes()), Some(4));
-        assert_eq!(whitespace(b" % open"), 7);
-        assert_eq!(whitespace(b"%\n%\r x"), 5);
-    }
-
-    #[test]
-    fn broken_offsets_fall_back_to_the_last_trailer() {
-        let doc = String::from_utf8_lossy(&table(2, "<< /Root 4 0 R >>")).into_owned();
-        let (head, offset) = doc.rsplit_once("startxref\n").unwrap_or_default();
-        let rest = offset.trim_start_matches(|c: char| c.is_ascii_digit());
-        // startxref past the end of the file, or at no section.
-        for wrong in ["999999999", "3"] {
-            let broken = format!("{head}startxref\n{wrong}{rest}");
-            assert_eq!(root(broken.as_bytes()), Some(4), "{wrong}");
-        }
-        // An entry count that overruns the file.
-        let lying = doc.replace("xref\n0 2\n", "xref\n0 9999\n");
-        assert_eq!(root(lying.as_bytes()), Some(4));
-    }
-
-    #[test]
-    fn nothing_is_found_without_its_keywords() {
-        assert_eq!(root(b""), None);
-        assert_eq!(root(b"%PDF-1.7\n1 0 obj << >> endobj\n%%EOF"), None);
-        // No trailer keyword after the table.
-        let doc = table(2, "<< /Root 4 0 R >>");
-        let no_trailer = String::from_utf8_lossy(&doc).replace("trailer", "tailer!");
-        assert_eq!(root(no_trailer.as_bytes()), None);
-        // A trailer that is not a dictionary.
-        let not_dict = String::from_utf8_lossy(&doc).replace("<< /Root 4 0 R >>", "[/Root 4 0 R]");
-        assert_eq!(root(not_dict.as_bytes()), None);
-        // startxref without a number, and no trailer.
-        assert_eq!(root(b"%PDF-1.7\nstartxref\n%%EOF"), None);
-    }
-}
+mod tests;

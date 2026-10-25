@@ -416,6 +416,87 @@ fn repaired_files_keep_their_information() {
     assert_eq!(doc.panic_count(), 0);
 }
 
+/// A one-page document whose last section is a cross-reference stream
+/// naming `info` (object 4) as /Info; `startxref` names `wrong` instead of
+/// the stream when given.
+fn xref_stream_document(info: &str, wrong: Option<&str>) -> Vec<u8> {
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".to_owned(),
+        info.to_owned(),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+    }
+    let stream_at = out.len();
+    offsets.push(stream_at);
+    // Rows of /W [1 4 2]: the free head, then every object at its offset.
+    let mut rows = vec![0u8, 0, 0, 0, 0, 0xFF, 0xFF];
+    for offset in &offsets {
+        rows.push(1);
+        rows.extend_from_slice(&u32::try_from(*offset).unwrap().to_be_bytes());
+        rows.extend_from_slice(&[0, 0]);
+    }
+    out.extend_from_slice(
+        format!(
+            "5 0 obj\n<< /Type /XRef /Size 6 /W [1 4 2] /Root 1 0 R /Info 4 0 R /Length {} >>\nstream\n",
+            rows.len()
+        )
+        .as_bytes(),
+    );
+    out.extend_from_slice(&rows);
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+    let start = wrong.map_or_else(|| stream_at.to_string(), str::to_owned);
+    out.extend_from_slice(format!("startxref\n{start}\n%%EOF\n").as_bytes());
+    out
+}
+
+#[test]
+fn cross_reference_streams_are_found_when_startxref_misses() {
+    let info = "<< /Title (Streamed) /CreationDate (D:20261024153000-00'30') >>";
+    for wrong in [None, Some("999999999"), Some("9")] {
+        let p = properties(xref_stream_document(info, wrong));
+        assert_eq!(p.metadata.title.as_deref(), Some("Streamed"), "{wrong:?}");
+        // As written: read through the stream's /Info, not hayro's dates.
+        assert_eq!(
+            p.metadata.creation_date.as_deref(),
+            Some("D:20261024153000-00'30'"),
+            "{wrong:?}"
+        );
+    }
+}
+
+#[test]
+fn dates_without_the_raw_information_drop_offsets_hayro_cannot_know() {
+    let bytes = document(
+        "",
+        &[
+            "<< /Title (Padded) /CreationDate (D:20261024153000+08'00') /ModDate (D:20261024153000) >>",
+        ],
+        "/Info 6 0 R",
+    );
+    // startxref more than 4 KiB before the end: hayro still finds it, the
+    // trailer probe does not, so the dates are hayro's.
+    let mut padded = bytes;
+    for _ in 0..200 {
+        padded.extend_from_slice(b"% padding after the end of the file\n");
+    }
+    let doc = open(padded);
+    let m = doc.properties().unwrap().metadata;
+    assert_eq!(m.title.as_deref(), Some("Padded"));
+    assert_eq!(m.creation_date.as_deref(), Some("D:20261024153000+08'00'"));
+    assert_eq!(m.modification_date.as_deref(), Some("D:20261024153000"));
+    // metadata() keeps hayro's reading.
+    assert_eq!(
+        doc.metadata().unwrap().modification_date.as_deref(),
+        Some("D:20261024153000+00'00'")
+    );
+}
+
 // --- generated fixtures ---------------------------------------------------
 
 #[test]
