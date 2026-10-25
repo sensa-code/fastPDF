@@ -183,6 +183,8 @@ pub(crate) enum Menu {
     Layout,
     /// Save a copy, page tools.
     Edit,
+    /// The toolbar's controls that do not fit the window ("⋯").
+    Overflow,
 }
 
 /// The toolbar's drop-down menus; at most one is open.
@@ -258,6 +260,8 @@ pub struct ReaderView {
     /// The document area's scroll bars (`crate::scrollbar`).
     pub(crate) scrollbars: ScrollBarState,
     pub(crate) menus: MenuState,
+    /// Which toolbar controls fit the window (`crate::toolbar`).
+    pub(crate) toolbar_fit: crate::toolbar::ToolbarFit,
     /// The toolbar's page field (go to a page by number or label).
     pub(crate) go_to: crate::go_to_page::GoToPage,
     /// Save a copy, the page tools panel and the write in progress.
@@ -385,6 +389,7 @@ impl ReaderView {
             page_turn: PageTurn::default(),
             scrollbars: ScrollBarState::default(),
             menus: MenuState::default(),
+            toolbar_fit: Default::default(),
             go_to: crate::go_to_page::GoToPage::new(window, cx),
             tools: ToolsPanel::new(cx),
             stamps: StampPanel::default(),

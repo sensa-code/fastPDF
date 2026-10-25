@@ -13,8 +13,8 @@ use fastpdf_core::keymap::{ReaderCommand, keystrokes_for};
 use fastpdf_engine_api::PageIndex;
 use gpui::{
     AnyElement, AppContext, ClickEvent, Context, Entity, InteractiveElement, IntoElement,
-    ParentElement, StatefulInteractiveElement, Styled, Subscription, Window, anchored, deferred,
-    div, prelude::FluentBuilder, px,
+    ParentElement, Pixels, StatefulInteractiveElement, Styled, Subscription, Window, anchored,
+    deferred, div, prelude::FluentBuilder, px,
 };
 
 use crate::reader::ReaderView;
@@ -163,13 +163,14 @@ impl ReaderView {
 }
 
 /// The toolbar's page control: the page indicator as a button, or the
-/// field while it is open. `blocked`: a prompt card blocks the window.
+/// field while it is open, and how narrow it may get (`None`: it keeps its
+/// width). `blocked`: a prompt card blocks the window.
 pub(crate) fn page_control(
     view: &ReaderView,
     blocked: bool,
     window: &Window,
     cx: &mut Context<'_, ReaderView>,
-) -> AnyElement {
+) -> (AnyElement, Option<Pixels>) {
     let theme = view.theme;
     let strings = view.strings();
     let font = view.language().ui_font();
@@ -219,8 +220,9 @@ pub(crate) fn page_control(
             .items_center()
             .min_w(px(MIN_FIELD_WIDTH))
             .child(field);
+        let narrowest = Some(px(MIN_FIELD_WIDTH));
         if !invalid {
-            return control.into_any_element();
+            return (control.into_any_element(), narrowest);
         }
         // Below the field, outside the row: the message takes no room.
         let message = div()
@@ -235,18 +237,17 @@ pub(crate) fn page_control(
             .font_family(font)
             .whitespace_nowrap()
             .child(strings.go_to_no_such_page());
-        return control
-            .child(
-                div().absolute().top(px(32.0)).left(px(0.0)).child(
-                    deferred(
-                        anchored()
-                            .snap_to_window_with_margin(px(8.0))
-                            .child(message),
-                    )
-                    .with_priority(1),
-                ),
-            )
-            .into_any_element();
+        let control = control.child(
+            div().absolute().top(px(32.0)).left(px(0.0)).child(
+                deferred(
+                    anchored()
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(message),
+                )
+                .with_priority(1),
+            ),
+        );
+        return (control.into_any_element(), narrowest);
     }
     let enabled = has_doc && !blocked;
     let tip = strings.with_shortcut(
@@ -257,7 +258,7 @@ pub(crate) fn page_control(
     // The button narrows exactly as far as its indicator may, so a label
     // wraps and gives way before any button of the row does.
     let pad = px(4.0);
-    div()
+    let button = div()
         .id("go-to-page")
         .flex()
         .items_center()
@@ -278,8 +279,8 @@ pub(crate) fn page_control(
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.run_command(ReaderCommand::GoToPage, window, cx);
                 }))
-        })
-        .into_any_element()
+        });
+    (button.into_any_element(), narrowest.map(|n| n + pad * 2.0))
 }
 
 #[cfg(test)]

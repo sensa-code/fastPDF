@@ -20,6 +20,9 @@ pub(crate) enum Check {
     ExpectPage(u32),
     /// `expect-zoom=PERCENT`: the zoom, rounded to a whole percent, is PERCENT.
     ExpectZoom(u32),
+    /// `expect-rotation=DEGREES`: the view is turned 0, 90, 180 or 270
+    /// degrees clockwise.
+    ExpectRotation(u32),
     /// `expect-history=B,F`: Back and Forward hold B and F views.
     ExpectHistory(usize, usize),
     /// `expect-focus=find`, `=document`, `=prompt` or `=results`: the find
@@ -65,6 +68,11 @@ impl Check {
         Some(match (name, value?) {
             ("expect-page", n) => Self::ExpectPage(positive(n)?),
             ("expect-zoom", p) => Self::ExpectZoom(positive(p.trim_end_matches('%'))?),
+            ("expect-rotation", d) => Self::ExpectRotation(
+                d.parse()
+                    .ok()
+                    .filter(|d: &u32| [0, 90, 180, 270].contains(d))?,
+            ),
             ("expect-history", depths) => {
                 let (back, forward) = depths.split_once(',')?;
                 Self::ExpectHistory(back.trim().parse().ok()?, forward.trim().parse().ok()?)
@@ -150,6 +158,10 @@ impl ReaderView {
             Check::ExpectZoom(expected) => {
                 let zoom = session.zoom().percent();
                 (zoom != expected).then(|| format!("zoom {zoom}%, expected {expected}%"))
+            }
+            Check::ExpectRotation(expected) => {
+                let degrees = session.rotation().degrees();
+                (degrees != expected).then(|| format!("rotated {degrees}, expected {expected}"))
             }
             Check::ExpectHistory(back, forward) => {
                 let depth = session.history_depth();

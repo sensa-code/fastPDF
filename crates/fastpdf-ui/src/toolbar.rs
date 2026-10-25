@@ -1,26 +1,33 @@
 //! The single toolbar row (spec §20: minimal chrome). Buttons dispatch the
 //! same [`ReaderCommand`]s as the keymap; their tooltips name the command
-//! and its shortcut from the central keymap, in the UI language.
+//! and its shortcut from the central keymap, in the UI language. What does
+//! not fit a narrow window moves into a "⋯" menu (`overflow`).
+
+mod controls;
+mod overflow;
 
 use fastpdf_core::keymap::{ReaderCommand, keystrokes_for};
 use gpui::{
     AnyElement, AnyView, App, AppContext, ClickEvent, Context, Div, ElementId, InteractiveElement,
-    IntoElement, MouseDownEvent, ParentElement, Render, SharedString, Stateful,
+    IntoElement, MouseDownEvent, ParentElement, Pixels, Render, SharedString, Stateful,
     StatefulInteractiveElement, Styled, Window, anchored, deferred, div, prelude::FluentBuilder,
     px,
 };
 
-use crate::i18n::Strings;
+use crate::i18n::{Strings, display_keystroke};
 use crate::reader::{Menu, ReaderView};
 use crate::settings::PageLayout;
 use crate::theme::Theme;
+use overflow::Slot;
+pub(crate) use overflow::{Group, Hidden, ToolbarFit};
 
 /// Toolbar height in logical pixels.
 pub(crate) const HEIGHT: f32 = 40.0;
 /// Space between the toolbar's controls: the buttons carry their own
-/// padding, and at the default window width every button up to the page
-/// layout menu fits in English and Traditional Chinese.
+/// padding.
 const GAP: f32 = 2.0;
+/// Space at both ends of the toolbar.
+const BAR_PADDING: f32 = 4.0;
 
 pub(crate) fn render(
     view: &ReaderView,
@@ -30,16 +37,6 @@ pub(crate) fn render(
     let theme = view.theme;
     let strings = view.strings();
     let font = view.language().ui_font();
-    let session = view.session();
-    let has_doc = session.is_some();
-    let zoom_text = match session {
-        Some(s) => format!("{}%", s.zoom().percent()),
-        None => "-".to_string(),
-    };
-    let title = match &view.doc {
-        crate::reader::DocState::Open(open) => open.name.clone(),
-        _ => SharedString::default(),
-    };
     // While a prompt card blocks the window, only what answers or leaves it
     // stays clickable; nothing may open behind it.
     let blocked = view.active_prompt().is_some();
@@ -48,201 +45,61 @@ pub(crate) fn render(
         strings,
         font,
         blocked,
+        menu_height: window.viewport_size().height - px(HEIGHT + 16.0),
     };
-
-    use ReaderCommand as C;
-    // In a narrow window the end of this row (rotation, the title) is cut
-    // off, never the find, night, edit, properties and settings buttons
-    // after it.
-    let row = div()
-        .flex()
-        .flex_row()
-        .flex_1()
-        .min_w_0()
-        .overflow_hidden()
-        .items_center()
-        .gap(px(GAP))
-        .child(tools.toggle(
-            "sidebar",
-            strings.sidebar,
-            strings.tip_sidebar,
-            C::ToggleSidebar,
-            view.sidebar.open,
-            cx,
-        ))
-        .child(tools.button(
-            "open",
-            strings.open,
-            strings.tip_open,
-            C::OpenFile,
-            true,
-            cx,
-        ))
-        .child(separator(&theme))
-        .child(tools.button(
-            "back",
-            "\u{2190}",
-            strings.tip_back(),
-            C::NavigateBack,
-            session.is_some_and(|s| s.can_go_back()),
-            cx,
-        ))
-        .child(tools.button(
-            "forward",
-            "\u{2192}",
-            strings.tip_forward(),
-            C::NavigateForward,
-            session.is_some_and(|s| s.can_go_forward()),
-            cx,
-        ))
-        .child(separator(&theme))
-        // While the page field is open it takes the place of the page
-        // buttons too (crate::go_to_page).
-        .when(!view.go_to.editing, |row| {
-            row.child(tools.button(
-                "prev",
-                "\u{2039}",
-                strings.tip_previous_page,
-                C::PreviousPage,
-                has_doc,
-                cx,
-            ))
-        })
-        .child(crate::go_to_page::page_control(view, blocked, window, cx))
-        .when(!view.go_to.editing, |row| {
-            row.child(tools.button(
-                "next",
-                "\u{203a}",
-                strings.tip_next_page,
-                C::NextPage,
-                has_doc,
-                cx,
-            ))
-        })
-        .child(separator(&theme))
-        .child(tools.button(
-            "zoom-out",
-            "\u{2212}",
-            strings.tip_zoom_out,
-            C::ZoomOut,
-            has_doc,
-            cx,
-        ))
-        .child(label(zoom_text, 40.0))
-        .child(tools.button("zoom-in", "+", strings.tip_zoom_in, C::ZoomIn, has_doc, cx))
-        .child(tools.button(
-            "fit-width",
-            strings.fit_width,
-            strings.tip_fit_width,
-            C::FitWidth,
-            has_doc,
-            cx,
-        ))
-        .child(tools.button(
-            "fit-page",
-            strings.fit_page,
-            strings.tip_fit_page,
-            C::FitPage,
-            has_doc,
-            cx,
-        ))
-        .child(layout_control(view, tools, cx))
-        .child(
-            // The end of the row gives way first, long before a page label
-            // (crate::page_labels::indicator) and the buttons before it.
-            div()
-                .flex()
-                .flex_row()
-                .flex_grow(1.0)
-                .flex_shrink(1000.0)
-                .min_w_0()
-                .overflow_hidden()
-                .items_center()
-                .gap(px(GAP))
-                .child(separator(&theme))
-                .child(tools.button(
-                    "rotate-ccw",
-                    "\u{21ba}",
-                    strings.tip_rotate_left,
-                    C::RotateCounterClockwise,
-                    has_doc,
-                    cx,
-                ))
-                .child(tools.button(
-                    "rotate-cw",
-                    "\u{21bb}",
-                    strings.tip_rotate_right,
-                    C::RotateClockwise,
-                    has_doc,
-                    cx,
-                ))
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .text_color(theme.text_muted)
-                        .text_size(px(13.0))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .max_w(px(360.0))
-                        .child(title),
-                ),
-        );
-    div()
+    // What does not fit the window waits in the "⋯" menu (`overflow`).
+    let hidden = view.toolbar_fit.hidden();
+    let editing = view.go_to.editing;
+    let (page, page_min) = crate::go_to_page::page_control(view, blocked, window, cx);
+    let mut page = Some(page);
+    let (slots, len) = overflow::slots(hidden, editing);
+    let mut bar = div()
         .flex()
         .flex_row()
         .flex_none()
         .items_center()
+        .overflow_hidden()
         .gap(px(GAP))
         .h(px(HEIGHT))
-        .px_1()
+        .px(px(BAR_PADDING))
         .bg(theme.toolbar_bg)
         .border_b_1()
         .border_color(theme.toolbar_border)
-        .text_size(px(14.0))
-        .child(row)
-        .child(separator(&theme))
-        .child(tools.toggle(
-            "find",
-            strings.find,
-            strings.tip_find,
-            C::Find,
-            view.find.open,
-            cx,
-        ))
-        // Night mode (inverted pages) is a setting, so it works without a
-        // document too.
-        .child(tools.toggle(
-            "night",
-            strings.night,
-            strings.tip_night,
-            C::ToggleNightMode,
-            view.settings.night_mode,
-            cx,
-        ))
-        .child(edit_control(view, tools, cx))
-        .child(
-            tools
-                .toggle(
-                    "properties",
-                    "\u{24D8}",
-                    strings.tip_properties(),
-                    C::DocumentProperties,
-                    view.properties.open,
-                    cx,
-                )
-                .text_size(px(16.0)),
-        )
-        .child(
-            styled_button("settings", "\u{2699}", !blocked, view.settings_open, &theme)
-                .text_size(px(16.0))
-                .tooltip(tooltip(strings.tip_settings.into(), theme, font))
-                .when(!blocked, |button| {
-                    button.on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.toggle_settings_panel(window, cx);
-                    }))
-                }),
-        )
+        .text_size(px(14.0));
+    for slot in &slots[..len] {
+        bar = match *slot {
+            Slot::Group(group) => bar.child(controls::group_control(group, view, tools, cx)),
+            Slot::Separator => bar.child(separator(&theme)),
+            Slot::Page => bar.children(page.take()),
+            Slot::Title => bar.child(controls::title(view, &theme)),
+            Slot::More => bar.child(menu_control(
+                Menu::Overflow,
+                "\u{22ef}".to_owned(),
+                strings.tip_more(),
+                view,
+                tools,
+                cx,
+                |cx| controls::menu_rows(view, tools, hidden, cx),
+            )),
+            Slot::Settings => bar.child(
+                styled_button("settings", "\u{2699}", !blocked, view.settings_open, &theme)
+                    .text_size(px(16.0))
+                    .tooltip(tooltip(strings.tip_settings.into(), theme, font))
+                    .when(!blocked, |button| {
+                        button.on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.toggle_settings_panel(window, cx);
+                        }))
+                    }),
+            ),
+        };
+    }
+    bar.on_children_prepainted(overflow::measure(
+        cx.entity(),
+        hidden,
+        editing,
+        page_min.map(f32::from),
+        view.language(),
+    ))
 }
 
 /// The page layout button and, while it is open, its menu. The layout is a
@@ -270,64 +127,64 @@ fn layout_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderVi
 
 /// The edit menu: writing new files from the open one (ADR 0013).
 fn edit_control(view: &ReaderView, tools: Tools, cx: &mut Context<'_, ReaderView>) -> Div {
+    let label = format!("{} \u{25be}", tools.strings.edit);
+    menu_control(
+        Menu::Edit,
+        label,
+        tools.strings.tip_edit,
+        view,
+        tools,
+        cx,
+        |cx| edit_items(view, tools, cx),
+    )
+}
+
+/// The edit menu's rows.
+fn edit_items(
+    view: &ReaderView,
+    tools: Tools,
+    cx: &mut Context<'_, ReaderView>,
+) -> Vec<AnyElement> {
     let strings = tools.strings;
-    let label = format!("{} \u{25be}", strings.edit);
-    menu_control(Menu::Edit, label, strings.tip_edit, view, tools, cx, |cx| {
-        // A document opened with a password is never written (ADR 0014).
-        let writable = view.session().is_some() && !view.document_protected();
-        vec![
-            menu_item(
-                "edit-copy",
-                strings.save_copy,
-                false,
-                writable,
-                ReaderCommand::SaveCopy,
-                tools,
-                cx,
-            )
-            .into_any_element(),
-            menu_item(
-                "edit-pages",
-                strings.page_tools,
-                view.tools.open,
-                writable,
-                ReaderCommand::PageTools,
-                tools,
-                cx,
-            )
-            .into_any_element(),
-            menu_item(
-                "edit-stamps",
-                strings.stamp_menu,
-                view.stamps.open,
-                writable,
-                ReaderCommand::StampTool,
-                tools,
-                cx,
-            )
-            .into_any_element(),
-            menu_item(
-                "edit-text",
-                strings.edit_text_menu,
-                view.text_edits.open,
-                writable,
-                ReaderCommand::EditText,
-                tools,
-                cx,
-            )
-            .into_any_element(),
-            menu_item(
-                "edit-sign",
-                strings.sign_menu,
-                view.signing.open,
-                writable,
-                ReaderCommand::Sign,
-                tools,
-                cx,
-            )
-            .into_any_element(),
-        ]
+    // A document opened with a password is never written (ADR 0014).
+    let writable = view.session().is_some() && !view.document_protected();
+    [
+        (
+            "edit-copy",
+            strings.save_copy,
+            false,
+            ReaderCommand::SaveCopy,
+        ),
+        (
+            "edit-pages",
+            strings.page_tools,
+            view.tools.open,
+            ReaderCommand::PageTools,
+        ),
+        (
+            "edit-stamps",
+            strings.stamp_menu,
+            view.stamps.open,
+            ReaderCommand::StampTool,
+        ),
+        (
+            "edit-text",
+            strings.edit_text_menu,
+            view.text_edits.open,
+            ReaderCommand::EditText,
+        ),
+        (
+            "edit-sign",
+            strings.sign_menu,
+            view.signing.open,
+            ReaderCommand::Sign,
+        ),
+    ]
+    .into_iter()
+    .map(|(id, label, checked, command)| {
+        menu_item(id, label, checked, writable, command, tools, cx).into_any_element()
     })
+    .collect()
 }
 
 /// A drop-down menu's button and, while it is open, the menu below it.
@@ -345,6 +202,7 @@ fn menu_control(
     let id = match menu {
         Menu::Layout => "layout",
         Menu::Edit => "edit",
+        Menu::Overflow => "more",
     };
     let button = styled_button(id, label, !tools.blocked, open, &theme)
         .tooltip(tooltip(tip.into(), theme, tools.font))
@@ -364,6 +222,8 @@ fn menu_control(
         .flex_col()
         .py_1()
         .min_w(px(180.0))
+        .max_h(tools.menu_height)
+        .overflow_y_scroll()
         .rounded(px(6.0))
         .bg(theme.toolbar_bg)
         .border_1()
@@ -424,14 +284,7 @@ fn layout_items(
             .into_any_element()
         })
         .collect();
-    items.push(
-        div()
-            .h(px(1.0))
-            .mx_2()
-            .my_1()
-            .bg(theme.toolbar_border)
-            .into_any_element(),
-    );
+    items.push(menu_divider(&theme));
     items.push(
         menu_item(
             "layout-cover",
@@ -447,7 +300,18 @@ fn layout_items(
     items
 }
 
-/// A menu row with a check mark column; a disabled row is shown muted.
+/// A thin line between groups of menu rows.
+fn menu_divider(theme: &Theme) -> AnyElement {
+    div()
+        .h(px(1.0))
+        .mx_2()
+        .my_1()
+        .bg(theme.toolbar_border)
+        .into_any_element()
+}
+
+/// A menu row with a check mark column and the command's shortcut; a
+/// disabled row is shown muted. Choosing it closes the menu.
 fn menu_item(
     id: impl Into<ElementId>,
     label: &'static str,
@@ -473,15 +337,24 @@ fn menu_item(
                 .w(px(14.0))
                 .child(if checked { "\u{2713}" } else { "" }),
         )
-        .child(label);
-    if !enabled {
+        .child(label)
+        .when_some(keystrokes_for(command).next(), |row, keys| {
+            row.child(div().flex_1().min_w(px(16.0))).child(
+                div()
+                    .flex_none()
+                    .text_size(px(12.0))
+                    .text_color(theme.text_muted)
+                    .child(display_keystroke(keys)),
+            )
+        });
+    if !(enabled && tools.allows(command)) {
         return row.text_color(theme.text_muted);
     }
     let hover = theme.button_hover;
     row.cursor_pointer()
         .hover(move |style| style.bg(hover))
         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-            this.run_command(command, window, cx);
+            this.run_menu_item(command, window, cx);
         }))
 }
 
@@ -547,6 +420,8 @@ struct Tools {
     font: &'static str,
     /// A prompt card blocks the window (`ReaderView::active_prompt`).
     blocked: bool,
+    /// The tallest a drop-down menu may get; a longer one scrolls.
+    menu_height: Pixels,
 }
 
 impl Tools {

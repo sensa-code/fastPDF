@@ -81,6 +81,12 @@
 //! | `wait-properties` | asks for the document properties and waits for the answer, or for none (`properties.rs`) |
 //! | `properties-save=PATH` | writes what Copy all would copy to PATH (UTF-8) instead of the clipboard (`properties.rs`) |
 //! | `remember=on`, `=off` | turns remembering reading positions on or off, like the settings panel (`positions.rs`) |
+//! | `window-size=W,H` | resizes the window's content to W x H logical pixels (`toolbar.rs`) |
+//! | `wait-toolbar` | waits until the toolbar fits the window (what does not is in its "⋯" menu) (`toolbar.rs`) |
+//! | `expect-hidden=none`, `=rotate,night,...` | stops the script unless exactly these toolbar groups are in the "⋯" menu (`toolbar.rs`) |
+//! | `more-menu` | opens (or closes) the toolbar's "⋯" menu (`toolbar.rs`) |
+//! | `more-run=NAME` | chooses the row of command NAME in the open "⋯" menu (`toolbar.rs`) |
+//! | `expect-rotation=DEGREES` | stops the script unless the view is turned 0, 90, 180 or 270 degrees (`checks.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
@@ -90,6 +96,7 @@ mod links;
 mod positions;
 mod properties;
 mod search;
+mod toolbar;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -171,6 +178,7 @@ pub(crate) enum Step {
     Link(links::LinkStep),
     Properties(properties::PropertiesStep),
     Positions(positions::PositionsStep),
+    Toolbar(toolbar::ToolbarStep),
 }
 
 /// What a step reports after one poll.
@@ -293,6 +301,8 @@ fn parse_step(step: &str) -> Option<Step> {
                 Step::Properties(step)
             } else if let Some(step) = positions::PositionsStep::parse(name, value) {
                 Step::Positions(step)
+            } else if let Some(step) = toolbar::ToolbarStep::parse(name, value) {
+                Step::Toolbar(step)
             } else {
                 Step::Check(checks::Check::parse(name, value)?)
             }
@@ -725,6 +735,7 @@ impl ReaderView {
             Step::Link(step) => self.run_link_step(step, window, cx),
             Step::Properties(step) => self.run_properties_step(step, cx),
             Step::Positions(step) => self.run_positions_step(step, cx),
+            Step::Toolbar(step) => self.run_toolbar_step(step, first, started, window, cx),
         }
     }
 }

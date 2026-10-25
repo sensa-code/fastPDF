@@ -17,6 +17,7 @@ mod password;
 mod positions;
 mod properties;
 mod search;
+mod toolbar;
 
 pub(crate) use properties::PropertyLabel;
 
