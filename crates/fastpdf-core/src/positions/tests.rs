@@ -65,7 +65,7 @@ fn records_round_trip_through_text() {
             entries.push((path, record));
         }
     }
-    let text = format::to_text(&entries);
+    let text = format::to_text(&entries).0;
     assert!(text.starts_with("# FastPDF reading positions v1"));
     assert_eq!(format::parse(&text), entries);
     assert!(text.contains("\t2.5\t90\t"), "{text}");
@@ -89,7 +89,7 @@ fn bad_lines_are_skipped_one_by_one() {
         "12\t0.5\t0\t0\t0\t40\t-\t-\tC:\\nothing.pdf",
         "12\t0.5\t0\tfit-page\t0\t40\t5\t-\tC:\\half.pdf",
         "12\t0.5\t0\tfit-page\t0\t40\t-\t-\t",
-        "12\t0.5\t0\tfit-page\t0\t40\t-\t-\tC:\\\u{fffd}.pdf",
+        "12\t0.5\t0\tfit-page\t0\t40\t-\t-\tC:\\a\u{1}b.pdf",
     ];
     let long = format!(
         "12\t0.5\t0\tfit-page\t0\t40\t-\t-\tC:\\{}.pdf",
@@ -181,10 +181,11 @@ fn the_file_never_outgrows_its_cap() {
     // 200 paths of 2,048 CJK characters (6 KiB each) would make 1.2 MiB.
     let long = |n: usize| PathBuf::from(format!("{n:04}{}", "書".repeat(MAX_PATH_CHARS - 4)));
     let entries: Vec<_> = (0..MAX_ENTRIES).map(|n| (long(n), record(1))).collect();
-    let text = format::to_text(&entries);
+    let (text, lines) = format::to_text(&entries);
     assert!(text.len() as u64 <= MAX_FILE_BYTES, "{}", text.len());
     let kept = format::parse(&text);
     assert!(kept.len() > 50, "{}", kept.len());
+    assert_eq!(lines, kept.len(), "the count says what was written");
     // The newest are kept, in order.
     assert_eq!(kept[..], entries[..kept.len()]);
     // Paths that would not read back are never written.
@@ -195,7 +196,40 @@ fn the_file_never_outgrows_its_cap() {
         PathBuf::from(format!("C:\\{}", "a".repeat(MAX_PATH_CHARS))),
     ];
     let odd: Vec<_> = odd.into_iter().map(|p| (p, record(1))).collect();
-    assert!(format::parse(&format::to_text(&odd)).is_empty());
+    assert_eq!(format::to_text(&odd).1, 0);
+    assert!(format::parse(&format::to_text(&odd).0).is_empty());
+}
+
+#[test]
+fn only_paths_the_file_can_hold_are_remembered() {
+    let dir = scratch("unwritable");
+    let store = PositionStore::at(dir.join("positions.txt"));
+    let long = PathBuf::from(format!("C:\\{}.pdf", "a".repeat(MAX_PATH_CHARS)));
+    assert!(!store.remember(&long, record(1)));
+    assert!(!store.remember(Path::new("C:\\tab\there.pdf"), record(1)));
+    assert_eq!(store.lookup(&long), None);
+    assert_eq!(store.flush().unwrap(), 0, "nothing waited, nothing written");
+    assert!(!store.path().exists());
+    // A real U+FFFD is a character like any other (valid UTF-8): kept.
+    let replacement = Path::new("C:\\docs\\報告\u{fffd}.pdf");
+    assert!(store.remember(replacement, record(2)));
+    assert!(store.remember(Path::new("C:\\docs\\b.pdf"), record(3)));
+    assert_eq!(store.flush().unwrap(), 2);
+    let fresh = PositionStore::at(dir.join("positions.txt"));
+    assert_eq!(fresh.lookup(replacement), Some(record(2)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_flush_removes_temporary_files_an_interrupted_write_left() {
+    let dir = scratch("stale");
+    let store = PositionStore::next_to(&dir.join("recent.txt"));
+    let stale = dir.join("recent-positions.txt.4242.7.tmp");
+    std::fs::write(&stale, "half").unwrap();
+    store.remember(Path::new("C:\\a.pdf"), record(1));
+    assert_eq!(store.flush().unwrap(), 1);
+    assert!(!stale.exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -449,5 +483,5 @@ fn views_are_kept_at_four_decimals() {
             ..record(4)
         },
     )];
-    assert_eq!(format::parse(&format::to_text(&entries))[0].1.view, kept);
+    assert_eq!(format::parse(&format::to_text(&entries).0)[0].1.view, kept);
 }

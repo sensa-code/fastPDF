@@ -223,12 +223,18 @@ impl ReaderView {
         let Some(store) = &self.reading.store else {
             return;
         };
-        log::info!(
-            "reading position of {} saved ({why}): page {}",
-            path.display(),
-            record.view.page.display_number()
-        );
-        store.remember(path, record);
+        if store.remember(path, record) {
+            log::info!(
+                "reading position of {} saved ({why}): page {}",
+                path.display(),
+                record.view.page.display_number()
+            );
+        } else {
+            log::info!(
+                "reading position of {} not kept: the positions file cannot hold its path",
+                path.display()
+            );
+        }
     }
 
     fn flush_positions_later(&self, cx: &mut Context<'_, Self>) {
@@ -245,8 +251,8 @@ impl ReaderView {
 fn flush_positions(store: &PositionStore) {
     match store.flush() {
         Ok(0) => {}
-        Ok(written) => log::info!(
-            "{written} reading position(s) written to {}",
+        Ok(documents) => log::info!(
+            "reading positions written to {} ({documents} documents)",
             store.path().display()
         ),
         Err(e) => log::warn!(

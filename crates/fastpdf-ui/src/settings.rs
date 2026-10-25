@@ -6,8 +6,9 @@
 //! written with std only (spec §36: no serde / toml for this). Reading never
 //! fails: a missing, unreadable, oversized or corrupt file yields the
 //! defaults, and an unknown key or bad value only loses that one entry.
-//! Writes go through a temporary file and a rename, so a crash cannot leave
-//! a half-written file behind.
+//! Writes go through a temporary file flushed to the disk and a rename
+//! (`fastpdf_core::paths::write_atomic`), so neither a crash nor a power
+//! loss can leave a half-written or empty file behind.
 //!
 //! ```toml
 //! appearance = "dark"
@@ -508,20 +509,6 @@ fn read_limited(path: &Path) -> io::Result<Option<String>> {
     Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
-/// Writes `text` to `path` through a temporary file and a rename.
-fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(format!(".{}.tmp", std::process::id()));
-    let temp = PathBuf::from(temp);
-    std::fs::write(&temp, text)?;
-    std::fs::rename(&temp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp);
-    })
-}
-
 /// Saves settings when they change. Background writes are ordered: an
 /// older snapshot never overwrites a newer one.
 #[derive(Debug, Clone)]
@@ -584,7 +571,9 @@ fn write_ordered(written: &Mutex<u64>, path: &Path, text: &str, generation: u64)
     if *newest > generation {
         return; // a newer snapshot is already on disk
     }
-    match write_atomic(path, text) {
+    // Through a temporary file flushed to the disk and a rename: a crash or
+    // a power loss leaves the old settings or the new ones.
+    match fastpdf_core::paths::write_atomic(path, text) {
         Ok(()) => *newest = generation,
         Err(e) => log::warn!("cannot save settings to {}: {e}", path.display()),
     }

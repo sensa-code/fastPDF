@@ -17,10 +17,10 @@
 //! file's size and time when the view was saved, both `-` when unknown.
 //!
 //! Reading never fails: a line that cannot be used is skipped and the
-//! others still apply (a BOM and CRLF line ends are accepted). Writing
-//! leaves out paths that would not read back the same (not UTF-8, control
-//! characters, U+FFFD, empty, longer than [`MAX_PATH_CHARS`]) and stops
-//! before the text grows past the file size cap.
+//! others still apply (a BOM and CRLF line ends are accepted). Paths that
+//! would not read back the same (not UTF-8, control characters, empty,
+//! longer than [`MAX_PATH_CHARS`]) are never stored (`writable`), and
+//! writing stops before the text grows past the file size cap.
 
 use std::path::{Path, PathBuf};
 
@@ -108,18 +108,20 @@ fn number(text: &str) -> Option<f32> {
     text.parse::<f32>().ok().filter(|v| v.is_finite())
 }
 
-/// `path` as text when it can be written and read back unchanged.
+/// `path` as text when it can be written and read back unchanged: valid
+/// UTF-8 (`to_str` is exact, so a real U+FFFD in a name is kept), on one
+/// line without TAB (no control characters), not empty, not too long.
 pub(super) fn writable(path: &Path) -> Option<&str> {
     let text = path.to_str()?;
     let fits = !text.is_empty()
         && text.chars().count() <= MAX_PATH_CHARS
-        && !text.chars().any(|c| c.is_control() || c == '\u{fffd}');
+        && !text.chars().any(char::is_control);
     fits.then_some(text)
 }
 
-/// The file contents for `entries` (newest first): at most
-/// [`MAX_ENTRIES`] lines and [`MAX_FILE_BYTES`] bytes.
-pub(super) fn to_text(entries: &[Entry]) -> String {
+/// The file contents for `entries` (newest first), at most [`MAX_ENTRIES`]
+/// lines and [`MAX_FILE_BYTES`] bytes, and how many entries it holds.
+pub(super) fn to_text(entries: &[Entry]) -> (String, usize) {
     let mut out = format!(
         "# FastPDF reading positions v1, written by FastPDF. Newest first, at most {MAX_ENTRIES} files.\n\
          # page\toffset\tx\tzoom\trotation\tpages\tbytes\tmodified\tpath\n"
@@ -139,7 +141,7 @@ pub(super) fn to_text(entries: &[Entry]) -> String {
         out.push_str(&line);
         written += 1;
     }
-    out
+    (out, written)
 }
 
 fn line(path: &str, record: &PositionRecord) -> String {
