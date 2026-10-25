@@ -78,12 +78,15 @@
 //! | `link-drag=P,X0,Y0,X1,Y1[,X2,Y2]` | presses at the first point of page P, drags to the second (and on to the third) and releases there (`links.rs`) |
 //! | `wait-prompt=link` | stops the script unless the card of an external link shows (`checks.rs`) |
 //! | `link-prompt=open`, `=copy`, `=cancel` | answers that card like its buttons (Open is ignored in the card's first 500 ms, wait first); scripts only log what would open or be copied (`links.rs`) |
+//! | `wait-properties` | asks for the document properties and waits for the answer, or for none (`properties.rs`) |
+//! | `properties-save=PATH` | writes what Copy all would copy to PATH (UTF-8) instead of the clipboard (`properties.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
 mod checks;
 mod labels;
 mod links;
+mod properties;
 mod search;
 
 use std::path::PathBuf;
@@ -164,6 +167,7 @@ pub(crate) enum Step {
     Labels(labels::LabelStep),
     Search(search::SearchStep),
     Link(links::LinkStep),
+    Properties(properties::PropertiesStep),
 }
 
 /// What a step reports after one poll.
@@ -282,6 +286,8 @@ fn parse_step(step: &str) -> Option<Step> {
                 Step::Search(step)
             } else if let Some(step) = links::LinkStep::parse(name, value) {
                 Step::Link(step)
+            } else if let Some(step) = properties::PropertiesStep::parse(name, value) {
+                Step::Properties(step)
             } else {
                 Step::Check(checks::Check::parse(name, value)?)
             }
@@ -712,6 +718,7 @@ impl ReaderView {
             Step::Labels(step) => self.run_label_step(step, window, cx),
             Step::Search(step) => self.run_search_step(step, window, cx),
             Step::Link(step) => self.run_link_step(step, window, cx),
+            Step::Properties(step) => self.run_properties_step(step, cx),
         }
     }
 }

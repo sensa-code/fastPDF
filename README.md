@@ -21,7 +21,7 @@
 | M4 Renderer comparison | `docs/engine-comparison.md` | ✅ Hayro 為預設 engine（ADR 0007） |
 | M5 Tile renderer | tile／scheduler／cache + GPUI viewport；B-3／B-4（2 workers；tile 508，對齊 GPU atlas） | ✅ |
 | M6 Memory budget | `MemoryBudgetManager`、overlay 分項、B-5 驗證（大型 PDF 不爆 RAM） | ✅ |
-| M7 UX | sidebar（outline、縮圖）、搜尋、選取／複製、列印、recent files、深色外觀、夜間模式、設定、繁體中文介面、平滑捲動 | V0.1 功能清單完成；檔案關聯目前只有命令列（`--register-file-types`）；安裝程式待做 |
+| M7 UX | sidebar（outline、縮圖）、搜尋、選取／複製、列印、recent files、深色外觀、夜間模式、設定、繁體中文介面、平滑捲動、文件內容（Ctrl+D） | V0.1 功能清單完成；檔案關聯目前只有命令列（`--register-file-types`）；安裝程式待做 |
 | 閱讀版面 | 可拖曳的捲軸（點軌道翻一頁）；單頁、連續捲動、雙頁、雙頁連續，雙頁可選封面單獨顯示；單頁模式以 PageDown、方向鍵或滾輪在頁尾翻頁 | ✅ 工具列的版面選單，選擇會保存在設定 |
 | 寫入功能 | 另存副本、頁面操作（擷取、分割、刪除、旋轉、重排、合併）、印章、文字修改、數位簽章（ADR 0013：一律另存新檔、在子行程執行） | 另存副本（Ctrl+Shift+S）、頁面工具、蓋章（印章圖片）、修改文字、數位簽章（PAdES B-B，可用印章作為簽章外觀）✅（工具列「編輯」選單） |
 | 發佈 | 可攜版 zip：icon／版本資訊、第三方授權全文、SHA-256、smoke test | ✅ 0.0.1 預覽版（GitHub Releases，未簽章）；`tools/package.ps1`、`docs/RELEASE.md`；第三方授權全文 0 缺漏，exe 與 zip 可重現 |

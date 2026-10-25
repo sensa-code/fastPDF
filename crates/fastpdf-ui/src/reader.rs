@@ -169,6 +169,8 @@ pub(crate) struct OpenDoc {
     pub exact_reported: bool,
     /// Opened with a password: never written (ADR 0014).
     pub protected: bool,
+    /// Size of the file, for the properties panel.
+    pub file_bytes: u64,
     /// Page labels and other answers loaded after opening.
     pub queries: crate::doc_queries::DocQueries,
 }
@@ -237,6 +239,8 @@ pub struct ReaderView {
     settings_store: SettingsStore,
     /// The settings panel is shown.
     pub(crate) settings_open: bool,
+    /// The document properties panel (Ctrl+D).
+    pub(crate) properties: crate::properties::PropertiesPanel,
     /// Window bounds when the window opened: a window the user never moved
     /// or resized does not overwrite the saved placement.
     pub(crate) initial_bounds: WindowBounds,
@@ -363,6 +367,7 @@ impl ReaderView {
             settings,
             settings_store,
             settings_open: false,
+            properties: Default::default(),
             initial_bounds,
             bounds_task: None,
             system_language,
@@ -503,6 +508,7 @@ impl ReaderView {
             C::Cancel => self.cancel(window, cx),
             C::ConfirmPrompt => self.confirm_prompt(window, cx),
             C::GoToPage => self.start_go_to(window, cx),
+            C::DocumentProperties => self.toggle_properties_panel(cx),
             C::ConfirmGoToPage => {
                 self.confirm_go_to(window, cx);
             }
@@ -575,15 +581,18 @@ impl ReaderView {
         cx.notify();
     }
 
-    /// Esc: cancels a prompt, closes the page field or a menu, stops editing
-    /// a line, unarms or deselects a stamp, closes the stamp or text edit
-    /// panel, stops printing or closes the print panel, then the page tools,
-    /// the settings panel, leaves the result list, closes the find bar or a
-    /// link's error, then clears the selection.
+    /// Esc: cancels a prompt, closes the page field, a menu or the
+    /// properties panel, stops editing a line, unarms or deselects a stamp,
+    /// closes the stamp or text edit panel, stops printing or closes the
+    /// print panel, then the page tools, the settings panel, leaves the
+    /// result list, closes the find bar or a link's error, then clears the
+    /// selection.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.cancel_prompt(window, cx) || self.end_go_to(true, window, cx) {
         } else if self.menus.open.is_some() {
             self.menus.open = None;
+        } else if self.properties.open {
+            self.close_properties_panel();
         } else if self.cancel_line_edit(window, cx) {
         } else if self.stamps.armed.is_some() || self.stamps.selected.is_some() {
             self.stamps.armed = None;
@@ -997,6 +1006,9 @@ impl ReaderView {
             .when_some(self.render_link_notice(cx), |area, chip| area.child(chip))
             .when_some(self.render_write_notice(cx), |area, notice| {
                 area.child(notice)
+            })
+            .when(self.properties.open, |area| {
+                area.child(self.render_properties_panel(cx))
             })
             .when(self.settings_open, |area| {
                 area.child(self.render_settings_panel(cx))

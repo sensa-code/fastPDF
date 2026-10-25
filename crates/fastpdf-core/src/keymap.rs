@@ -116,6 +116,9 @@ reader_commands! {
         PreviousResult,
         /// The search result list: shows the active result in the document.
         OpenResult,
+        /// Document properties (Ctrl+D, as in Acrobat): the file, the
+        /// metadata, encryption and permissions, forms and signatures.
+        DocumentProperties,
     }
 }
 
@@ -231,6 +234,7 @@ pub const DEFAULT_BINDINGS: &[Binding] = {
         bind("alt-c", ToggleMatchCase),
         bind("alt-w", ToggleWholeWord),
         bind("ctrl-shift-f", ShowSearchResults),
+        bind("ctrl-d", DocumentProperties),
         bind_in(FIND_BAR, "enter", FindNext),
         bind_in(FIND_BAR, "shift-enter", FindPrevious),
         bind_in(FIND_BAR, "escape", Cancel),
@@ -368,5 +372,15 @@ mod tests {
         assert_eq!(keystrokes_for(ReaderCommand::ZoomIn).next(), Some("ctrl-="));
         assert_eq!(command_for("alt-c"), Some(ReaderCommand::ToggleMatchCase));
         assert_eq!(command_for("alt-w"), Some(ReaderCommand::ToggleWholeWord));
+        // Ctrl+Shift+D stays the development overlay.
+        assert_eq!(
+            command_for("ctrl-d"),
+            Some(ReaderCommand::DocumentProperties)
+        );
+        assert_eq!(
+            command_for("ctrl-shift-d"),
+            Some(ReaderCommand::ToggleDevOverlay)
+        );
+        assert!(!ReaderCommand::DocumentProperties.allowed_during_prompt());
     }
 }

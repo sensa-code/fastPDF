@@ -1,4 +1,4 @@
-//! One-shot questions about the open document (its page labels, later its
+//! One-shot questions about the open document (its page labels and its
 //! properties) that are answered off the UI thread and kept for as long as
 //! the document is open. They live in `OpenDoc`, so closing or replacing
 //! the document drops them with everything else; an answer that arrives
@@ -7,7 +7,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use fastpdf_engine_api::{DocumentId, EngineError, GuardedDocument, PageLabels};
+use fastpdf_engine_api::{
+    DocumentId, DocumentProperties, EngineError, GuardedDocument, PageLabels,
+};
 use gpui::{Context, Task};
 
 use crate::reader::{DocState, ReaderView};
@@ -39,6 +41,11 @@ pub(crate) struct DocQueries {
     /// `crate::page_labels` bounds them). Demands (go to page, a dev-script
     /// step) do not count.
     pub label_attempts: u8,
+    /// Asked for when the properties panel shows (`crate::properties`).
+    pub properties: Lazy<Arc<DocumentProperties>>,
+    /// Why the last properties question got no answer at the time (the
+    /// panel offers to ask again).
+    pub properties_problem: Option<String>,
 }
 
 impl Default for DocQueries {
@@ -46,6 +53,8 @@ impl Default for DocQueries {
         Self {
             labels: Lazy::NotLoaded,
             label_attempts: 0,
+            properties: Lazy::NotLoaded,
+            properties_problem: None,
         }
     }
 }

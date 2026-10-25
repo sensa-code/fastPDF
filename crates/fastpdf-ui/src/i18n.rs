@@ -14,7 +14,10 @@ mod labels;
 mod links;
 mod navigation;
 mod password;
+mod properties;
 mod search;
+
+pub(crate) use properties::PropertyLabel;
 
 use std::fmt::Write as _;
 

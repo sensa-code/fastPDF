@@ -121,6 +121,7 @@ impl ReaderView {
             opened_at: Instant::now(),
             exact_reported: false,
             protected: opened.password_protected,
+            file_bytes: u64::try_from(opened.file_bytes).unwrap_or(u64::MAX),
             queries: Default::default(),
         }));
         self.report(BenchEvent::DocumentOpened);
@@ -133,6 +134,7 @@ impl ReaderView {
             let query = self.find.input.read(cx).text().to_string();
             self.on_find_query(query, cx);
         }
+        self.properties_follow_document(cx);
         cx.notify();
     }
 

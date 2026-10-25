@@ -67,6 +67,7 @@ actions!(
         NextResult,
         PreviousResult,
         OpenResult,
+        DocumentProperties,
     ]
 );
 
@@ -127,6 +128,7 @@ fn action_for(command: ReaderCommand) -> Box<dyn Action> {
         C::NextResult => Box::new(NextResult),
         C::PreviousResult => Box::new(PreviousResult),
         C::OpenResult => Box::new(OpenResult),
+        C::DocumentProperties => Box::new(DocumentProperties),
     }
 }
 

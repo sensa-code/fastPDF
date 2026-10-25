@@ -17,6 +17,10 @@ use crate::theme::Theme;
 
 /// Toolbar height in logical pixels.
 pub(crate) const HEIGHT: f32 = 40.0;
+/// Space between the toolbar's controls: the buttons carry their own
+/// padding, and at the default window width every button up to the page
+/// layout menu fits in English and Traditional Chinese.
+const GAP: f32 = 2.0;
 
 pub(crate) fn render(
     view: &ReaderView,
@@ -48,7 +52,8 @@ pub(crate) fn render(
 
     use ReaderCommand as C;
     // In a narrow window the end of this row (rotation, the title) is cut
-    // off, never the find, night, edit and settings buttons after it.
+    // off, never the find, night, edit, properties and settings buttons
+    // after it.
     let row = div()
         .flex()
         .flex_row()
@@ -56,7 +61,7 @@ pub(crate) fn render(
         .min_w_0()
         .overflow_hidden()
         .items_center()
-        .gap_1()
+        .gap(px(GAP))
         .child(tools.toggle(
             "sidebar",
             strings.sidebar,
@@ -153,7 +158,7 @@ pub(crate) fn render(
                 .min_w_0()
                 .overflow_hidden()
                 .items_center()
-                .gap_1()
+                .gap(px(GAP))
                 .child(separator(&theme))
                 .child(tools.button(
                     "rotate-ccw",
@@ -188,7 +193,7 @@ pub(crate) fn render(
         .flex_row()
         .flex_none()
         .items_center()
-        .gap_1()
+        .gap(px(GAP))
         .h(px(HEIGHT))
         .px_1()
         .bg(theme.toolbar_bg)
@@ -216,6 +221,18 @@ pub(crate) fn render(
             cx,
         ))
         .child(edit_control(view, tools, cx))
+        .child(
+            tools
+                .toggle(
+                    "properties",
+                    "\u{24D8}",
+                    strings.tip_properties(),
+                    C::DocumentProperties,
+                    view.properties.open,
+                    cx,
+                )
+                .text_size(px(16.0)),
+        )
         .child(
             styled_button("settings", "\u{2699}", !blocked, view.settings_open, &theme)
                 .text_size(px(16.0))

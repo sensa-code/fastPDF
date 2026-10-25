@@ -35,6 +35,8 @@
 //! * Text is English or Traditional Chinese (`i18n.rs`), after the Windows
 //!   UI language unless the settings choose; mouse-wheel notches scroll
 //!   with a short ease-out (`smooth_scroll.rs`).
+//! * Ctrl+D (or the toolbar's ⓘ) shows the document's properties
+//!   (`properties.rs`); the engine is asked only then.
 //! * Links on the pages are read when the pointer first moves over a page
 //!   (`links.rs`); a click follows an internal link, a drag still selects;
 //!   http, https and mailto links open after a confirmation (`link_open.rs`,
@@ -67,6 +69,7 @@ mod page_labels;
 mod password;
 mod print;
 mod prompt;
+mod properties;
 mod reader;
 mod scrollbar;
 mod search_results;
