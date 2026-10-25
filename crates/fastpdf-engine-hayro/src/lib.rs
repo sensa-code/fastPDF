@@ -36,10 +36,12 @@ mod nametree;
 mod nav;
 mod pool;
 mod preflight;
+mod properties;
 mod render;
 mod scan;
 mod stats;
 mod text;
+mod text_string;
 pub mod write;
 
 use fastpdf_engine_api::{

@@ -12,7 +12,7 @@ use fastpdf_engine_api::{PageLabelStyle, PageLabels};
 use hayro::hayro_syntax::object::{Dict, MaybeRef, Name, ObjectIdentifier, String as PdfString};
 
 use super::{Entry, MAX_INDIRECT_VALUES, Walk};
-use crate::nav::decode_text_string;
+use crate::text_string::decode_text_string;
 
 /// Bytes of one `/P` string decoded at most: enough for
 /// [`PageLabels::MAX_PREFIX_BYTES`] of text in any text-string encoding.

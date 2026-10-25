@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
 use fastpdf_engine_api::{
-    CancelToken, DocumentMetadata, EngineDocument, EngineError, Link, MemoryPressure, OutlineItem,
-    PageIndex, PageInfo, PageLabels, Password, PixmapMut, RenderOutcome, RenderRequest,
-    ResourceLimits, SharedBytes, TextLayer,
+    CancelToken, DocumentMetadata, DocumentProperties, EngineDocument, EngineError, Link,
+    MemoryPressure, OutlineItem, PageIndex, PageInfo, PageLabels, Password, PixmapMut,
+    RenderOutcome, RenderRequest, ResourceLimits, SharedBytes, TextLayer,
 };
 use hayro::hayro_syntax::object::ObjectIdentifier;
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
@@ -18,7 +18,7 @@ use crate::preflight::Verdict;
 use crate::render::{self, BlockCache};
 use crate::scan::ScanMemo;
 use crate::stats;
-use crate::{labels, links, nav};
+use crate::{labels, links, nav, properties};
 
 /// Striped locks that serialize the verdict computation of one page.
 const VERDICT_LOCKS: usize = 16;
@@ -367,6 +367,11 @@ impl EngineDocument for HayroDocument {
     fn metadata(&self) -> Result<DocumentMetadata, EngineError> {
         let generation = self.inner.current();
         Ok(nav::metadata(&generation.pdf, self.inner.encrypted))
+    }
+
+    fn properties(&self) -> Result<DocumentProperties, EngineError> {
+        let generation = self.inner.current();
+        Ok(properties::properties(&self.inner, &generation))
     }
 
     fn render(

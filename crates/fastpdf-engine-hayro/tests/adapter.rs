@@ -454,6 +454,8 @@ fn malformed_fixtures_never_panic() {
             "{}",
             path.display()
         );
+        let properties = doc.properties();
+        assert!(properties.is_ok(), "{}: {properties:?}", path.display());
         for page in 0..doc.page_count().min(10) {
             let Ok(info) = doc.page_info(PageIndex::new(page)) else {
                 continue;

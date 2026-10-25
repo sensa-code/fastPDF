@@ -129,6 +129,8 @@ enum Obj {
 pub(crate) struct PdfBuilder {
     objects: Vec<Option<Obj>>,
     encryption: Option<Rc4Encryption>,
+    /// More trailer entries (`/Info 7 0 R`).
+    trailer: String,
 }
 
 impl PdfBuilder {
@@ -169,7 +171,27 @@ impl PdfBuilder {
 
     /// Encrypts all streams with RC4-40 (Standard handler, R2).
     pub(crate) fn encrypt_rc4(&mut self, user: &str, owner: &str) {
-        self.encryption = Some(Rc4Encryption::new(user.as_bytes(), owner.as_bytes()));
+        self.encrypt_rc4_with_permissions(user, owner, PERMISSIONS);
+    }
+
+    /// Like `encrypt_rc4`, with `/P` set to `permissions`.
+    pub(crate) fn encrypt_rc4_with_permissions(
+        &mut self,
+        user: &str,
+        owner: &str,
+        permissions: i32,
+    ) {
+        self.encryption = Some(Rc4Encryption::new(
+            user.as_bytes(),
+            owner.as_bytes(),
+            permissions,
+        ));
+    }
+
+    /// Adds entries to the trailer dictionary.
+    pub(crate) fn trailer(&mut self, entries: &str) {
+        self.trailer.push(' ');
+        self.trailer.push_str(entries);
     }
 
     /// Serializes with a classic xref table; `root` is the catalog.
@@ -203,10 +225,11 @@ impl PdfBuilder {
         for o in offsets {
             writeln!(out, "{o:010} 00000 n ").ok();
         }
-        let extra = match (&self.encryption, encrypt_ref) {
+        let mut extra = match (&self.encryption, encrypt_ref) {
             (Some(e), Some(r)) => format!(" /Encrypt {r} 0 R /ID [<{0}> <{0}>]", hex(&e.id)),
             _ => String::new(),
         };
+        extra.push_str(&self.trailer);
         write!(
             out,
             "trailer\n<< /Size {size} /Root {root} 0 R{extra} >>\nstartxref\n{xref}\n%%EOF\n"
@@ -327,6 +350,7 @@ struct Rc4Encryption {
     o: Vec<u8>,
     u: Vec<u8>,
     id: Vec<u8>,
+    permissions: i32,
 }
 
 const PERMISSIONS: i32 = -4;
@@ -338,7 +362,7 @@ fn padded(password: &[u8]) -> Vec<u8> {
 }
 
 impl Rc4Encryption {
-    fn new(user: &[u8], owner: &[u8]) -> Self {
+    fn new(user: &[u8], owner: &[u8], permissions: i32) -> Self {
         let id = b"fastpdf-test-id!".to_vec();
         // Algorithm 3: O entry.
         let owner_key = md5(&padded(if owner.is_empty() { user } else { owner }));
@@ -346,17 +370,24 @@ impl Rc4Encryption {
         // Algorithm 2: file key.
         let mut input = padded(user);
         input.extend_from_slice(&o);
-        input.extend_from_slice(&PERMISSIONS.to_le_bytes());
+        input.extend_from_slice(&permissions.to_le_bytes());
         input.extend_from_slice(&id);
         let key = md5(&input)[..5].to_vec();
         // Algorithm 4: U entry.
         let u = rc4(&key, &PAD);
-        Self { key, o, u, id }
+        Self {
+            key,
+            o,
+            u,
+            id,
+            permissions,
+        }
     }
 
     fn dictionary(&self) -> String {
         format!(
-            "<< /Filter /Standard /V 1 /R 2 /Length 40 /P {PERMISSIONS} /O <{}> /U <{}> >>",
+            "<< /Filter /Standard /V 1 /R 2 /Length 40 /P {} /O <{}> /U <{}> >>",
+            self.permissions,
             hex(&self.o),
             hex(&self.u)
         )

@@ -12,6 +12,7 @@ use hayro::hayro_syntax::{Pdf, PdfVersion};
 
 use crate::dest::DestResolver;
 use crate::document::{DocInner, Generation};
+use crate::text_string::decode_text_string;
 
 /// Outline entries returned at most.
 const MAX_OUTLINE_ITEMS: usize = 50_000;
@@ -20,12 +21,7 @@ const MAX_OUTLINE_DEPTH: usize = 64;
 
 pub(crate) fn metadata(pdf: &Pdf, encrypted: bool) -> DocumentMetadata {
     let m = pdf.metadata();
-    let text = |v: &Option<Vec<u8>>| {
-        v.as_deref()
-            .map(decode_text_string)
-            .map(|s| s.trim_matches('\0').to_owned())
-            .filter(|s| !s.is_empty())
-    };
+    let text = |v: &Option<Vec<u8>>| v.as_deref().and_then(info_text);
     DocumentMetadata {
         title: text(&m.title),
         author: text(&m.author),
@@ -38,6 +34,14 @@ pub(crate) fn metadata(pdf: &Pdf, encrypted: bool) -> DocumentMetadata {
         pdf_version: Some(version_string(pdf.version()).to_owned()),
         encrypted,
     }
+}
+
+/// A text string of the document information dictionary: decoded, without
+/// surrounding NULs, `None` when nothing is left.
+pub(crate) fn info_text(raw: &[u8]) -> Option<String> {
+    let text = decode_text_string(raw);
+    let trimmed = text.trim_matches('\0');
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 fn version_string(v: PdfVersion) -> &'static str {
@@ -69,41 +73,6 @@ fn format_date(d: DateTime) -> String {
         d.utc_offset_hour.unsigned_abs(),
         d.utc_offset_minute
     )
-}
-
-/// Decodes a PDF text string: UTF-16BE or UTF-8 with BOM, otherwise
-/// PDFDocEncoding.
-pub(crate) fn decode_text_string(bytes: &[u8]) -> String {
-    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        let (pairs, _) = rest.as_chunks::<2>();
-        let units: Vec<u16> = pairs.iter().map(|c| u16::from_be_bytes(*c)).collect();
-        return String::from_utf16_lossy(&units);
-    }
-    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        return String::from_utf8_lossy(rest).into_owned();
-    }
-    bytes.iter().map(|&b| pdf_doc_char(b)).collect()
-}
-
-/// PDFDocEncoding (ISO 32000-2, Annex D) → Unicode.
-fn pdf_doc_char(b: u8) -> char {
-    const HIGH: [char; 33] = [
-        '\u{2022}', '\u{2020}', '\u{2021}', '\u{2026}', '\u{2014}', '\u{2013}', '\u{0192}',
-        '\u{2044}', '\u{2039}', '\u{203A}', '\u{2212}', '\u{2030}', '\u{201E}', '\u{201C}',
-        '\u{201D}', '\u{2018}', '\u{2019}', '\u{201A}', '\u{2122}', '\u{FB01}', '\u{FB02}',
-        '\u{0141}', '\u{0152}', '\u{0160}', '\u{0178}', '\u{017D}', '\u{0131}', '\u{0142}',
-        '\u{0153}', '\u{0161}', '\u{017E}', '\u{FFFD}', '\u{20AC}',
-    ];
-    const LOW: [char; 8] = [
-        '\u{02D8}', '\u{02C7}', '\u{02C6}', '\u{02D9}', '\u{02DD}', '\u{02DB}', '\u{02DA}',
-        '\u{02DC}',
-    ];
-    match b {
-        0x18..=0x1F => LOW[usize::from(b - 0x18)],
-        0x80..=0xA0 => HIGH[usize::from(b - 0x80)],
-        0xAD => '\u{FFFD}',
-        _ => char::from(b),
-    }
 }
 
 pub(crate) fn outline(doc: &DocInner, generation: &Generation) -> Vec<OutlineItem> {
@@ -193,20 +162,6 @@ fn outline_item<'p>(resolver: &mut DestResolver<'_, 'p>, node: &Dict<'p>) -> Out
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn text_strings_decode() {
-        assert_eq!(decode_text_string(b"Hello"), "Hello");
-        assert_eq!(
-            decode_text_string(&[0xFE, 0xFF, 0x4E, 0x2D, 0x65, 0x87]),
-            "中文"
-        );
-        assert_eq!(decode_text_string(&[0xEF, 0xBB, 0xBF, b'a']), "a");
-        assert_eq!(
-            decode_text_string(&[0x80, 0x92, 0xA0]),
-            "\u{2022}\u{2122}\u{20AC}"
-        );
-    }
 
     #[test]
     fn dates_format_like_pdf() {

@@ -54,12 +54,12 @@ _RESULT_KEYS = {"pages", "encryption", "features", "system_font"}
 
 
 def all_jobs() -> list:
-    from fxlib import (cat_cjk, cat_encrypted, cat_labels, cat_links, cat_malformed, cat_raster,
-                       cat_text, cat_vector)
+    from fxlib import (cat_cjk, cat_encrypted, cat_labels, cat_links, cat_malformed,
+                       cat_properties, cat_raster, cat_text, cat_vector)
 
     jobs = []
     for mod in (cat_text, cat_raster, cat_vector, cat_cjk, cat_encrypted, cat_malformed,
-                cat_labels, cat_links):
+                cat_labels, cat_links, cat_properties):
         jobs.extend(mod.jobs())
     paths = [j.path for j in jobs]
     dupes = {p for p in paths if paths.count(p) > 1}
