@@ -184,12 +184,73 @@ fn form_fields_and_signatures_are_counted() {
         properties(document("", &[], "")).forms,
         FormSummary::default()
     );
+    // An /XFA of null is no XFA part.
+    let mut no_xfa = FORM.to_vec();
+    no_xfa[0] = "<< /Fields [7 0 R] /XFA null >>";
+    assert!(
+        !properties(document("/AcroForm 6 0 R", &no_xfa, ""))
+            .forms
+            .xfa
+    );
+}
+
+#[test]
+fn fields_listed_with_their_parent_count_once() {
+    let counts = |objects: &[&str]| {
+        let p = properties(document("/AcroForm 6 0 R", objects, ""));
+        let f = p.forms;
+        assert!(!f.truncated, "{objects:?}");
+        (f.fields, f.signature_fields, f.signatures)
+    };
+    // The parent first, kids with /Parent: two fields, both inheriting the
+    // parent's /FT and /V (a null /V is no value of its own).
+    let parent = "<< /T (addr) /FT /Sig /V << /Type /Sig >> /Kids [8 0 R 9 0 R] >>";
+    let a = "<< /T (a) /Parent 7 0 R >>";
+    let b = "<< /T (b) /Parent 7 0 R /V null >>";
+    assert_eq!(
+        counts(&["<< /Fields [7 0 R 8 0 R 9 0 R] >>", parent, a, b]),
+        (2, 2, 2)
+    );
+    // Kids listed before their parent wait for it.
+    assert_eq!(
+        counts(&["<< /Fields [8 0 R 9 0 R 7 0 R] >>", parent, a, b]),
+        (2, 2, 2)
+    );
+    // Kids without /Parent, listed first: still two fields, and the
+    // parent is no phantom signed signature field.
+    let a = "<< /T (a) >>";
+    let b = "<< /T (b) >>";
+    assert_eq!(
+        counts(&["<< /Fields [8 0 R 9 0 R 7 0 R] >>", parent, a, b]),
+        (2, 0, 0)
+    );
+    assert_eq!(
+        counts(&["<< /Fields [7 0 R 8 0 R 9 0 R] >>", parent, a, b]),
+        (2, 2, 2)
+    );
+    // An entry whose parent never reaches it stands on its own.
+    let a = "<< /T (a) /Parent 7 0 R >>";
+    let b = "<< /T (b) /Parent 7 0 R >>";
+    let orphan = "<< /T (o) /Parent 11 0 R /FT /Tx >>";
+    let elsewhere = "<< /T (p2) >>";
+    assert_eq!(
+        counts(&[
+            "<< /Fields [7 0 R 10 0 R] >>",
+            parent,
+            a,
+            b,
+            orphan,
+            elsewhere
+        ]),
+        (3, 2, 2)
+    );
 }
 
 #[test]
 fn hostile_field_trees_terminate() {
     // Cycles: a field listed twice, fields that are their own kids and
-    // each other's. Only b has no kid it has not seen: one field.
+    // each other's. Neither is a terminal field, and a field that is its
+    // own ancestor makes the counts lower bounds.
     let cycle = [
         "<< /Fields [7 0 R 7 0 R] >>",
         "<< /T (a) /Kids [8 0 R 7 0 R] >>",
@@ -197,8 +258,17 @@ fn hostile_field_trees_terminate() {
     ];
     let p = properties(document("/AcroForm 6 0 R", &cycle, ""));
     let counts = (p.forms.fields, p.forms.signature_fields, p.forms.signatures);
-    assert_eq!(counts, (1, 1, 1));
-    assert!(!p.forms.truncated);
+    assert_eq!(counts, (0, 0, 0));
+    assert!(p.forms.truncated);
+    // A /Kids array shared with a field above: also a lower bound.
+    let shared = [
+        "<< /Fields [7 0 R] >>",
+        "<< /T (a) /Kids 8 0 R >>",
+        "[9 0 R]",
+        "<< /T (b) /Kids 8 0 R >>",
+    ];
+    let p = properties(document("/AcroForm 6 0 R", &shared, ""));
+    assert_eq!(p.forms.fields, 0);
 
     // A chain deeper than the walk follows.
     let mut chain = vec!["<< /Fields [7 0 R] >>".to_owned()];
