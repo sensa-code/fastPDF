@@ -1,19 +1,22 @@
-//! Where a document starts: on the open thread, the remembered position is
-//! looked up, checked against the document as it is now and the restored
-//! row's geometry is fetched; a session then applies it before its first
-//! frame, so the first page planned and rendered is the restored one (page
-//! 1 is never rendered first). Every open that may start somewhere else
-//! than page 1 goes through here: the command-line document (also its early
+//! Where a document starts: while the open thread loads and opens the
+//! document, a helper thread looks its remembered position up; the record
+//! is checked against the document as it is now and the restored row's
+//! geometry is fetched; a session then applies it before its first frame,
+//! so the first page planned and rendered is the restored one (page 1 is
+//! never rendered first). Every open that may start somewhere else than
+//! page 1 goes through here: the command-line document (also its early
 //! session, `crate::startup`), later opens and a password unlock.
 
 use std::path::Path;
 
 use fastpdf_core::DocumentSession;
-use fastpdf_core::positions::{FileIdentity, PositionStore, Restore, restore_for};
+use fastpdf_core::positions::{FileIdentity, PositionRecord, PositionStore, Restore, restore_for};
 use fastpdf_engine_api::{EngineDocument, PageIndex, PdfEngine};
+use gpui::Context;
 
 use crate::document::{OpenFailure, Opened, OpenedDocument, load_source, open_loaded};
 use crate::navigation::apply_default_zoom;
+use crate::reader::ReaderView;
 use crate::settings::DefaultZoom;
 use crate::startup::{SessionParts, ViewGuess};
 use crate::textures::TileImage;
@@ -49,10 +52,28 @@ pub(crate) fn open_for_reading(
 ) -> Result<Opened, OpenFailure> {
     // Before the load: a file replaced meanwhile counts as changed.
     let identity = positions.and_then(|_| FileIdentity::of(path));
-    let mut loaded = load_source(path)?;
-    loaded.identity = identity;
-    let doc = open_loaded(engine, loaded, None)?;
-    let mut opened = with_start(doc, identity, positions);
+    // The positions file is read and parsed alongside the load and the
+    // engine's open instead of after them.
+    let (doc, looked_up) = std::thread::scope(|scope| {
+        let lookup = positions.map(|store| {
+            std::thread::Builder::new()
+                .name("fastpdf-positions".into())
+                .spawn_scoped(scope, move || store.lookup(path))
+        });
+        let doc = load_source(path).and_then(|mut loaded| {
+            loaded.identity = identity;
+            open_loaded(engine, loaded, None)
+        });
+        let looked_up = match (positions, lookup) {
+            // A lookup that panicked found nothing.
+            (_, Some(Ok(thread))) => Some(thread.join().ok().flatten()),
+            // No thread to spare: look it up here.
+            (Some(store), Some(Err(_))) => Some(store.lookup(path)),
+            _ => None,
+        };
+        (doc, looked_up)
+    });
+    let mut opened = start_from(doc?, identity, looked_up);
     if let Some((parts, view)) = early {
         let restore = opened.start.and_then(|s| s.restore);
         let mut session = parts.session(
@@ -86,11 +107,21 @@ pub(crate) fn with_start(
     identity: Option<FileIdentity>,
     positions: Option<&PositionStore>,
 ) -> Opened {
-    let Some(store) = positions else {
+    let looked_up = positions.map(|store| store.lookup(&doc.path));
+    start_from(doc, identity, looked_up)
+}
+
+/// `doc` with the start `looked_up` gives: `None` when the store was not
+/// asked, else its answer.
+fn start_from(
+    doc: OpenedDocument,
+    identity: Option<FileIdentity>,
+    looked_up: Option<Option<PositionRecord>>,
+) -> Opened {
+    let Some(record) = looked_up else {
         return doc.into();
     };
     let page_count = doc.doc.page_count();
-    let record = store.lookup(&doc.path);
     let restore = record.and_then(|r| restore_for(&r, page_count, identity));
     match (&record, &restore) {
         (Some(record), None) => log::info!(
@@ -136,5 +167,34 @@ pub(crate) fn apply_start(
     }
     if let Some(restore) = restore {
         session.restore_saved(restore.view(), restore.scope());
+    }
+}
+
+impl ReaderView {
+    /// A document finished opening with `start`, maybe with an early
+    /// session already at the restored view. When positions were turned
+    /// off meanwhile the start is dropped, and so is such a session (off
+    /// the UI thread: its render workers join): the document starts at the
+    /// top, like any document opened with positions off.
+    pub(crate) fn screen_start(
+        &self,
+        start: Option<ReadingStart>,
+        session: Option<DocumentSession<TileImage>>,
+        cx: &mut Context<'_, Self>,
+    ) -> (Option<ReadingStart>, Option<DocumentSession<TileImage>>) {
+        if start.is_none() || self.reading_gate().keep(start).is_some() {
+            return (start, session);
+        }
+        let restored = start.is_some_and(|s| s.restore.is_some());
+        let session = match session {
+            Some(early) if restored => {
+                cx.background_executor()
+                    .spawn(async move { drop(early) })
+                    .detach();
+                None
+            }
+            other => other,
+        };
+        (None, session)
     }
 }

@@ -19,16 +19,18 @@
 //! left behind are removed under that lock. Paths in the file are only
 //! compared, never opened. The text format is in `positions/format.rs`.
 
+mod file;
 mod format;
 #[cfg(test)]
 mod tests;
 
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
+
+use file::{lock, lock_until, read_entries};
 
 use crate::recent::{path_key, same_path};
 use crate::view_state::{RestoreScope, SavedView, SavedZoom};
@@ -236,12 +238,28 @@ impl PositionStore {
     /// lock held elsewhere for longer than half a second gives up: the
     /// error is returned and the records wait for the next flush.
     pub fn flush(&self) -> io::Result<usize> {
-        let _writing = lock(&self.write);
+        let writing = lock(&self.write);
+        self.flush_locked(writing, LOCK_WAIT)
+    }
+
+    /// [`flush`](Self::flush), waiting `wait` at most in all for another
+    /// flush of this process and for the lock other processes share (for
+    /// a write while quitting, which must not hold the window up). On
+    /// [`io::ErrorKind::WouldBlock`] nothing was written.
+    pub fn flush_within(&self, wait: Duration) -> io::Result<usize> {
+        let deadline = Instant::now() + wait;
+        let writing = lock_until(&self.write, deadline)?;
+        self.flush_locked(writing, deadline.saturating_duration_since(Instant::now()))
+    }
+
+    /// The flush itself, holding this process's write lock; `wait` is how
+    /// long it may wait for the lock other processes share.
+    fn flush_locked(&self, _writing: MutexGuard<'_, ()>, wait: Duration) -> io::Result<usize> {
         let snapshot = lock(&self.pending).clone();
         if snapshot.is_empty() {
             return Ok(0);
         }
-        let _shared = crate::paths::lock_beside(&self.path, LOCK_WAIT)?;
+        let _shared = crate::paths::lock_beside(&self.path, wait)?;
         // Every writer of this file holds the lock: a temporary file seen
         // now belongs to a write that was interrupted.
         crate::paths::remove_stale_temps(&self.path);
@@ -263,30 +281,4 @@ impl PositionStore {
         });
         Ok(documents)
     }
-}
-
-/// The entries of the file at `path`: none when it is missing, too large
-/// or not UTF-8; an error when it exists but cannot be read.
-fn read_entries(path: &Path) -> io::Result<Vec<format::Entry>> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e),
-    };
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::other("not a regular file"));
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Ok(Vec::new());
-    }
-    Ok(String::from_utf8(bytes)
-        .map(|text| format::parse(&text))
-        .unwrap_or_default())
-}
-
-/// A poisoned lock still guards plain data: keep using it.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }

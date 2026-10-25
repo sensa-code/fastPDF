@@ -246,6 +246,30 @@ fn paths_that_are_not_unicode_never_match_a_stored_one() {
 }
 
 #[test]
+fn a_bounded_flush_gives_up_on_a_held_lock_and_keeps_the_records() {
+    let dir = scratch("bounded-flush");
+    let store = PositionStore::at(dir.join("positions.txt"));
+    store.remember(Path::new("C:\\a.pdf"), record(1));
+    // Another process writing the file holds the shared lock.
+    let held = crate::paths::lock_beside(store.path(), std::time::Duration::ZERO).unwrap();
+    let started = std::time::Instant::now();
+    let err = store
+        .flush_within(std::time::Duration::from_millis(50))
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+    assert!(started.elapsed() < std::time::Duration::from_millis(400));
+    assert!(!store.path().exists());
+    drop(held);
+    // Still queued: the next flush writes it.
+    assert_eq!(store.flush_within(std::time::Duration::ZERO).unwrap(), 1);
+    assert_eq!(
+        PositionStore::at(dir.join("positions.txt")).lookup(Path::new("C:\\a.pdf")),
+        Some(record(1))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_flush_removes_temporary_files_an_interrupted_write_left() {
     let dir = scratch("stale");
     let store = PositionStore::next_to(&dir.join("recent.txt"));

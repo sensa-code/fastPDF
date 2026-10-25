@@ -164,6 +164,35 @@ fn a_page_past_the_end_restores_nothing_but_counts_as_remembered() {
     let _ = std::fs::remove_dir_all(&empty_dir);
 }
 
+#[test]
+fn an_open_looks_the_document_up_while_it_loads() {
+    let (store, dir) = scratch_store("open");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("book.pdf");
+    std::fs::write(&file, [b'%'; 12]).unwrap();
+    let identity = FileIdentity::of(&file);
+    let saved = PositionRecord {
+        identity,
+        ..record(8, 12)
+    };
+    assert!(store.remember(&file, saved));
+    let opened = match open_for_reading(&Engine, &file, Some(&store), None) {
+        Ok(opened) => opened,
+        Err(e) => panic!("cannot open: {e}"),
+    };
+    let start = opened.start.expect("asked");
+    assert!(start.remembered);
+    assert_eq!(start.identity, identity);
+    assert_eq!(start.restore, Some(Restore::Exact(saved.view)));
+    // Positions off (no store given): nothing asked, the file not stat'ed.
+    let plain = match open_for_reading(&Engine, &file, None, None) {
+        Ok(opened) => opened,
+        Err(e) => panic!("cannot open: {e}"),
+    };
+    assert_eq!(plain.start, None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A fresh session of `doc`, 800 x 1000 at scale 1.
 fn session(doc: &OpenedDocument) -> DocumentSession<TileImage> {
     DocumentSession::new(

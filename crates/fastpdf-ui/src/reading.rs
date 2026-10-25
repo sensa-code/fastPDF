@@ -19,8 +19,10 @@
 //!   polling: an idle reader has no timer.
 //! * Closing, switching documents and quitting write the view right away:
 //!   closing in the background, quitting (Ctrl+Q, and the window's close
-//!   button, where only the view's release still runs) on the UI thread.
-//!   A crash loses at most the last two seconds of movement.
+//!   button, where only the view's release still runs) on the UI thread,
+//!   waiting [`EXIT_WAIT`] at most for another writer of the file; then
+//!   the records not written are dropped. A crash loses at most the last
+//!   two seconds of movement.
 
 mod gate;
 mod start;
@@ -28,10 +30,10 @@ mod tracker;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use fastpdf_core::SavedView;
 use fastpdf_core::positions::{PositionRecord, PositionStore, quantized};
-use fastpdf_core::{DocumentSession, SavedView};
 use gpui::{Context, Task};
 
 use gate::{Follow, Gate};
@@ -39,7 +41,11 @@ pub(crate) use start::{ReadingStart, apply_start, open_for_reading, with_start};
 use tracker::{SETTLE, Settle, Tracked};
 
 use crate::reader::ReaderView;
-use crate::textures::TileImage;
+
+/// Longest quitting waits for another writer of the positions file (a
+/// background write of this process, another FastPDF): the window must
+/// not hang. The records it could not write are dropped.
+const EXIT_WAIT: Duration = Duration::from_millis(300);
 
 /// The store and the open document's position as last written and seen.
 #[derive(Default)]
@@ -79,33 +85,6 @@ impl ReaderView {
     pub(crate) fn positions_for_open(&self) -> Option<Arc<PositionStore>> {
         let lookup = self.reading_gate().lookup();
         self.reading.store.clone().filter(|_| lookup)
-    }
-
-    /// A document finished opening with `start`, maybe with an early
-    /// session already at the restored view. When positions were turned
-    /// off meanwhile the start is dropped, and so is such a session (off
-    /// the UI thread: its render workers join): the document starts at the
-    /// top, like any document opened with positions off.
-    pub(crate) fn screen_start(
-        &self,
-        start: Option<ReadingStart>,
-        session: Option<DocumentSession<TileImage>>,
-        cx: &mut Context<'_, Self>,
-    ) -> (Option<ReadingStart>, Option<DocumentSession<TileImage>>) {
-        if start.is_none() || self.reading_gate().keep(start).is_some() {
-            return (start, session);
-        }
-        let restored = start.is_some_and(|s| s.restore.is_some());
-        let session = match session {
-            Some(early) if restored => {
-                cx.background_executor()
-                    .spawn(async move { drop(early) })
-                    .detach();
-                None
-            }
-            other => other,
-        };
-        (None, session)
     }
 
     /// The document at `path` is open (its start is applied): follow its
@@ -200,12 +179,14 @@ impl ReaderView {
 
     /// FastPDF quits or the window closes: the open document's position and
     /// everything not written yet goes to the file now, on this thread (a
-    /// background write might not finish before the process ends). Running
-    /// it twice writes nothing new.
+    /// background write might not finish before the process ends), waiting
+    /// [`EXIT_WAIT`] at most for other writers. Only the first call does
+    /// anything: Ctrl+Q runs it from the quit hook and again when the view
+    /// is released, and quitting must not wait twice.
     pub(crate) fn save_reading_position_now(&mut self) {
         self.close_reading("exit");
-        if let Some(store) = &self.reading.store {
-            flush_positions(store);
+        if let Some(store) = self.reading.store.take() {
+            report_flush(&store, store.flush_within(EXIT_WAIT), true);
         }
     }
 
@@ -277,22 +258,19 @@ impl ReaderView {
             return;
         };
         cx.background_executor()
-            .spawn(async move { flush_positions(&store) })
+            .spawn(async move { report_flush(&store, store.flush(), false) })
             .detach();
     }
 }
 
-/// Writes the records `store` holds, logging the outcome.
-fn flush_positions(store: &PositionStore) {
-    match store.flush() {
+/// Logs how a flush of `store` ended; `exit`: the last one, whose
+/// unwritten records are lost.
+fn report_flush(store: &PositionStore, result: std::io::Result<usize>, exit: bool) {
+    let path = store.path().display();
+    match result {
         Ok(0) => {}
-        Ok(documents) => log::info!(
-            "reading positions written to {} ({documents} documents)",
-            store.path().display()
-        ),
-        Err(e) => log::warn!(
-            "cannot save the reading positions to {}: {e}",
-            store.path().display()
-        ),
+        Ok(documents) => log::info!("reading positions written to {path} ({documents} documents)"),
+        Err(e) if exit => log::warn!("reading positions not saved before quitting ({path}): {e}"),
+        Err(e) => log::warn!("cannot save the reading positions to {path} now: {e}"),
     }
 }
