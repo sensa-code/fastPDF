@@ -1,6 +1,7 @@
 //! Opening and closing documents in the reader window: a document opens
-//! off the UI thread (`crate::document`) and replaces the current one when
-//! it is ready; the recent-files list follows (spec §8, §10).
+//! off the UI thread (`crate::document`), where it was left
+//! (`crate::reading`), and replaces the current one when it is ready; the
+//! recent-files list follows (spec §8, §10).
 
 use std::future::Future;
 use std::mem;
@@ -13,9 +14,9 @@ use fastpdf_engine_api::EngineDocument;
 use gpui::{Context, PathPromptOptions, SharedString, Window};
 
 use crate::bench::BenchEvent;
-use crate::document::{OpenFailure, Opened, open_document_blocking};
-use crate::navigation::apply_default_zoom;
+use crate::document::{OpenFailure, Opened};
 use crate::reader::{DocState, OpenDoc, ReaderView};
+use crate::reading::{apply_start, open_for_reading};
 use crate::smooth_scroll::PageTurn;
 use crate::toolbar;
 
@@ -28,9 +29,10 @@ impl ReaderView {
     pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<'_, Self>) {
         let path = std::path::absolute(&path).unwrap_or(path);
         let engine = Arc::clone(&self.options.engine);
+        let positions = self.positions_for_open();
         let open_path = path.clone();
         let task = cx.background_executor().spawn(async move {
-            open_document_blocking(engine.as_ref(), &open_path).map(Opened::from)
+            open_for_reading(engine.as_ref(), &open_path, positions.as_deref(), None)
         });
         self.begin_open(path, task, window, cx);
     }
@@ -69,6 +71,7 @@ impl ReaderView {
         let Opened {
             doc: opened,
             session,
+            start,
         } = match result {
             Ok(opened) => opened,
             Err(OpenFailure::Locked(locked)) => {
@@ -84,6 +87,7 @@ impl ReaderView {
             }
         };
 
+        let restore = start.and_then(|s| s.restore);
         let session = match session {
             // Started while GPUI was starting; the first frame resizes it to
             // the real document area if the guess was off. Night mode or the
@@ -92,12 +96,13 @@ impl ReaderView {
             Some(mut session) => {
                 session.set_color_mode(self.color_mode());
                 session.set_layout_mode(self.settings.layout_mode());
-                apply_default_zoom(&mut session, self.settings.default_zoom);
+                apply_start(&mut session, restore.as_ref(), self.settings.default_zoom);
                 session
             }
             None => {
                 let (view_size, scale) = self.viewport_estimate(window);
-                self.session_parts().session(&opened, view_size, scale)
+                let parts = self.session_parts();
+                parts.session(&opened, view_size, scale, restore.as_ref())
             }
         };
         self.memory
@@ -124,6 +129,7 @@ impl ReaderView {
             file_bytes: u64::try_from(opened.file_bytes).unwrap_or(u64::MAX),
             queries: Default::default(),
         }));
+        self.track_reading(&path, start);
         self.report(BenchEvent::DocumentOpened);
         // Panels that were open carry over to the new document.
         if self.sidebar.open {
@@ -141,6 +147,8 @@ impl ReaderView {
     /// Closes the current document and frees its GPU textures, its cached
     /// text and (once a running print job has stopped) the engine document.
     pub(crate) fn close_document(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        // Before anything moves the view or the session goes.
+        self.save_reading_position(cx);
         self.end_go_to(false, window, cx);
         self.find.reset(cx);
         self.selection.reset();

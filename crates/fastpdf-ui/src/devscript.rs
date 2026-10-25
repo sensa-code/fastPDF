@@ -80,12 +80,14 @@
 //! | `link-prompt=open`, `=copy`, `=cancel` | answers that card like its buttons (Open is ignored in the card's first 500 ms, wait first); scripts only log what would open or be copied (`links.rs`) |
 //! | `wait-properties` | asks for the document properties and waits for the answer, or for none (`properties.rs`) |
 //! | `properties-save=PATH` | writes what Copy all would copy to PATH (UTF-8) instead of the clipboard (`properties.rs`) |
+//! | `remember=on`, `=off` | turns remembering reading positions on or off, like the settings panel (`positions.rs`) |
 //!
 //! Every waiting step gives up after 60 s and ends the script.
 
 mod checks;
 mod labels;
 mod links;
+mod positions;
 mod properties;
 mod search;
 
@@ -168,6 +170,7 @@ pub(crate) enum Step {
     Search(search::SearchStep),
     Link(links::LinkStep),
     Properties(properties::PropertiesStep),
+    Positions(positions::PositionsStep),
 }
 
 /// What a step reports after one poll.
@@ -288,6 +291,8 @@ fn parse_step(step: &str) -> Option<Step> {
                 Step::Link(step)
             } else if let Some(step) = properties::PropertiesStep::parse(name, value) {
                 Step::Properties(step)
+            } else if let Some(step) = positions::PositionsStep::parse(name, value) {
+                Step::Positions(step)
             } else {
                 Step::Check(checks::Check::parse(name, value)?)
             }
@@ -719,6 +724,7 @@ impl ReaderView {
             Step::Search(step) => self.run_search_step(step, window, cx),
             Step::Link(step) => self.run_link_step(step, window, cx),
             Step::Properties(step) => self.run_properties_step(step, cx),
+            Step::Positions(step) => self.run_positions_step(step, cx),
         }
     }
 }

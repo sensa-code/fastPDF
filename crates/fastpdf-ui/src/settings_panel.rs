@@ -1,10 +1,11 @@
-//! Appearance, night mode, default zoom, language and smooth scrolling:
-//! the commands that change them and the small settings panel (toolbar gear
-//! button). Every change is saved right away (`crate::settings`).
+//! Appearance, night mode, default zoom, language, smooth scrolling and
+//! reading positions: the commands that change them (positions:
+//! `crate::reading`) and the small settings panel (toolbar gear button).
+//! Every change is saved right away (`crate::settings`).
 
 use gpui::{
     ClickEvent, Context, Div, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div, px,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
 };
 
 use crate::i18n::{Language, Strings};
@@ -169,6 +170,16 @@ impl ReaderView {
             |this, on, cx| this.set_smooth_scrolling(on, cx),
         );
 
+        let remember = switch_row(
+            "remember",
+            strings.remember_position(),
+            settings.remember_position,
+            strings,
+            &theme,
+            cx,
+            |this, on, cx| this.set_remember_position(on, cx),
+        );
+
         let saved = match self.settings_path() {
             Some(path) => strings.saved_in(path),
             None => strings.not_saved.into(),
@@ -183,15 +194,11 @@ impl ReaderView {
             .child(zoom)
             .child(language)
             .child(smooth)
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(theme.text_muted)
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .child(saved),
-            )
+            .child(remember)
+            .when(!self.reading.has_store(), |body| {
+                body.child(muted_line(strings.positions_not_kept().into(), &theme))
+            })
+            .child(muted_line(saved.into(), &theme))
             .child(div().flex().flex_row().justify_end().child(
                 styled_button("settings-close", strings.close, true, false, &theme).on_click(
                     cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -232,6 +239,17 @@ fn zoom_label(zoom: DefaultZoom, strings: &'static Strings) -> &'static str {
         DefaultZoom::FitPage => strings.fit_page,
         DefaultZoom::ActualSize => strings.actual_size,
     }
+}
+
+/// One line of small, muted text, cut with an ellipsis.
+fn muted_line(text: SharedString, theme: &Theme) -> Div {
+    div()
+        .text_size(px(12.0))
+        .text_color(theme.text_muted)
+        .overflow_hidden()
+        .text_ellipsis()
+        .whitespace_nowrap()
+        .child(text)
 }
 
 /// A labeled row of choices.

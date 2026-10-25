@@ -14,6 +14,7 @@ mod labels;
 mod links;
 mod navigation;
 mod password;
+mod positions;
 mod properties;
 mod search;
 
@@ -1247,6 +1248,7 @@ mod tests {
             file_bytes: 0,
             load_ms: 0.0,
             wrong_password: true,
+            identity: None,
         }));
         assert_eq!(zh.open_failure(&locked), zh.password_protected);
         let broken = OpenFailure::Engine(EngineError::Malformed("no xref".into()));

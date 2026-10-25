@@ -43,6 +43,26 @@ python tools/license_report.py --all-features --check
 pwsh -NoProfile -File tools/gui-check.ps1 -Exe target/release/fastpdf.exe -Pdf fixtures/generated/large-text/dense-300p-times.pdf -OutDir <output> -Script "wait-open; idle; page=12; expect-page=12; mark=<output>/p12; cmd=Quit"
 ```
 
+## 本機狀態檔（設定、最近開啟、閱讀位置）
+
+FastPDF 只在本機保存三份狀態，全部是 std-only 的文字檔，讀取時遇到壞資料只略過那一筆，不會讓程式出錯；寫入都經過暫存檔加 rename，當機不會留下寫一半的檔案。
+
+| 檔案 | 預設位置 | 覆寫方式 | 空字串時 |
+|---|---|---|---|
+| UI 設定 | `%APPDATA%\FastPDF\settings.toml` | `FASTPDF_SETTINGS_FILE` | 用預設值，不寫入 |
+| 最近開啟清單 | `%APPDATA%\FastPDF\recent.txt` | `FASTPDF_RECENT_FILE` | 不讀不寫 |
+| 閱讀位置 | 最近開啟清單旁的 `<主檔名>-positions.txt`（預設 `recent-positions.txt`） | 跟著 `FASTPDF_RECENT_FILE` | 不讀不寫，也不建立檔案 |
+
+閱讀位置（`crates/fastpdf-core/src/positions.rs`、`crates/fastpdf-ui/src/reading.rs`）：
+
+- **內容**：每份文件一行，最新的在前，欄位以 TAB 分隔、路徑放最後：頁碼、頁內位置（該列高度的比例）、水平位置、縮放（`fit-width`、`fit-page` 或倍率）、檢視旋轉、頁數、檔案大小與修改時間。最多 200 份文件、512 KiB；超過大小上限或不是 UTF-8 的檔案視為空的，下次寫入時取代。路徑只拿來比對，不會被開啟；比對用絕對路徑、不分大小寫（和最近開啟清單相同，不做 canonicalize）。
+- **還原規則**：檔案大小、修改時間與頁數都沒變時，還原頁碼、頁內位置、水平位置、縮放與旋轉；檔案變了但那一頁還在時，只還原頁碼與頁內位置，縮放用預設值；那一頁已經不存在時什麼都不還原，從第 1 頁開始。頁面配置（單頁、連續、雙頁）維持全域設定。
+- **第一頁保證**：查詢與還原那一列的 geometry 都在開檔執行緒上完成，session 在第一個 frame 之前就套用位置，所以第一個規劃、render 的就是還原的那一頁，不會先畫第 1 頁。命令列開檔的 early session、之後的開檔與輸入密碼解鎖都走同一個入口（`reading::open_for_reading`、`with_start`、`apply_start`）；之後要讓文件從第 1 頁以外的地方開始的功能也要用它。
+- **寫入時機**：不會每次捲動就寫。畫面停止移動 2 秒後由一個一次性 timer 排入記錄、在背景寫檔（idle 時沒有 timer）；關閉文件或切換文件時在背景寫；結束程式（Ctrl+Q 與視窗的關閉鈕）時在 UI 執行緒上同步寫完。當機最多遺失最後 2 秒的移動。
+- **多個行程**：每次寫入都在 `<檔名>.lock`（留在旁邊的空檔案）上取得所有 FastPDF 行程共用的鎖，重新讀檔、合併後再取代，所以多個視窗不會互相覆蓋；鎖最多等 0.5 秒，等不到時這次不寫，記錄留到下一次。
+- **設定**：設定面板的「記住閱讀位置」（`remember_position`，預設開啟）。關閉後不再讀取也不再寫入，但保留既有的檔案；在文件開著時打開，會從當下位置開始記錄（不知道檔案身分，下次以預設縮放還原頁面位置）。
+- **測試與 benchmark**：位置檔跟著 `FASTPDF_RECENT_FILE`，`tools/gui-check.ps1` 會把它放在 `-OutDir`，`tools/bench-app` 把變數設成空字串所以完全不使用；自己啟動時一樣要把變數設成非空的路徑，不要碰 `%APPDATA%\FastPDF`。
+
 ## Dependency policy（spec §36）
 
 每個新依賴都要在 PR 中回答：

@@ -18,12 +18,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use fastpdf_core::positions::{PositionStore, Restore};
 use fastpdf_core::{DocumentSession, SessionConfig};
 use fastpdf_engine_api::ColorMode;
 use futures::channel::mpsc;
 
 use crate::document::{OpenedDocument, PendingOpen};
-use crate::navigation::apply_default_zoom;
 use crate::reader::{ReaderOptions, Waker};
 use crate::settings::{DefaultZoom, Settings, WindowPlacement};
 use crate::textures::{RetireQueue, TileImage, to_render_image};
@@ -103,13 +103,15 @@ pub(crate) struct SessionParts {
 
 impl SessionParts {
     /// A session for `doc` showing a `size` view at `scale`, in the
-    /// configured colors and zoom. Evicted images go to the retire queue
-    /// (only the UI thread may release GPU textures).
+    /// configured colors and zoom, where `start` says (else at the top).
+    /// Evicted images go to the retire queue (only the UI thread may release
+    /// GPU textures).
     pub(crate) fn session(
         self,
         doc: &OpenedDocument,
         size: (f32, f32),
         scale: f32,
+        start: Option<&Restore>,
     ) -> DocumentSession<TileImage> {
         let Self {
             config,
@@ -133,11 +135,9 @@ impl SessionParts {
             },
         );
         // Before the first frame, so no tile renders in the wrong colors or
-        // at the wrong zoom; fit width is the session's own start.
+        // at the wrong place or zoom.
         session.set_color_mode(color);
-        if zoom != DefaultZoom::FitWidth {
-            apply_default_zoom(&mut session, zoom);
-        }
+        crate::reading::apply_start(&mut session, start, zoom);
         session
     }
 }
@@ -147,6 +147,9 @@ impl SessionParts {
 pub struct Startup {
     pub(crate) settings: Settings,
     pub(crate) pending: Option<PendingOpen>,
+    /// The reading positions next to the recent-files list (only its path
+    /// so far); `None` without a list.
+    pub(crate) positions: Option<Arc<PositionStore>>,
     pub(crate) wake: Waker,
     pub(crate) wake_rx: mpsc::UnboundedReceiver<()>,
     pub(crate) retire: RetireQueue,
@@ -157,14 +160,16 @@ impl std::fmt::Debug for Startup {
         f.debug_struct("Startup")
             .field("settings", &self.settings)
             .field("pending", &self.pending)
+            .field("positions", &self.positions)
             .finish_non_exhaustive()
     }
 }
 
 impl Startup {
     /// Reads the settings and starts opening `file` (if any) on its own
-    /// thread; with `screen`, page 1 starts rendering there too. Call it as
-    /// early as possible, before GPUI starts.
+    /// thread, where it was left; with `screen`, its first page starts
+    /// rendering there too. Call it as early as possible, before GPUI
+    /// starts. The reading positions are read on the open thread, not here.
     pub fn begin(
         options: &ReaderOptions,
         file: Option<PathBuf>,
@@ -178,6 +183,10 @@ impl Startup {
         let (tx, wake_rx) = mpsc::unbounded();
         let wake = Waker(tx);
         let retire = RetireQueue::default();
+        let positions = options
+            .recent_files
+            .as_deref()
+            .map(|recent| Arc::new(PositionStore::next_to(recent)));
         let pending = file.map(|path| {
             let early = screen.and_then(|s| guess_view(&settings, s)).map(|view| {
                 let parts = SessionParts {
@@ -196,11 +205,13 @@ impl Startup {
                 };
                 (parts, view)
             });
-            PendingOpen::spawn_with(Arc::clone(&options.engine), path, early)
+            let restore = positions.clone().filter(|_| settings.remember_position);
+            PendingOpen::spawn_with(Arc::clone(&options.engine), path, early, restore)
         });
         Self {
             settings,
             pending,
+            positions,
             wake,
             wake_rx,
             retire,
@@ -278,5 +289,7 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_send::<DocumentSession<TileImage>>();
         assert_send::<SessionParts>();
+        assert_send::<Restore>();
+        assert_send::<crate::document::Opened>();
     }
 }

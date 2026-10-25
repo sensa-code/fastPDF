@@ -66,7 +66,8 @@ pub struct ReaderOptions {
     pub dev_overlay: bool,
     pub memory: BudgetConfig,
     pub bench: Option<BenchHook>,
-    /// Where the recent-files list lives; `None` disables it.
+    /// Where the recent-files list lives; `None` disables it. The reading
+    /// positions live next to it (`<stem>-positions.txt`), or nowhere.
     pub recent_files: Option<PathBuf>,
     /// Development only: every print job writes into this file instead of
     /// reaching the printer (the app sets it from `FASTPDF_PRINT_TO_FILE`
@@ -269,12 +270,15 @@ pub struct ReaderView {
     pub(crate) signing: SignaturePanel,
     /// Links of the pages the pointer visited, the hover and clicks.
     pub(crate) links: crate::links::LinkLayer,
+    /// Where documents were left (`crate::reading`).
+    pub(crate) reading: crate::reading::ReadingMemory,
     pub(crate) open_task: Option<Task<()>>,
     pub(crate) dev_script: Option<Task<()>>,
     _wake_task: Task<()>,
     _appearance: Subscription,
     _bounds: Subscription,
     _quit: Subscription,
+    _release: Subscription,
 }
 
 impl std::fmt::Debug for ReaderView {
@@ -296,6 +300,7 @@ impl ReaderView {
         let Startup {
             settings,
             pending,
+            positions,
             wake: waker,
             wake_rx: mut rx,
             retire,
@@ -329,8 +334,12 @@ impl ReaderView {
         // A write in progress is undone, not cut off, when FastPDF quits.
         let quit = cx.on_app_quit(|this, _| {
             this.tools.finish_before_exit();
+            this.save_reading_position_now();
             async {}
         });
+        // The window's close button releases the view before the app quits,
+        // so `on_app_quit` no longer reaches it: save the position here too.
+        let release = cx.on_release(|this, _| this.save_reading_position_now());
 
         let memory = MemoryMonitor::new(Arc::new(MemoryBudgetManager::new(options.memory)));
         let texts = Arc::new(TextCache::new(TextCache::DEFAULT_BUDGET));
@@ -382,12 +391,14 @@ impl ReaderView {
             text_edits: TextEditPanel::new(cx),
             signing: SignaturePanel::new(cx),
             links,
+            reading: crate::reading::ReadingMemory::new(positions),
             open_task: None,
             dev_script: None,
             _wake_task: wake_task,
             _appearance: appearance,
             _bounds: bounds,
             _quit: quit,
+            _release: release,
         };
         cx.set_global(ActiveTheme(view.theme));
         view.apply_language(cx);
@@ -931,7 +942,11 @@ impl ReaderView {
         // with a document open, paints it (crate::viewport).
         let document = canvas(
             move |bounds, window, cx| {
-                prepaint_view.update(cx, |this, _| this.prepare_viewport(bounds, window))
+                prepaint_view.update(cx, |this, cx| {
+                    let frame = this.prepare_viewport(bounds, window);
+                    this.note_reading_position(cx);
+                    frame
+                })
             },
             move |bounds, state, window, cx| {
                 crate::navigation::listen_navigation_buttons(view.clone(), window);

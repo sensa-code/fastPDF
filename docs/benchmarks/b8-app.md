@@ -19,6 +19,7 @@
   - 執行 `fastpdf <file.pdf>`（CLI 開檔），讀取 `FASTPDF_BENCH=1` 的 stdout 事件（process 內的時間戳）。
   - 以 `PrintWindow` 截圖偵測畫面變化，每次截圖約 15 ms。
   - `FASTPDF_SETTINGS_FILE` 與 `FASTPDF_RECENT_FILE` 設為空值，不讀寫使用者設定。
+  - 閱讀位置檔跟著 `FASTPDF_RECENT_FILE`（見 `docs/DEVELOPMENT.md`〈本機狀態檔〉）：設為空值時不查也不寫位置，`first_page_exact` 量的一律是從第 1 頁開啟。要量「重新開啟到上次的頁面」，用 `-AppEnv FASTPDF_RECENT_FILE=<scratch>\recent.txt`，並先在同一個資料夾的 `recent-positions.txt` 寫好要還原的位置；不要指到 `%APPDATA%\FastPDF`。
 - 每個情境 3 次，取中位數；warm cache（檔案已在 OS cache 中）；dist build（fat LTO）。
 - 情境：
   - **3 頁**：`small-text/three-pages-platypus-times.pdf`（7 KB），只量啟動與 idle。

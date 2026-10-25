@@ -22,7 +22,8 @@
 //! (engine name), `FASTPDF_BENCH=1` (start-up milestones as JSON lines on
 //! stdout), `FASTPDF_DEV_OVERLAY=1` (development overlay, spec §46),
 //! `FASTPDF_UPLOAD_BUDGET_MB` (per-frame texture upload budget; tuning),
-//! `FASTPDF_RECENT_FILE` (recent-files list location; empty disables it, so
+//! `FASTPDF_RECENT_FILE` (recent-files list location; the reading positions
+//! live next to it as `<stem>-positions.txt`; empty disables both, so
 //! benchmarks and tests do not touch the user's list), `FASTPDF_SETTINGS_FILE`
 //! (UI settings, `%APPDATA%\FastPDF\settings.toml` by default; empty: defaults
 //! for this run and nothing written).
@@ -223,7 +224,7 @@ fn reader_main() {
     }
     if args.help {
         println!(
-            "{USAGE}\n\nengines: {}\ndefault engine: {} (NAME-isolated renders in a separate render host process, ADR 0008; a NAME without the suffix, e.g. --engine hayro, renders in-process)\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE, FASTPDF_SETTINGS_FILE\ndevelopment: FASTPDF_PRINT_TO_FILE, FASTPDF_DEV_SCRIPT, FASTPDF_HOST_MEMORY_MB",
+            "{USAGE}\n\nengines: {}\ndefault engine: {} (NAME-isolated renders in a separate render host process, ADR 0008; a NAME without the suffix, e.g. --engine hayro, renders in-process)\nenvironment: FASTPDF_LOG, FASTPDF_ENGINE, FASTPDF_BENCH, FASTPDF_DEV_OVERLAY, FASTPDF_UPLOAD_BUDGET_MB, FASTPDF_RECENT_FILE (recent files and, next to them, reading positions; empty: neither), FASTPDF_SETTINGS_FILE\ndevelopment: FASTPDF_PRINT_TO_FILE, FASTPDF_DEV_SCRIPT, FASTPDF_HOST_MEMORY_MB",
             engines::names().join(", "),
             engines::default_name().unwrap_or_else(|| "none".into())
         );

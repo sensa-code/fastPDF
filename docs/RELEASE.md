@@ -184,7 +184,7 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
 
 ### 1.7 Smoke test
 
-`package.ps1` 會先把 zip 解壓到 `dist/.smoke-*`，再執行以下步驟。每一次啟動，包括只走 CLI 的情況，都會把 `FASTPDF_SETTINGS_FILE` 與 `FASTPDF_RECENT_FILE` 設為空值，所以不會建立 `%APPDATA%\FastPDF\`：
+`package.ps1` 會先把 zip 解壓到 `dist/.smoke-*`，再執行以下步驟。每一次啟動，包括只走 CLI 的情況，都會把 `FASTPDF_SETTINGS_FILE` 與 `FASTPDF_RECENT_FILE` 設為空值，所以不會建立 `%APPDATA%\FastPDF\`（閱讀位置檔跟著 `FASTPDF_RECENT_FILE`，空值時也不會建立）：
 
 1. `fastpdf --version`：輸出必須是 `fastpdf X.Y.Z`；
 2. `fastpdf --help`：第一行必須是 `usage: fastpdf ...`；
@@ -340,7 +340,7 @@ pwsh -File tools/package-msix.ps1       # 與 zip 共用 build 與 staging -> ma
    - 命令列可以使用 `fastpdf.exe` 別名；
    - `fastpdf --register-file-types` 印出「由套件的 manifest 管理」。
 3. **`%APPDATA%` 重新導向**：
-   - 確認 settings 與 recent 的實際位置：套件化的 full-trust app 寫入 `%APPDATA%\FastPDF\` 時，會被導到套件的私有位置；
+   - 確認 settings、recent 與閱讀位置（`recent-positions.txt` 和它的 `.lock`）的實際位置：套件化的 full-trust app 寫入 `%APPDATA%\FastPDF\` 時，會被導到套件的私有位置；
    - 確認和 zip 版是否共用設定；
    - 確認解除安裝後是否殘留；
    - 確認 `FASTPDF_SETTINGS_FILE`、`FASTPDF_RECENT_FILE` 的行為。

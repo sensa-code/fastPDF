@@ -32,6 +32,9 @@
 //! * Start-up (`startup.rs`): the command-line document opens, and its
 //!   first page renders, on a thread while GPUI starts, so the first frame
 //!   can show exact tiles.
+//! * Documents reopen where they were left (`reading.rs`): page, offset,
+//!   zoom and rotation, kept next to the recent-files list; the restored
+//!   page is the first one rendered.
 //! * Text is English or Traditional Chinese (`i18n.rs`), after the Windows
 //!   UI language unless the settings choose; mouse-wheel notches scroll
 //!   with a short ease-out (`smooth_scroll.rs`).
@@ -71,6 +74,7 @@ mod print;
 mod prompt;
 mod properties;
 mod reader;
+mod reading;
 mod scrollbar;
 mod search_results;
 mod select;

@@ -18,7 +18,7 @@ use gpui::{
     prelude::FluentBuilder, px,
 };
 
-use crate::document::{LockedSource, OpenFailure, OpenedDocument, open_loaded};
+use crate::document::{LockedSource, OpenFailure, Opened, open_loaded};
 use crate::opening::{APP_TITLE, display_name};
 use crate::prompt::{CardPlacement, PromptStatus, prompt_card};
 use crate::reader::{DocState, ReaderView};
@@ -97,6 +97,8 @@ impl ReaderView {
     /// The prompt's Open (or Enter): tries the typed password.
     pub(crate) fn unlock_document(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let engine = Arc::clone(&self.options.engine);
+        // Unlocked, it starts where it was left, like any other open.
+        let positions = self.positions_for_open();
         let DocState::Locked(locked) = &mut self.doc else {
             return;
         };
@@ -110,9 +112,11 @@ impl ReaderView {
         locked.checking = true;
         locked.wrong = false;
         let path = locked.path.clone();
-        let attempt = cx
-            .background_executor()
-            .spawn(async move { open_loaded(engine.as_ref(), *source, Some(password)) });
+        let identity = source.identity;
+        let attempt = cx.background_executor().spawn(async move {
+            open_loaded(engine.as_ref(), *source, Some(password))
+                .map(|doc| crate::reading::with_start(doc, identity, positions.as_deref()))
+        });
         locked._attempt = Some(cx.spawn_in(window, async move |this, cx| {
             let result = attempt.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -125,7 +129,7 @@ impl ReaderView {
     fn finish_unlock(
         &mut self,
         path: PathBuf,
-        result: Result<OpenedDocument, OpenFailure>,
+        result: Result<Opened, OpenFailure>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -143,7 +147,7 @@ impl ReaderView {
                 window.focus(&self.focus, cx);
                 self.close_write_panels(cx);
                 self.doc = DocState::Loading { path: path.clone() };
-                self.finish_open(path, Ok(opened.into()), window, cx);
+                self.finish_open(path, Ok(opened), window, cx);
             }
             Err(OpenFailure::Locked(source)) => {
                 log::info!("the password did not open {}", path.display());

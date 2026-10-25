@@ -1,5 +1,6 @@
 //! UI settings kept between runs (M7): appearance, night mode, sidebar,
-//! default zoom, page layout, the find options and window placement.
+//! default zoom, page layout, the find options, whether reading positions
+//! are kept and window placement.
 //!
 //! The file is a handful of `key = value` lines, a subset of TOML, read and
 //! written with std only (spec §36: no serde / toml for this). Reading never
@@ -20,6 +21,7 @@
 //! smooth_scrolling = true
 //! find_match_case = false
 //! find_whole_word = true
+//! remember_position = true
 //! window = [120, 80, 900, 1100]
 //! window_maximized = false
 //! ```
@@ -244,6 +246,8 @@ pub(crate) struct Settings {
     pub find_match_case: bool,
     /// Find: only whole words match (Alt+W).
     pub find_whole_word: bool,
+    /// Documents reopen where they were left (`crate::reading`).
+    pub remember_position: bool,
     pub window: Option<WindowPlacement>,
 }
 
@@ -261,6 +265,7 @@ impl Default for Settings {
             smooth_scrolling: true,
             find_match_case: false,
             find_whole_word: false,
+            remember_position: true,
             window: None,
         }
     }
@@ -382,6 +387,10 @@ impl Settings {
                     settings.find_whole_word = on;
                     true
                 }
+                ("remember_position", Value::Bool(on)) => {
+                    settings.remember_position = on;
+                    true
+                }
                 ("window_maximized", Value::Bool(on)) => {
                     maximized = on;
                     true
@@ -389,7 +398,8 @@ impl Settings {
                 (
                     "appearance" | "night_mode" | "sidebar_open" | "sidebar_tab" | "default_zoom"
                     | "page_layout" | "cover_page" | "language" | "smooth_scrolling" | "window"
-                    | "window_maximized" | "find_match_case" | "find_whole_word",
+                    | "window_maximized" | "find_match_case" | "find_whole_word"
+                    | "remember_position",
                     _,
                 ) => false,
                 _ => {
@@ -444,6 +454,7 @@ impl Settings {
         line("smooth_scrolling", self.smooth_scrolling.to_string());
         line("find_match_case", self.find_match_case.to_string());
         line("find_whole_word", self.find_whole_word.to_string());
+        line("remember_position", self.remember_position.to_string());
         if let Some(w) = self.window.filter(WindowPlacement::is_plausible) {
             line(
                 "window",
@@ -596,6 +607,7 @@ mod tests {
             smooth_scrolling: false,
             find_match_case: true,
             find_whole_word: true,
+            remember_position: false,
             window: Some(WindowPlacement {
                 x: -1200.5,
                 y: 40.0,
@@ -752,6 +764,24 @@ mod tests {
         write_ordered(&written, &path, &Settings::default().to_text(), 1);
         assert_eq!(Settings::load(&path), newer);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn positions_are_remembered_unless_turned_off() {
+        assert!(Settings::default().remember_position);
+        let (s, problems) = Settings::parse(
+            "remember_position = false
+",
+        );
+        assert!(!s.remember_position);
+        assert!(problems.is_empty(), "{problems:?}");
+        let (s, problems) = Settings::parse(
+            "remember_position = maybe
+",
+        );
+        assert!(s.remember_position);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("remember_position"), "{problems:?}");
     }
 
     #[test]

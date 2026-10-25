@@ -7,12 +7,14 @@ use std::time::Instant;
 
 use fastpdf_core::DocumentSession;
 use fastpdf_core::loader::{self, LoadError, LoadStrategy};
+use fastpdf_core::positions::{FileIdentity, PositionStore};
 use fastpdf_engine_api::{
     DocumentSource, EngineDocument, EngineError, GuardedDocument, OpenOptions, PageIndex, Password,
     PdfEngine, open_guarded,
 };
 use futures::channel::oneshot;
 
+use crate::reading::ReadingStart;
 use crate::startup::{SessionParts, ViewGuess};
 use crate::textures::TileImage;
 
@@ -72,6 +74,9 @@ pub struct LockedSource {
     pub(crate) load_ms: f64,
     /// A password was given and did not open the document.
     pub(crate) wrong_password: bool,
+    /// The file's size and time before it was loaded, when reading
+    /// positions are kept (`crate::reading`).
+    pub(crate) identity: Option<FileIdentity>,
 }
 
 impl fmt::Debug for LockedSource {
@@ -107,6 +112,7 @@ pub(crate) fn load_source(path: &Path) -> Result<LockedSource, OpenFailure> {
         file_bytes,
         load_ms: ms(started.elapsed()),
         wrong_password: false,
+        identity: None,
     })
 }
 
@@ -165,10 +171,12 @@ fn ms(d: std::time::Duration) -> f64 {
 }
 
 /// An opened document, with its session when one was started early
-/// (`crate::startup`).
+/// (`crate::startup`) and where it starts (`crate::reading`).
 pub(crate) struct Opened {
     pub doc: OpenedDocument,
     pub session: Option<DocumentSession<TileImage>>,
+    /// What the reading positions said; `None` when they were not asked.
+    pub start: Option<ReadingStart>,
 }
 
 impl fmt::Debug for Opened {
@@ -176,13 +184,18 @@ impl fmt::Debug for Opened {
         f.debug_struct("Opened")
             .field("doc", &self.doc)
             .field("early_session", &self.session.is_some())
+            .field("start", &self.start)
             .finish()
     }
 }
 
 impl From<OpenedDocument> for Opened {
     fn from(doc: OpenedDocument) -> Self {
-        Self { doc, session: None }
+        Self {
+            doc,
+            session: None,
+            start: None,
+        }
     }
 }
 
@@ -198,39 +211,30 @@ pub struct PendingOpen {
 impl PendingOpen {
     /// Starts opening `path` on a new thread.
     pub fn spawn(engine: Arc<dyn PdfEngine>, path: PathBuf) -> Self {
-        Self::spawn_with(engine, path, None)
+        Self::spawn_with(engine, path, None, None)
     }
 
-    /// Starts opening `path` on a new thread; with `early`, the thread also
-    /// creates the document's session for the predicted view and asks it
-    /// for a frame, so page 1 renders while GPUI starts.
+    /// Starts opening `path` on a new thread; with `positions`, it starts
+    /// where it was left. With `early`, the thread also creates the
+    /// document's session for the predicted view and asks it for a frame,
+    /// so the first page shown renders while GPUI starts.
     pub(crate) fn spawn_with(
         engine: Arc<dyn PdfEngine>,
         path: PathBuf,
         early: Option<(SessionParts, ViewGuess)>,
+        positions: Option<Arc<PositionStore>>,
     ) -> Self {
         let (tx, rx) = oneshot::channel();
         let thread_path = path.clone();
         let spawned = std::thread::Builder::new()
             .name("fastpdf-open".into())
             .spawn(move || {
-                let result = open_document_blocking(engine.as_ref(), &thread_path).map(|doc| {
-                    let session = early.map(|(parts, view)| {
-                        let mut session = parts.session(&doc, (view.width, view.height), view.scale);
-                        // Plans and schedules the visible tiles (P0) and
-                        // their neighbors; workers start right away.
-                        let frame = session.frame();
-                        log::info!(
-                            "page 1 rendering before the window exists: {} tiles queued for a {:.0}x{:.0} view at scale {}",
-                            frame.pending,
-                            view.width,
-                            view.height,
-                            view.scale
-                        );
-                        session
-                    });
-                    Opened { doc, session }
-                });
+                let result = crate::reading::open_for_reading(
+                    engine.as_ref(),
+                    &thread_path,
+                    positions.as_deref(),
+                    early,
+                );
                 let _ = tx.send(result);
             });
         if let Err(e) = spawned {
@@ -314,6 +318,7 @@ mod tests {
             file_bytes: bytes.len(),
             load_ms: 0.0,
             wrong_password: false,
+            identity: None,
         }
     }
 
