@@ -1,8 +1,8 @@
 //! The interactive form's field tree (`/AcroForm /Fields`, ISO 32000-2
 //! §12.7.4): how many terminal fields it has, how many of them are
 //! signature fields (`/FT /Sig`, inherited from a parent) and how many of
-//! those hold a signature (`/V` a dictionary, or a reference, which is not
-//! resolved).
+//! those hold a signature (`/V`, also inheritable: a dictionary, or a
+//! reference, which is not resolved).
 //!
 //! The tree of a hostile file can be cyclic, deep or huge, and its
 //! references can point at enormous objects, so the walk is iterative and
@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use fastpdf_engine_api::FormSummary;
-use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, Name, Object, ObjectIdentifier};
+use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, Name, Null, Object, ObjectIdentifier};
 use hayro::hayro_syntax::xref::XRef;
 
 use crate::items::items;
@@ -58,7 +58,29 @@ struct Node<'p> {
     dict: Dict<'p>,
     /// `/FT /Sig`, inherited from the parent unless the field says.
     signature: bool,
+    /// A signature as `/V`, inherited likewise.
+    signed: bool,
     depth: usize,
+}
+
+/// What a parent passes on to its kids.
+#[derive(Clone, Copy)]
+struct Inherited {
+    signature: bool,
+    signed: bool,
+    depth: usize,
+}
+
+/// Whether a field's own `/V` is a signature: a dictionary, or a reference
+/// that is not resolved (the writer's rule; a signature can be large).
+/// `None` when it has none (`null` counts as none): the parent's `/V`
+/// decides.
+fn signed(field: &Dict<'_>) -> Option<bool> {
+    if !field.contains_key(b"V") || matches!(field.get_raw::<Null>(b"V"), Some(MaybeRef::NotRef(_)))
+    {
+        return None;
+    }
+    Some(field.get_raw::<Dict<'_>>(b"V").is_some())
 }
 
 struct Walk<'p> {
@@ -83,13 +105,19 @@ impl<'p> Walk<'p> {
         };
         let mut stack = Vec::new();
         // Every dictionary in /Fields is a field, with or without /T.
-        self.queue(&fields, false, 0, true, &mut stack);
+        let top = Inherited {
+            signature: false,
+            signed: false,
+            depth: 0,
+        };
+        self.queue(&fields, top, true, &mut stack);
         while let Some(node) = stack.pop() {
             if self.spent() {
                 self.summary.truncated = true;
                 return;
             }
             let signature = self.field_type(&node.dict).unwrap_or(node.signature);
+            let signed = signed(&node.dict).unwrap_or(node.signed);
             let has_fields_below = match self.array(&node.dict, b"Kids") {
                 Some(_) if node.depth >= MAX_FORM_DEPTH => {
                     // Its kids are not looked at: it may or may not be a
@@ -97,24 +125,29 @@ impl<'p> Walk<'p> {
                     self.summary.truncated = true;
                     continue;
                 }
-                Some(kids) => self.queue(&kids, signature, node.depth + 1, false, &mut stack),
+                Some(kids) => {
+                    let inherited = Inherited {
+                        signature,
+                        signed,
+                        depth: node.depth + 1,
+                    };
+                    self.queue(&kids, inherited, false, &mut stack)
+                }
                 None => false,
             };
             if !has_fields_below {
-                self.count(&node.dict, signature);
+                self.count(signature, signed);
             }
         }
     }
 
-    /// A terminal field: counted, and as a signature field when it is one.
-    fn count(&mut self, field: &Dict<'p>, signature: bool) {
+    /// A terminal field: counted, and as a signature field (signed or not)
+    /// when it is one.
+    fn count(&mut self, signature: bool, signed: bool) {
         let s = &mut self.summary;
         s.fields = s.fields.saturating_add(1);
         if signature {
             s.signature_fields = s.signature_fields.saturating_add(1);
-            // A dictionary, or a reference that is not resolved (the
-            // writer's rule; a signature can be large).
-            let signed = field.get_raw::<Dict<'p>>(b"V").is_some();
             if signed {
                 s.signatures = s.signatures.saturating_add(1);
             }
@@ -128,8 +161,7 @@ impl<'p> Walk<'p> {
     fn queue(
         &mut self,
         array: &Array<'p>,
-        signature: bool,
-        depth: usize,
+        inherited: Inherited,
         top: bool,
         stack: &mut Vec<Node<'p>>,
     ) -> bool {
@@ -166,8 +198,9 @@ impl<'p> Walk<'p> {
                 fields = true;
                 stack.push(Node {
                     dict,
-                    signature,
-                    depth,
+                    signature: inherited.signature,
+                    signed: inherited.signed,
+                    depth: inherited.depth,
                 });
             }
         }

@@ -134,11 +134,24 @@ fn dict(data: &[u8]) -> Option<Dict<'_>> {
     Dict::from_bytes(data.get(..data.len().min(WINDOW))?)
 }
 
-/// Length of the PDF whitespace `data` starts with.
+/// Length of the PDF whitespace and comments `data` starts with.
 fn whitespace(data: &[u8]) -> usize {
-    data.iter()
-        .take_while(|b| matches!(b, b'\0' | b'\t' | b'\n' | b'\x0c' | b'\r' | b' '))
-        .count()
+    let mut at = 0;
+    loop {
+        at += data
+            .get(at..)
+            .unwrap_or_default()
+            .iter()
+            .take_while(|b| matches!(b, b'\0' | b'\t' | b'\n' | b'\x0c' | b'\r' | b' '))
+            .count();
+        if data.get(at) != Some(&b'%') {
+            return at;
+        }
+        at += data[at..]
+            .iter()
+            .take_while(|b| !matches!(b, b'\n' | b'\r'))
+            .count();
+    }
 }
 
 #[cfg(test)]
@@ -199,6 +212,22 @@ mod tests {
         // An object that is not a cross-reference stream.
         let wrong = String::from_utf8_lossy(&doc).replace("/Type /XRef", "/Type /Page");
         assert_eq!(root(wrong.as_bytes()), None);
+    }
+
+    #[test]
+    fn comments_between_tokens_are_skipped() {
+        let mut doc = b"%PDF-1.7\n".to_vec();
+        let start = doc.len();
+        doc.extend_from_slice(
+            b"12 % number\n0 obj % a comment\r\n% another\n<< /Type /XRef /Root 3 0 R >>\nstream\n\nendstream\nendobj\n",
+        );
+        doc.extend_from_slice(format!("startxref\n{start}\n%%EOF\n").as_bytes());
+        assert_eq!(root(&doc), Some(3));
+        let table = String::from_utf8_lossy(&table(1, "<< /Root 4 0 R >>"))
+            .replace("trailer\n", "trailer % the trailer\n");
+        assert_eq!(root(table.as_bytes()), Some(4));
+        assert_eq!(whitespace(b" % open"), 7);
+        assert_eq!(whitespace(b"%\n%\r x"), 5);
     }
 
     #[test]

@@ -166,6 +166,19 @@ fn form_fields_and_signatures_are_counted() {
         (forms.fields, forms.signature_fields, forms.signatures),
         (2, 2, 1)
     );
+    // /V is inherited like /FT (null is no value); a kid's own /V wins.
+    let inherited = [
+        "<< /Fields [7 0 R] >>",
+        "<< /FT /Sig /T (p) /V << /Type /Sig >> /Kids [8 0 R 9 0 R 10 0 R] >>",
+        "<< /T (a) >>",
+        "<< /T (b) /V null >>",
+        "<< /T (c) /V (text) >>",
+    ];
+    let forms = properties(document("/AcroForm 6 0 R", &inherited, "")).forms;
+    assert_eq!(
+        (forms.fields, forms.signature_fields, forms.signatures),
+        (3, 3, 2)
+    );
     // No form at all.
     assert_eq!(
         properties(document("", &[], "")).forms,

@@ -159,18 +159,39 @@ fn crypt_filter(dict: &Dict<'_>, key: &[u8]) -> EncryptionMethod {
     if name.as_ref() == b"Identity" {
         return EncryptionMethod::Identity;
     }
-    let cfm = dict
+    let filter = dict
         .get::<Dict<'_>>(b"CF")
-        .and_then(|filters| filters.get::<Dict<'_>>(name.as_ref()))
+        .and_then(|filters| filters.get::<Dict<'_>>(name.as_ref()));
+    let cfm = filter
+        .as_ref()
         .and_then(|filter| filter.get::<Name<'_>>(b"CFM"));
     match cfm.as_ref().map(|n| n.as_ref()) {
-        // Version 4 keys are 128 bits.
-        Some(b"V2") => EncryptionMethod::Rc4 { key_bits: 128 },
+        Some(b"V2") => EncryptionMethod::Rc4 {
+            key_bits: rc4_filter_bits(filter.as_ref(), dict),
+        },
         Some(b"AESV2") => EncryptionMethod::Aes128,
         Some(b"AESV3") => EncryptionMethod::Aes256,
         Some(b"None") => EncryptionMethod::Identity,
         _ => EncryptionMethod::Unknown,
     }
+}
+
+/// The key length of an RC4 crypt filter: its `/Length`, which the
+/// standard security handler gives in bytes (5 to 16) and some writers in
+/// bits, else the dictionary's `/Length` (bits), else 128.
+fn rc4_filter_bits(filter: Option<&Dict<'_>>, dict: &Dict<'_>) -> u16 {
+    let length = |d: &Dict<'_>| d.get::<i64>(b"Length");
+    let bits = |l: i64| match l {
+        5..=16 => Some(l * 8),
+        40..=128 if l % 8 == 0 => Some(l),
+        _ => None,
+    };
+    filter
+        .and_then(length)
+        .and_then(bits)
+        .or_else(|| length(dict).and_then(bits))
+        .and_then(|b| u16::try_from(b).ok())
+        .unwrap_or(128)
 }
 
 /// A linearization dictionary within the first 1024 bytes whose `/L` is
@@ -194,6 +215,73 @@ fn linearized(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn method_of(dict: &[u8]) -> EncryptionMethod {
+        let dict = Dict::from_bytes(dict).unwrap_or_default();
+        let version = dict.get::<i64>(b"V").and_then(|v| u8::try_from(v).ok());
+        method(&dict, version)
+    }
+
+    #[test]
+    fn crypt_filters_name_the_cipher_and_its_key_length() {
+        let rc4 = |cf: &str, extra: &str| {
+            method_of(
+                format!("<< /V 4 /StmF /StdCF /StrF /StdCF /CF << /StdCF << /CFM /V2 {cf} >> >> {extra} >>")
+                    .as_bytes(),
+            )
+        };
+        // Bytes as the standard security handler writes them, or bits.
+        assert_eq!(rc4("/Length 5", ""), EncryptionMethod::Rc4 { key_bits: 40 });
+        assert_eq!(
+            rc4("/Length 16", ""),
+            EncryptionMethod::Rc4 { key_bits: 128 }
+        );
+        assert_eq!(
+            rc4("/Length 128", ""),
+            EncryptionMethod::Rc4 { key_bits: 128 }
+        );
+        assert_eq!(
+            rc4("/Length 56", ""),
+            EncryptionMethod::Rc4 { key_bits: 56 }
+        );
+        // Otherwise the dictionary's length, otherwise 128.
+        assert_eq!(
+            rc4("", "/Length 40"),
+            EncryptionMethod::Rc4 { key_bits: 40 }
+        );
+        assert_eq!(
+            rc4("/Length 3", ""),
+            EncryptionMethod::Rc4 { key_bits: 128 }
+        );
+        assert_eq!(rc4("", ""), EncryptionMethod::Rc4 { key_bits: 128 });
+        assert_eq!(
+            method_of(b"<< /V 4 /StmF /StdCF /CF << /StdCF << /CFM /AESV2 >> >> >>"),
+            EncryptionMethod::Aes128
+        );
+        assert_eq!(
+            method_of(b"<< /V 5 /StmF /StdCF /CF << /StdCF << /CFM /AESV3 >> >> >>"),
+            EncryptionMethod::Aes256
+        );
+        // Streams not encrypted: the strings' filter says.
+        assert_eq!(
+            method_of(b"<< /V 4 /StmF /Identity /StrF /S /CF << /S << /CFM /AESV2 >> >> >>"),
+            EncryptionMethod::Aes128
+        );
+        assert_eq!(method_of(b"<< /V 4 >>"), EncryptionMethod::Identity);
+        assert_eq!(
+            method_of(b"<< /V 1 >>"),
+            EncryptionMethod::Rc4 { key_bits: 40 }
+        );
+        assert_eq!(
+            method_of(b"<< /V 2 /Length 128 >>"),
+            EncryptionMethod::Rc4 { key_bits: 128 }
+        );
+        assert_eq!(method_of(b"<< /V 3 >>"), EncryptionMethod::Unknown);
+        assert_eq!(
+            method_of(b"<< /V 4 /StmF /X /CF << /X << /CFM /Other >> >> >>"),
+            EncryptionMethod::Unknown
+        );
+    }
 
     #[test]
     fn linearization_names_the_file_length() {
