@@ -264,6 +264,37 @@ fn two_stores_on_one_file_merge() {
 }
 
 #[test]
+fn concurrent_flushes_of_one_file_lose_nothing() {
+    // Each store stands for a FastPDF process: the shared lock makes their
+    // read, merge and replace one after another.
+    let dir = scratch("concurrent");
+    let path = dir.join("recent-positions.txt");
+    let writers: Vec<_> = (0..8u32)
+        .map(|n| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let store = PositionStore::at(path);
+                for round in 0..5 {
+                    let doc = format!(r"C:\writer{n}\doc{round}.pdf");
+                    store.remember(Path::new(&doc), record(n));
+                    // A flush that waited too long leaves its records for
+                    // the next one, like the reader does.
+                    while let Err(e) = store.flush() {
+                        assert_eq!(e.kind(), std::io::ErrorKind::WouldBlock);
+                    }
+                }
+            })
+        })
+        .collect();
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    let entries = format::parse(&std::fs::read_to_string(&path).unwrap());
+    assert_eq!(entries.len(), 40);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn pending_records_answer_lookups_before_the_flush() {
     let dir = scratch("pending");
     let store = PositionStore::at(dir.join("positions.txt"));
@@ -297,21 +328,24 @@ fn pending_records_answer_lookups_before_the_flush() {
 fn no_temporary_file_left_behind() {
     let dir = scratch("temp");
     let store = PositionStore::next_to(&dir.join("recent.txt"));
-    store.flush().unwrap();
+    assert_eq!(store.flush().unwrap(), 0);
     assert!(
         !store.path().exists(),
         "nothing remembered, nothing written"
     );
     store.remember(Path::new(r"C:\a.pdf"), record(3));
-    store.flush().unwrap();
+    assert_eq!(store.flush().unwrap(), 1);
     store.remember(Path::new(r"C:\b.pdf"), record(4));
     store.flush().unwrap();
-    let names: Vec<_> = std::fs::read_dir(&dir)
+    let mut names: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(names, ["recent-positions.txt"]);
+    names.sort();
+    // The lock file stays (empty): removing it would let two processes
+    // lock different files.
+    assert_eq!(names, ["recent-positions.txt", "recent-positions.txt.lock"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

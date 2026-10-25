@@ -10,12 +10,13 @@
 //! The [`PositionStore`] file lives next to the recent-files list
 //! (`<recent stem>-positions.txt`), so whatever moves or disables that list
 //! (`FASTPDF_RECENT_FILE`) moves or disables the positions too. It is
-//! bounded ([`MAX_ENTRIES`] documents, [`MAX_FILE_BYTES`]), std only, and
-//! read again before every write so several FastPDF processes merge their
-//! entries instead of overwriting each other's; writes go through a
-//! temporary file and a rename ([`crate::paths::write_atomic`]). Paths in
-//! the file are only compared, never opened. The text format is in
-//! `positions/format.rs`.
+//! bounded ([`MAX_ENTRIES`] documents, [`MAX_FILE_BYTES`]) and std only.
+//! Every write reads the file again under a lock all FastPDF processes
+//! share (`<file>.lock` next to it, [`crate::paths::lock_beside`]), so
+//! they merge their entries instead of overwriting each other's, and
+//! replaces it through a temporary file and a rename
+//! ([`crate::paths::write_atomic`]). Paths in the file are only compared,
+//! never opened. The text format is in `positions/format.rs`.
 
 mod format;
 #[cfg(test)]
@@ -26,7 +27,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use crate::recent::{path_key, same_path};
 use crate::view_state::{RestoreScope, SavedView, SavedZoom};
@@ -38,6 +39,8 @@ pub const MAX_ENTRIES: usize = 200;
 pub const MAX_FILE_BYTES: u64 = 512 * 1024;
 /// Records waiting for a flush at most.
 const MAX_PENDING: usize = 16;
+/// Longest a flush waits for another process's flush of the same file.
+const LOCK_WAIT: Duration = Duration::from_millis(500);
 
 /// A file's size and modification time: the same identity, the same
 /// content as far as FastPDF can tell without reading it.
@@ -213,17 +216,21 @@ impl PositionStore {
         pending.truncate(MAX_PENDING);
     }
 
-    /// Writes the records remembered so far: reads the file again (other
-    /// processes may have written it), puts them first, drops duplicates
-    /// and the oldest entries past [`MAX_ENTRIES`], and replaces the file.
-    /// Does nothing when no record waits. A file that exists but cannot be
-    /// read is left alone (the error is returned).
-    pub fn flush(&self) -> io::Result<()> {
+    /// Writes the records remembered so far: under the lock every FastPDF
+    /// process takes for this file, reads it again (others may have written
+    /// it), puts the records first, drops duplicates and the oldest entries
+    /// past [`MAX_ENTRIES`], and replaces the file. Returns how many
+    /// records it wrote; does nothing (0) when none waits. A file that
+    /// exists but cannot be read is left alone, and a lock held elsewhere
+    /// for longer than half a second gives up: the error is returned and
+    /// the records wait for the next flush.
+    pub fn flush(&self) -> io::Result<usize> {
         let _writing = lock(&self.write);
         let snapshot = lock(&self.pending).clone();
         if snapshot.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
+        let _shared = crate::paths::lock_beside(&self.path, LOCK_WAIT)?;
         let mut seen = HashSet::new();
         let merged: Vec<format::Entry> = snapshot
             .iter()
@@ -239,7 +246,7 @@ impl PositionStore {
                 .iter()
                 .any(|s| same_path(&s.0, &entry.0) && s.1 == entry.1)
         });
-        Ok(())
+        Ok(snapshot.len())
     }
 }
 
